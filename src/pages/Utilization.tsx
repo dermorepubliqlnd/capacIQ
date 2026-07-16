@@ -87,7 +87,6 @@ function rollupCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
-    height: 31,
     textAlign: "center",
     padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
@@ -98,7 +97,6 @@ function subCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
-    height: 18,
     textAlign: "center",
     padding: "5px 3px",
     borderBottom: "1px solid var(--border)",

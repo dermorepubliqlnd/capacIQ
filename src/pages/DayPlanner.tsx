@@ -90,7 +90,6 @@ function rollupCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
-    height: 31,
     textAlign: "center",
     padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
@@ -101,7 +100,6 @@ function subCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
-    height: 18,
     padding: 0,
     borderBottom: "1px solid var(--border)",
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
@@ -534,7 +532,9 @@ export default function DayPlanner() {
                                   {total > 0 ? `${Math.round(pct)}%` : "–"}
                                   {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
                                 </span>
-                                {total > 0 && <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>{total.toFixed(1)}h</span>}
+                                <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75, visibility: total > 0 ? "visible" : "hidden" }}>
+                                  {total > 0 ? `${total.toFixed(1)}h` : "0.0h"}
+                                </span>
                               </div>
                             </td>
                           );
