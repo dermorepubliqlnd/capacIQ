@@ -290,8 +290,9 @@ export default function Projects() {
       {
         key: "name",
         label: "Project",
-        defaultWidth: 220,
+        defaultWidth: 260,
         minWidth: 160,
+        maxWidth: 420,
         render: (p) => {
           const icon = p.category ? PROJECT_CATEGORY_ICONS[p.category] ?? DEFAULT_PROJECT_ICON : DEFAULT_PROJECT_ICON;
           return (
@@ -307,7 +308,8 @@ export default function Projects() {
       {
         key: "owner",
         label: "Owner",
-        defaultWidth: 140,
+        defaultWidth: 150,
+        maxWidth: 220,
         render: (p) => (
           <InlineSelect
             value={p.owner_id ?? ""}
@@ -327,6 +329,7 @@ export default function Projects() {
         key: "priority",
         label: "Priority",
         defaultWidth: 100,
+        maxWidth: 130,
         render: (p) => (
           <InlineSelect
             value={p.priority ?? ""}
@@ -340,7 +343,8 @@ export default function Projects() {
       {
         key: "project_status",
         label: "Status",
-        defaultWidth: 130,
+        defaultWidth: 140,
+        maxWidth: 200,
         render: (p) => (
           <InlineSelect
             value={p.project_status ?? ""}
@@ -361,7 +365,8 @@ export default function Projects() {
       {
         key: "health",
         label: "Health",
-        defaultWidth: 110,
+        defaultWidth: 120,
+        maxWidth: 150,
         render: (p) => {
           const h = healthOf(p);
           return <span className={`status-pill ${h.tone}`}>{h.label}</span>;
@@ -370,7 +375,8 @@ export default function Projects() {
       {
         key: "category",
         label: "Category",
-        defaultWidth: 170,
+        defaultWidth: 190,
+        maxWidth: 260,
         render: (p) => (
           <InlineSelect
             value={p.category ?? ""}
@@ -388,6 +394,7 @@ export default function Projects() {
         key: "effort_level",
         label: "Effort",
         defaultWidth: 100,
+        maxWidth: 130,
         render: (p) => (
           <InlineSelect
             value={p.effort_level ?? ""}
@@ -404,13 +411,15 @@ export default function Projects() {
       {
         key: "start_date",
         label: "Start",
-        defaultWidth: 100,
+        defaultWidth: 110,
+        maxWidth: 140,
         render: (p) => <InlineDate value={p.start_date} editable={canEditProject(p)} onCommit={(v) => updateProject(p.id, { start_date: v || null })} />,
       },
       {
         key: "end_date",
         label: "Due",
-        defaultWidth: 100,
+        defaultWidth: 110,
+        maxWidth: 140,
         render: (p) => <InlineDate value={p.end_date} editable={canEditProject(p)} onCommit={(v) => updateProject(p.id, { end_date: v || null })} />,
       },
     ],
@@ -506,8 +515,9 @@ export default function Projects() {
       {
         key: "name",
         label: "Task",
-        defaultWidth: 260,
+        defaultWidth: 300,
         minWidth: 180,
+        maxWidth: 480,
         render: (t) => {
           const children = t._depth === 0 && hasChildren(t.id);
           const collapsed = children && collapsedParents.includes(t.id);
@@ -540,7 +550,8 @@ export default function Projects() {
       {
         key: "project",
         label: "Project",
-        defaultWidth: 160,
+        defaultWidth: 180,
+        maxWidth: 260,
         render: (t) => (
           <InlineSelect
             value={projectName(t.project_id)}
@@ -556,7 +567,8 @@ export default function Projects() {
       {
         key: "assignee",
         label: "Assignee",
-        defaultWidth: 130,
+        defaultWidth: 150,
+        maxWidth: 220,
         render: (t) => (
           <InlineSelect
             value={t.assignee_id ? ownerName(t.assignee_id) : ""}
@@ -575,7 +587,8 @@ export default function Projects() {
       {
         key: "status",
         label: "Status",
-        defaultWidth: 130,
+        defaultWidth: 140,
+        maxWidth: 200,
         render: (t) => (
           <InlineSelect
             value={t.status ?? ""}
@@ -592,7 +605,8 @@ export default function Projects() {
       {
         key: "timing",
         label: "Timing",
-        defaultWidth: 100,
+        defaultWidth: 110,
+        maxWidth: 150,
         render: (t) => {
           const timing = timingOf(t);
           return <span className={`status-pill ${timing.tone}`}>{timing.label}</span>;
@@ -601,19 +615,22 @@ export default function Projects() {
       {
         key: "current_due_date",
         label: "Due",
-        defaultWidth: 100,
+        defaultWidth: 110,
+        maxWidth: 140,
         render: (t) => <InlineDate value={t.current_due_date} editable={canEditTask(t)} onCommit={(v) => v && updateTask(t.id, { current_due_date: v })} />,
       },
       {
         key: "estimated_hours",
         label: "Est. hrs",
-        defaultWidth: 80,
+        defaultWidth: 90,
+        maxWidth: 120,
         render: (t) => <InlineNumber value={t.estimated_hours} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { estimated_hours: v })} />,
       },
       {
         key: "time_spent_hours",
         label: "Spent hrs",
-        defaultWidth: 85,
+        defaultWidth: 95,
+        maxWidth: 120,
         render: (t) => <InlineNumber value={t.time_spent_hours ?? 0} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { time_spent_hours: v ?? 0 })} />,
       },
     ],
@@ -755,6 +772,7 @@ export default function Projects() {
                   label: "",
                   defaultWidth: 40,
                   minWidth: 36,
+                  maxWidth: 48,
                   render: (p) =>
                     canEditProject(p) ? (
                       <button className="row-icon-btn" onClick={() => archiveProject(p)} title="Archive project">
@@ -845,6 +863,7 @@ export default function Projects() {
                   label: "",
                   defaultWidth: 40,
                   minWidth: 36,
+                  maxWidth: 48,
                   render: (t) =>
                     canManageTasksIn(t.project_id) ? (
                       <button className="row-icon-btn" onClick={() => archiveTask(t)} title="Archive task">

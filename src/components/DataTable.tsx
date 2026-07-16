@@ -54,13 +54,16 @@ export default function DataTable<T>({
     .map((k) => columns.find((c) => c.key === k)!)
     .filter(Boolean);
 
-  function widthFor(key: string, def?: number, min?: number) {
+  function widthFor(key: string, def?: number, min?: number, max?: number) {
     const stored = view.columnWidths[key] ?? def ?? 140;
     // Clamp against the column's minWidth so a stale stored width (saved
     // before a minWidth existed, or from a narrower column set) can't make
     // the <td> narrower than the <th> above it — that mismatch is what
     // made row content look like it was "floating" into the next column.
-    return Math.max(stored, min ?? MIN_COL_WIDTH);
+    // Also clamp against maxWidth so a column sized for short content
+    // (dates, statuses) can't be dragged out to an unreasonable width.
+    const withMin = Math.max(stored, min ?? MIN_COL_WIDTH);
+    return max ? Math.min(withMin, max) : withMin;
   }
 
   function handleDrop(targetKey: string) {
@@ -80,14 +83,16 @@ export default function DataTable<T>({
     e.stopPropagation();
     isResizingRef.current = true;
     const col = columns.find((c) => c.key === key);
-    const startWidth = widthFor(key, col?.defaultWidth, col?.minWidth);
+    const startWidth = widthFor(key, col?.defaultWidth, col?.minWidth, col?.maxWidth);
     const minForCol = col?.minWidth ?? MIN_COL_WIDTH;
+    const maxForCol = col?.maxWidth;
     resizeState.current = { key, startX: e.clientX, startWidth };
 
     function onMove(ev: MouseEvent) {
       if (!resizeState.current) return;
       const delta = ev.clientX - resizeState.current.startX;
-      const newWidth = Math.max(minForCol, resizeState.current.startWidth + delta);
+      let newWidth = Math.max(minForCol, resizeState.current.startWidth + delta);
+      if (maxForCol) newWidth = Math.min(newWidth, maxForCol);
       view.columnWidths[resizeState.current.key] = newWidth;
       forceRerender((n) => n + 1);
     }
@@ -136,8 +141,8 @@ export default function DataTable<T>({
             onDrop={() => handleDrop(c.key)}
             style={{
               position: "relative",
-              width: widthFor(c.key, c.defaultWidth, c.minWidth),
-              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth),
+              width: widthFor(c.key, c.defaultWidth, c.minWidth, c.maxWidth),
+              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth, c.maxWidth),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
               cursor: "grab",
               userSelect: "none",
@@ -154,7 +159,6 @@ export default function DataTable<T>({
             />
           </th>
         ))}
-        <th style={{ width: "auto" }} />
       </tr>
     </thead>
   );
@@ -166,8 +170,8 @@ export default function DataTable<T>({
           <td
             key={c.key}
             style={{
-              width: widthFor(c.key, c.defaultWidth, c.minWidth),
-              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth),
+              width: widthFor(c.key, c.defaultWidth, c.minWidth, c.maxWidth),
+              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth, c.maxWidth),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -177,7 +181,6 @@ export default function DataTable<T>({
             {c.render(row)}
           </td>
         ))}
-        <td />
       </tr>
     );
   }
@@ -188,7 +191,7 @@ export default function DataTable<T>({
     body = (
       <tbody>
         <tr>
-          <td colSpan={(visibleColumns.length || 1) + 1} style={{ color: "var(--muted)" }}>
+          <td colSpan={visibleColumns.length || 1} style={{ color: "var(--muted)" }}>
             {emptyLabel}
           </td>
         </tr>
@@ -213,7 +216,7 @@ export default function DataTable<T>({
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>
                 <td
-                  colSpan={(visibleColumns.length || 1) + 1}
+                  colSpan={visibleColumns.length || 1}
                   style={{
                     fontWeight: 600,
                     color: groupTone ? TONE_STYLES[groupTone]?.text ?? "var(--navy)" : "var(--navy)",
@@ -230,7 +233,7 @@ export default function DataTable<T>({
               </tr>
               {!collapsed && groupRows.map((row) => renderRow(row))}
               {!collapsed && groupFooterRow && (
-                <tr>{groupFooterRow((visibleColumns.length || 1) + 1, { key: groupName, rows: groupRows })}</tr>
+                <tr>{groupFooterRow(visibleColumns.length || 1, { key: groupName, rows: groupRows })}</tr>
               )}
             </Fragment>
           );
@@ -241,7 +244,7 @@ export default function DataTable<T>({
     body = <tbody>{sortedRows.map((row) => renderRow(row))}</tbody>;
   }
 
-  const footerContent = footerRow ? footerRow((visibleColumns.length || 1) + 1) : null;
+  const footerContent = footerRow ? footerRow(visibleColumns.length || 1) : null;
 
   return (
     <table className="data-table" style={{ tableLayout: "fixed" }}>

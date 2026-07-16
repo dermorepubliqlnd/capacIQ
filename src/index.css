@@ -75,13 +75,16 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
    column (for drag-resize). A fixed-layout table with width:100% whose
    declared column widths sum to less than its container used to stretch
    every column proportionally to fill the gap — silently making each <td>
-   wider than the width its own inline style said, which is what made row
-   content (like the add-subtask button) drift toward the next column's
-   space. Rather than shrinking the whole table to its columns' exact sum
-   (which left an empty-looking gap on the right), DataTable renders one
-   extra unconstrained trailing column that absorbs the leftover width —
-   so real columns keep their exact set widths, and the table still fills
-   its container the way a normal table does. */
+   wider than the width its own inline style said (this is what made row
+   content like the add-subtask button drift toward the next column's
+   space, and made resizing feel unreliable). A trailing filler column was
+   tried to fill the leftover width instead, but colspan'd rows (group
+   headers) didn't reliably extend their background across it, which
+   looked worse. Settled on width:auto plus more generous per-column
+   default/max widths (see columns in Projects.tsx) — the table is exactly
+   as wide as its columns say, and those are now sized to comfortably fill
+   a normal window without relying on any stretch trick. */
+.data-table { width: auto; }
 .data-table th {
   text-align: left;
   font-size: var(--font-caption);

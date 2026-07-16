@@ -5,6 +5,11 @@ export interface ColumnDef<T> {
   label: string;
   minWidth?: number;
   defaultWidth?: number;
+  // Caps how far this column can be dragged wider — sized per column's
+  // realistic max content (a name/title needs much more room than a date
+  // or a short status word), so resizing can't blow a column out to an
+  // unreasonable width.
+  maxWidth?: number;
   render: (row: T) => ReactNode;
 }
 
