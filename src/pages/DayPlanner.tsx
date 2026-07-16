@@ -284,7 +284,7 @@ export default function DayPlanner() {
         )}
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+      <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
