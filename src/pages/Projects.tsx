@@ -85,6 +85,16 @@ function statusTone(group: "to_do" | "in_progress" | "complete" | null): "succes
   return "neutral";
 }
 
+// Supabase date columns come back as plain "YYYY-MM-DD" strings. Passing
+// that straight to `new Date(...)` parses it as UTC midnight, which in any
+// timezone behind UTC silently rolls it back a calendar day (a task due
+// "today" would parse as "yesterday" and read as overdue). Parsing the
+// pieces directly as LOCAL date components avoids that shift entirely.
+function parseLocalDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, (m ?? 1) - 1, d ?? 1);
+}
+
 // Whole-calendar-day difference (ignores time-of-day) so "due today" never
 // reads as overdue — a day only counts as passed once the clock actually
 // rolls into the next calendar date.
@@ -96,9 +106,9 @@ function calendarDaysBetween(a: Date, b: Date): number {
 
 function timingOf(t: TaskRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(TASK_STATUS_GROUPED, t.status);
-  const due = new Date(t.current_due_date);
+  const due = parseLocalDate(t.current_due_date);
   if (group === "complete") {
-    if (t.validated_completion_date && new Date(t.validated_completion_date) > due) return { label: "Late", tone: "danger" };
+    if (t.validated_completion_date && parseLocalDate(t.validated_completion_date) > due) return { label: "Late", tone: "danger" };
     return { label: "On time", tone: "success" };
   }
   const daysLeft = calendarDaysBetween(due, new Date());
