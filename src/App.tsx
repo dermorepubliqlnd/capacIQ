@@ -8,6 +8,7 @@ import ExtensionRequests from "./pages/ExtensionRequests";
 import Capacity from "./pages/Capacity";
 import Admin from "./pages/Admin";
 import Login from "./pages/Login";
+import SetPassword from "./pages/SetPassword";
 
 // Real client-side routes (React Router) — each screen has its own URL,
 // so the browser's native Back/Forward buttons work without any custom
@@ -18,6 +19,14 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route
+          path="/set-password"
+          element={
+            <RequireAuth>
+              <SetPassword />
+            </RequireAuth>
+          }
+        />
         <Route
           element={
             <RequireAuth>
