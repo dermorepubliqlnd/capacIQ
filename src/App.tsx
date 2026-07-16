@@ -4,7 +4,7 @@ import RequireAuth from "./components/RequireAuth";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import ExtensionRequests from "./pages/ExtensionRequests";
-import Capacity from "./pages/Capacity";
+import Utilization from "./pages/Utilization";
 import Admin from "./pages/Admin";
 import DayPlanner from "./pages/DayPlanner";
 import HolidayCalendar from "./pages/HolidayCalendar";
@@ -45,7 +45,7 @@ export default function App() {
           <Route path="/tasks" element={<Navigate to="/projects" replace />} />
           <Route path="/tasks/:taskId" element={<Navigate to="/projects" replace />} />
           <Route path="/extension-requests" element={<ExtensionRequests />} />
-          <Route path="/capacity" element={<Capacity />} />
+          <Route path="/utilization" element={<Utilization />} />
           <Route path="/day-planner" element={<DayPlanner />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/admin/holidays" element={<HolidayCalendar />} />

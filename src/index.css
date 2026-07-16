@@ -15,6 +15,8 @@
   --warning-text: #b8860b;
   --danger-bg: #fdecec;
   --danger-text: #c1443c;
+  --available-bg: #f1f8ec;
+  --available-text: #6a9f3f;
   --hover-bg: #eef2f5;
   --radius-sm: 3px;
   --radius-md: 4px;
@@ -128,6 +130,7 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 .status-pill.warning { background: var(--warning-bg); color: var(--warning-text); }
 .status-pill.danger { background: var(--danger-bg); color: var(--danger-text); }
 .status-pill.neutral { background: var(--hover-bg); color: var(--muted); }
+.status-pill.available { background: var(--available-bg); color: var(--available-text); }
 
 button { font-family: var(--font); border-radius: var(--radius-sm); font-size: var(--font-body); font-weight: 500; }
 input, select { font-family: var(--font); }

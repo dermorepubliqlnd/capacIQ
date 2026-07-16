@@ -731,8 +731,9 @@ export default function Projects() {
       {
         key: "effort",
         label: "Effort",
-        defaultWidth: 120,
-        maxWidth: 150,
+        defaultWidth: 80,
+        minWidth: 60,
+        maxWidth: 100,
         render: (t) => {
           const tone = t.effort ? effortColors[t.effort] ?? "neutral" : "neutral";
           const Icon = t.effort ? TASK_EFFORT_ICON[t.effort] : null;
@@ -744,9 +745,8 @@ export default function Projects() {
               options={TASK_EFFORT_OPTIONS}
               renderReadOnly={() =>
                 t.effort ? (
-                  <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    {Icon && <Icon size={11} />}
-                    {t.effort}
+                  <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }} title={t.effort}>
+                    {Icon && <Icon size={12} />}
                   </span>
                 ) : (
                   "—"

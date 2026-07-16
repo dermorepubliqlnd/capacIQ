@@ -7,7 +7,7 @@ const mainItems = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/projects", label: "Projects & Tasks" },
   { to: "/extension-requests", label: "Extension requests" },
-  { to: "/capacity", label: "Capacity" },
+  { to: "/utilization", label: "Utilization" },
   { to: "/day-planner", label: "Day Planner" },
 ];
 
