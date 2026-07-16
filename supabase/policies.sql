@@ -84,3 +84,32 @@ $$;
 create policy people_update on people for update
   using (my_access_level() = 'full')
   with check (my_access_level() = 'full');
+
+-- Write access for Projects & Tasks (added when building the real
+-- Projects/Tasks list pages). Full Access can create/edit anything;
+-- a project owner can edit their own project and add tasks to it;
+-- a task's assignee can update their own task (e.g. status, hours logged).
+create policy projects_insert on projects for insert
+  with check (my_access_level() = 'full');
+
+create policy projects_update on projects for update
+  using (my_access_level() = 'full' or owner_id = my_person_id())
+  with check (my_access_level() = 'full' or owner_id = my_person_id());
+
+create policy tasks_insert on tasks for insert
+  with check (
+    my_access_level() = 'full'
+    or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
+  );
+
+create policy tasks_update on tasks for update
+  using (
+    my_access_level() = 'full'
+    or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
+    or assignee_id = my_person_id()
+  )
+  with check (
+    my_access_level() = 'full'
+    or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
+    or assignee_id = my_person_id()
+  );
