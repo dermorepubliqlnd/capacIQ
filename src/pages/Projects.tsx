@@ -49,6 +49,7 @@ interface TaskRow {
   name: string;
   status: string | null;
   assignee_id: string | null;
+  start_date: string | null;
   current_due_date: string;
   estimated_hours: number | null;
   time_spent_hours: number | null;
@@ -60,7 +61,7 @@ interface TaskRow {
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "category", "effort_level", "start_date", "end_date"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "current_due_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "start_date", "current_due_date", "estimated_hours", "time_spent_hours"];
 
 function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status);
@@ -603,6 +604,13 @@ export default function Projects() {
         ),
       },
       {
+        key: "start_date",
+        label: "Start",
+        defaultWidth: 110,
+        maxWidth: 140,
+        render: (t) => <InlineDate value={t.start_date} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { start_date: v || null })} />,
+      },
+      {
         key: "timing",
         label: "Timing",
         defaultWidth: 110,
@@ -653,6 +661,7 @@ export default function Projects() {
     { key: "project", label: "Project", getValue: (t) => projectName(t.project_id) },
     { key: "assignee", label: "Assignee", getValue: (t) => ownerName(t.assignee_id) },
     { key: "status", label: "Status", getValue: (t) => t.status ?? "" },
+    { key: "start_date", label: "Start date", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
     { key: "current_due_date", label: "Due date", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
     { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => t.time_spent_hours ?? null },

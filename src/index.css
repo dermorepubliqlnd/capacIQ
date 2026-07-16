@@ -419,3 +419,18 @@ input.inline-cell[type="number"] {
   font-size: 10px;
   font-weight: 600;
 }
+
+/* Day Planner: small prev/next week nav buttons */
+.planner-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.planner-nav-btn:hover { background: var(--hover-bg); }

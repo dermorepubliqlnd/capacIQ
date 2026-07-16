@@ -8,9 +8,13 @@ const mainItems = [
   { to: "/projects", label: "Projects & Tasks" },
   { to: "/extension-requests", label: "Extension requests" },
   { to: "/capacity", label: "Capacity" },
+  { to: "/day-planner", label: "Day Planner" },
 ];
 
-const adminItems = [{ to: "/admin", label: "User management" }];
+const adminItems = [
+  { to: "/admin", label: "User management" },
+  { to: "/admin/holidays", label: "Holiday calendar" },
+];
 
 function NavGroup({ title, items }: { title: string; items: typeof mainItems }) {
   return (

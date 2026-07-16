@@ -6,6 +6,8 @@ import Projects from "./pages/Projects";
 import ExtensionRequests from "./pages/ExtensionRequests";
 import Capacity from "./pages/Capacity";
 import Admin from "./pages/Admin";
+import DayPlanner from "./pages/DayPlanner";
+import HolidayCalendar from "./pages/HolidayCalendar";
 import Login from "./pages/Login";
 import SetPassword from "./pages/SetPassword";
 
@@ -44,7 +46,9 @@ export default function App() {
           <Route path="/tasks/:taskId" element={<Navigate to="/projects" replace />} />
           <Route path="/extension-requests" element={<ExtensionRequests />} />
           <Route path="/capacity" element={<Capacity />} />
+          <Route path="/day-planner" element={<DayPlanner />} />
           <Route path="/admin" element={<Admin />} />
+          <Route path="/admin/holidays" element={<HolidayCalendar />} />
         </Route>
       </Routes>
     </HashRouter>
