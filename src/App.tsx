@@ -1,10 +1,12 @@
 import { HashRouter, Routes, Route } from "react-router-dom";
 import AppLayout from "./components/AppLayout";
+import RequireAuth from "./components/RequireAuth";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import Tasks from "./pages/Tasks";
 import ExtensionRequests from "./pages/ExtensionRequests";
 import Capacity from "./pages/Capacity";
+import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 
 // Real client-side routes (React Router) — each screen has its own URL,
@@ -16,7 +18,13 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route element={<AppLayout />}>
+        <Route
+          element={
+            <RequireAuth>
+              <AppLayout />
+            </RequireAuth>
+          }
+        >
           <Route path="/" element={<Dashboard />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:projectId" element={<Projects />} />
@@ -24,6 +32,7 @@ export default function App() {
           <Route path="/tasks/:taskId" element={<Tasks />} />
           <Route path="/extension-requests" element={<ExtensionRequests />} />
           <Route path="/capacity" element={<Capacity />} />
+          <Route path="/admin" element={<Admin />} />
         </Route>
       </Routes>
     </HashRouter>

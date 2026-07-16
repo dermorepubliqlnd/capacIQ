@@ -65,3 +65,22 @@ create policy extension_requests_insert on extension_requests for insert
 
 create policy utilization_select on utilization_snapshots for select
   using (my_access_level() = 'full' or person_id = my_person_id());
+
+-- Soft-deactivation: is_active gates all RLS access without needing an
+-- auth-level lockout. Added when User Management/Admin was built (Phase:
+-- Admin panel) so deactivating a person instantly revokes data access.
+alter table people add column if not exists is_active boolean not null default true;
+
+create or replace function my_person_id() returns uuid
+language sql stable security definer as $$
+  select id from people where auth_user_id = auth.uid() and is_active = true
+$$;
+
+create or replace function my_access_level() returns text
+language sql stable security definer as $$
+  select access_level from people where auth_user_id = auth.uid() and is_active = true
+$$;
+
+create policy people_update on people for update
+  using (my_access_level() = 'full')
+  with check (my_access_level() = 'full');

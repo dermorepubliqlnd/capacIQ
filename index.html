@@ -2,16 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700&family=Sora:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
     <title>CapacIQ — L&D Resource Planning</title>
     <!--
-      No external CDN scripts here on purpose (no jsdelivr/unpkg/etc).
-      Everything ships bundled from node_modules via Vite so the app
-      works behind corporate firewalls that block CDN domains on Edge.
+      No external CDN *script* tags here on purpose (no jsdelivr/unpkg/etc) —
+      everything ships bundled from node_modules via Vite so the app works
+      behind corporate firewalls that block CDN domains on Edge. Google Fonts
+      stylesheet links above are plain CSS, not JS, so they aren't affected.
+
+      Favicon links use relative "./" paths (not "/") because the site is
+      served from a GitHub Pages subpath (/capacIQ/) — an absolute "/" path
+      resolves to the domain root and 404s.
     -->
   </head>
   <body>

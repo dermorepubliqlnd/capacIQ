@@ -12,7 +12,7 @@ export default function Dashboard() {
             <Users size={15} />
           </div>
           <p className="metric-label">Team utilization</p>
-          <p className="metric-value">78%</p>
+          <p className="metric-value metric-value-lg">78%</p>
           <p className="metric-sub">Planned, this month</p>
         </div>
 
@@ -21,7 +21,7 @@ export default function Dashboard() {
             <Clock3 size={15} />
           </div>
           <p className="metric-label">Open extension requests</p>
-          <p className="metric-value">3</p>
+          <p className="metric-value metric-value-lg">3</p>
           <p className="metric-sub">Awaiting manager decision</p>
         </div>
 
@@ -30,7 +30,7 @@ export default function Dashboard() {
             <AlertTriangle size={15} />
           </div>
           <p className="metric-label">Projects at risk</p>
-          <p className="metric-value">2</p>
+          <p className="metric-value metric-value-lg">2</p>
           <p className="metric-sub">Delayed or behind pace</p>
         </div>
 
@@ -39,7 +39,7 @@ export default function Dashboard() {
             <FolderKanban size={15} />
           </div>
           <p className="metric-label">Active projects</p>
-          <p className="metric-value">12</p>
+          <p className="metric-value metric-value-lg">12</p>
           <p className="metric-sub">In development or delivery</p>
         </div>
       </div>
