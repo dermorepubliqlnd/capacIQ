@@ -1,19 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
-import { Users, Gauge, AlertTriangle, ListChecks, Minus, Circle, CheckCircle2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, AlertTriangle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, TASK_EFFORT_POINTS, statusGroupOf } from "../lib/notionOptions";
 
 interface PersonRow {
   id: string;
   name: string;
-  reports_to: string | null;
   daily_capacity_hours: number;
   is_active: boolean;
 }
-
+interface ProjectRow {
+  id: string;
+  name: string;
+}
 interface TaskRow {
   id: string;
   project_id: string;
+  name: string;
   assignee_id: string | null;
   status: string | null;
   start_date: string | null;
@@ -21,52 +24,80 @@ interface TaskRow {
   effort: string | null;
   is_archived: boolean;
 }
-
-interface ProjectRow {
+interface AvailabilityRow {
   id: string;
+  person_id: string;
+  date: string;
+  status: "off" | "half_day";
+}
+interface HolidayRow {
+  id: string;
+  date: string;
   name: string;
+  category: "legal_ph" | "local" | "internal";
 }
 
-// A "standard" workday, used only to normalize weekly point-capacity — a
-// person whose own daily capacity (set in User management) equals this
-// gets a weekly capacity of exactly 5 points, i.e. one Heavy (2-pt) task's
-// worth of work most days. Not shown anywhere; purely a conversion factor.
-const STANDARD_DAILY_HOURS = 7.5;
-const WORKING_DAYS_PER_WEEK = 5;
-
+// Same local-timezone date helpers used everywhere else in the app — never
+// `new Date("YYYY-MM-DD")` directly (parses as UTC midnight, can shift a
+// day in negative-UTC timezones).
 function toISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function addDays(d: Date, n: number): Date {
-  const copy = new Date(d);
-  copy.setDate(copy.getDate() + n);
-  return copy;
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
 }
-// Monday-based start of week, in local time (never UTC — see parseLocalDate).
 function startOfWeek(d: Date): Date {
-  const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const day = copy.getDay(); // 0=Sun..6=Sat
+  const r = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = r.getDay();
   const diff = day === 0 ? -6 : 1 - day;
-  return addDays(copy, diff);
+  return addDays(r, diff);
 }
-// Never use `new Date("YYYY-MM-DD")` directly — it parses as UTC midnight
-// and can shift a day in negative-UTC-offset timezones (e.g. PH is +8, so
-// this specific bug wouldn't hit Manila, but the team may travel/VPN).
 function parseLocalDate(iso: string): Date {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d);
 }
+const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const RANGE_OPTIONS = [1, 2, 4] as const;
+const CELL_W = 46;
+const LABEL_W = 220;
+
+// A "standard" workday, used only to normalize daily point-capacity — a
+// person whose own daily capacity (set in User management) equals this
+// has a capacity of exactly 1 point/day, i.e. one Heavy (2-pt) task every
+// other day. Not shown anywhere; purely a conversion factor.
+const STANDARD_DAILY_HOURS = 7.5;
+
+function rollupCellStyle(i: number): CSSProperties {
+  return {
+    width: CELL_W,
+    minWidth: CELL_W,
+    textAlign: "center",
+    padding: "6px 2px",
+    borderBottom: "1px solid var(--border)",
+    borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
+  };
+}
+function subCellStyle(i: number): CSSProperties {
+  return {
+    width: CELL_W,
+    minWidth: CELL_W,
+    textAlign: "center",
+    padding: "4px 2px",
+    borderBottom: "1px solid var(--border)",
+    borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
+  };
+}
 
 // The 5 tiers Sandra specified, verbatim thresholds: 0 = grey, 1-59% =
-// light green, 60-80% = green, 81-100% = yellow, >100% = red. Icons use
-// the pill's own darker text color automatically (Lucide strokes inherit
-// currentColor), so they read as "darker line icons" against the fill.
-function tierOf(pct: number): { key: string; label: string; tone: string; Icon: typeof Minus } {
-  if (pct <= 0) return { key: "none", label: "No project", tone: "neutral", Icon: Minus };
-  if (pct < 60) return { key: "available", label: "Available", tone: "available", Icon: Circle };
-  if (pct <= 80) return { key: "healthy", label: "Healthy", tone: "success", Icon: CheckCircle2 };
-  if (pct <= 100) return { key: "near_full", label: "Near full capacity", tone: "warning", Icon: AlertTriangle };
-  return { key: "overloaded", label: "Overloaded", tone: "danger", Icon: AlertTriangle };
+// light green, 60-80% = green, 81-100% = yellow, >100% = red.
+function tierOf(pct: number): { key: string; label: string; bg?: string; fg: string; Icon: typeof Minus } {
+  if (pct <= 0) return { key: "none", label: "No project", fg: "var(--muted)", Icon: Minus };
+  if (pct < 60) return { key: "available", label: "Available", bg: "var(--available-bg)", fg: "var(--available-text)", Icon: Circle };
+  if (pct <= 80) return { key: "healthy", label: "Healthy", bg: "var(--success-bg)", fg: "var(--success-text)", Icon: CheckCircle2 };
+  if (pct <= 100) return { key: "near_full", label: "Near full capacity", bg: "var(--warning-bg)", fg: "var(--warning-text)", Icon: AlertTriangle };
+  return { key: "overloaded", label: "Overloaded", bg: "var(--danger-bg)", fg: "var(--danger-text)", Icon: AlertTriangle };
 }
 
 const LEGEND = [
@@ -77,233 +108,392 @@ const LEGEND = [
   { pct: "100%+", label: "Overloaded", tone: "danger", Icon: AlertTriangle },
 ];
 
+// Every open task's effort points are spread evenly across its own Mon-Fri
+// working days between start and due date (fallback: the due date itself,
+// if that window is entirely a weekend) — this is what makes the grid
+// date-aware instead of lumping a task's whole effort into every day.
+function taskWorkingDays(t: TaskRow): string[] {
+  const windowStart = parseLocalDate(t.start_date ?? t.current_due_date);
+  const windowEnd = parseLocalDate(t.current_due_date);
+  if (windowEnd < windowStart) return [t.current_due_date];
+  const days: string[] = [];
+  for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) days.push(toISO(d));
+  }
+  return days.length ? days : [t.current_due_date];
+}
+
 export default function Utilization() {
   const [people, setPeople] = useState<PersonRow[]>([]);
-  const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
+  const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   const [loading, setLoading] = useState(true);
+
   const [weekOffset, setWeekOffset] = useState(0);
+  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(2);
+  const [expanded, setExpanded] = useState<string[]>([]);
+
+  async function loadAll() {
+    setLoading(true);
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }] = await Promise.all([
+      supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
+      supabase.from("projects").select("id,name").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
+      supabase.from("person_availability").select("*"),
+      supabase.from("holidays").select("*"),
+    ]);
+    setPeople((p as PersonRow[]) ?? []);
+    setProjects((pr as ProjectRow[]) ?? []);
+    setTasks((tk as TaskRow[]) ?? []);
+    setAvailability((av as AvailabilityRow[]) ?? []);
+    setHolidays((hol as HolidayRow[]) ?? []);
+    setLoading(false);
+  }
 
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const [{ data: peopleData }, { data: taskData }, { data: projectData }] = await Promise.all([
-        supabase.from("people").select("id,name,reports_to,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
-        supabase
-          .from("tasks")
-          .select("id,project_id,assignee_id,status,start_date,current_due_date,effort,is_archived")
-          .eq("is_archived", false),
-        supabase.from("projects").select("id,name").eq("is_archived", false),
-      ]);
-      setPeople((peopleData as PersonRow[]) ?? []);
-      setTasks((taskData as TaskRow[]) ?? []);
-      setProjects((projectData as ProjectRow[]) ?? []);
-      setLoading(false);
-    })();
+    loadAll();
   }, []);
 
-  const managerName = (id: string | null) => people.find((p) => p.id === id)?.name ?? "—";
+  const days = useMemo(() => {
+    const base = addDays(startOfWeek(new Date()), weekOffset * 7);
+    return Array.from({ length: rangeWeeks * 7 }, (_, i) => addDays(base, i));
+  }, [weekOffset, rangeWeeks]);
 
-  const weekStart = useMemo(() => addDays(startOfWeek(new Date()), weekOffset * 7), [weekOffset]);
-  const weekDays = useMemo(() => Array.from({ length: WORKING_DAYS_PER_WEEK }, (_, i) => toISO(addDays(weekStart, i))), [weekStart]);
-  const weekEndLabel = addDays(weekStart, 4);
-  const weekLabel = `${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${weekEndLabel.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })}`;
+  function jumpToDate(dateStr: string) {
+    if (!dateStr) return;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const chosenMonday = startOfWeek(new Date(y, (m ?? 1) - 1, d ?? 1));
+    const todayMonday = startOfWeek(new Date());
+    const diffWeeks = Math.round((chosenMonday.getTime() - todayMonday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    setWeekOffset(diffWeeks);
+  }
+  const weeks: Date[][] = [];
+  for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
 
-  // The core of the date-aware rewrite: instead of summing a task's whole
-  // remaining estimate regardless of when it's due (the old behavior that
-  // lumped Jo's tasks — due weeks apart — into one blended number), each
-  // task's effort points are spread evenly across its own Mon-Fri working
-  // days between start and due date, and only the days that land in the
-  // week being viewed count toward that week's utilization.
-  const rows = useMemo(() => {
-    return people
-      .map((person) => {
-        const openTasks = tasks.filter((t) => {
-          if (t.assignee_id !== person.id) return false;
-          return statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete";
-        });
+  const holidayByDate = useMemo(() => {
+    const m = new Map<string, HolidayRow>();
+    holidays.forEach((h) => m.set(h.date, h));
+    return m;
+  }, [holidays]);
 
-        let weeklyPoints = 0;
-        let tasksThisWeek = 0;
-        let tasksMissingEffort = 0;
-        const projectSet = new Set<string>();
+  function availabilityFor(personId: string, dateStr: string): AvailabilityRow | undefined {
+    return availability.find((a) => a.person_id === personId && a.date === dateStr);
+  }
+  function dayBlocked(personId: string, dateStr: string, dow: number): "holiday" | "off" | "weekend" | null {
+    if (dow === 0 || dow === 6) return "weekend";
+    if (holidayByDate.has(dateStr)) return "holiday";
+    if (availabilityFor(personId, dateStr)?.status === "off") return "off";
+    return null;
+  }
 
-        for (const t of openTasks) {
-          const points = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
-          if (!t.effort) tasksMissingEffort++;
+  function openTasksFor(personId: string): TaskRow[] {
+    return tasks.filter((t) => t.assignee_id === personId && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
+  }
 
-          const windowStartISO = t.start_date ?? t.current_due_date;
-          const windowStart = parseLocalDate(windowStartISO);
-          const windowEnd = parseLocalDate(t.current_due_date);
-          if (windowEnd < windowStart) continue; // guarded against at entry, but be defensive
+  // A task's points on a specific date — 0 if that date isn't one of its
+  // own working days (out of window, or effort not set yet).
+  function taskPointsOnDate(t: TaskRow, dateStr: string): number {
+    const points = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
+    if (points === 0) return 0;
+    const workingDays = taskWorkingDays(t);
+    if (!workingDays.includes(dateStr)) return 0;
+    return points / workingDays.length;
+  }
 
-          const workingDays: string[] = [];
-          for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
-            const dow = d.getDay();
-            if (dow !== 0 && dow !== 6) workingDays.push(toISO(d));
-          }
-          // Fallback: a window that's entirely a weekend (e.g. a task due
-          // Saturday with no start date) still needs to count somewhere,
-          // so treat the due date itself as the single working day.
-          if (workingDays.length === 0) workingDays.push(t.current_due_date);
+  function dailyPointsFor(personId: string, dateStr: string): number {
+    return openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr), 0);
+  }
 
-          const pointsPerDay = points / workingDays.length;
-          const daysInThisWeek = workingDays.filter((iso) => weekDays.includes(iso));
-          if (daysInThisWeek.length > 0) {
-            weeklyPoints += pointsPerDay * daysInThisWeek.length;
-            tasksThisWeek++;
-            projectSet.add(t.project_id);
-          }
-        }
-
-        const weeklyPointCapacity = (person.daily_capacity_hours / STANDARD_DAILY_HOURS) * WORKING_DAYS_PER_WEEK;
-        const utilizationPct = weeklyPointCapacity > 0 ? (weeklyPoints / weeklyPointCapacity) * 100 : 0;
-
-        return {
-          person,
-          tasksThisWeek,
-          tasksMissingEffort,
-          weeklyPoints,
-          weeklyPointCapacity,
-          utilizationPct,
-          projectCount: projectSet.size,
-          tier: tierOf(utilizationPct),
-        };
-      })
-      .sort((a, b) => b.utilizationPct - a.utilizationPct);
-  }, [people, tasks, weekDays]);
-
-  const teamCapacity = rows.reduce((sum, r) => sum + r.weeklyPointCapacity, 0);
-  const teamPoints = rows.reduce((sum, r) => sum + r.weeklyPoints, 0);
-  const teamUtilization = teamCapacity > 0 ? Math.round((teamPoints / teamCapacity) * 100) : 0;
-  const overloadedCount = rows.filter((r) => r.tier.key === "overloaded").length;
-  const nearFullCount = rows.filter((r) => r.tier.key === "near_full").length;
-  const tasksThisWeekCount = rows.reduce((sum, r) => sum + r.tasksThisWeek, 0);
-  const missingEffortCount = rows.reduce((sum, r) => sum + r.tasksMissingEffort, 0);
+  function dailyCapacityFor(person: PersonRow, halfDay: boolean): number {
+    const base = (person.daily_capacity_hours / STANDARD_DAILY_HOURS) * (halfDay ? 0.5 : 1);
+    return base;
+  }
 
   return (
     <div>
       <h1>Utilization</h1>
       <p className="subtitle">
-        Weekly utilization by person — each task's Light/Moderate/Heavy effort is spread across its own start-to-due working days, so
-        only the days that fall in the week below count. Set effort and dates on tasks in Projects &amp; Tasks.
+        Same grid as the Day Planner, but auto-computed: each task's Light/Moderate/Heavy effort is spread across its own start-to-due
+        working days. Set effort and dates on tasks in Projects &amp; Tasks — this view updates automatically.
       </p>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <button className="planner-nav-btn" onClick={() => setWeekOffset((w) => w - 1)} title="Previous week">
-          <ChevronLeft size={13} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <button onClick={() => setWeekOffset((w) => w - rangeWeeks)} className="planner-nav-btn" title={`Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
+          <ChevronLeft size={14} />
         </button>
-        <button className="planner-nav-btn" onClick={() => setWeekOffset((w) => w + 1)} title="Next week">
-          <ChevronRight size={13} />
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--navy)", minWidth: 150 }}>
+          {days[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })} –{" "}
+          {days[days.length - 1].toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+        </span>
+        <button onClick={() => setWeekOffset((w) => w + rangeWeeks)} className="planner-nav-btn" title={`Next ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
+          <ChevronRight size={14} />
         </button>
-        <span style={{ fontWeight: 600, color: "var(--navy)", fontSize: 13 }}>{weekLabel}</span>
         {weekOffset !== 0 && (
-          <button className="row-icon-btn" onClick={() => setWeekOffset(0)} title="Back to this week" style={{ fontSize: 11, width: "auto", padding: "0 8px" }}>
-            This week
+          <button
+            onClick={() => setWeekOffset(0)}
+            style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+          >
+            Today
           </button>
         )}
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          Show
+          <select
+            value={rangeWeeks}
+            onChange={(e) => setRangeWeeks(Number(e.target.value) as (typeof RANGE_OPTIONS)[number])}
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          >
+            {RANGE_OPTIONS.map((w) => (
+              <option key={w} value={w}>
+                {w} week{w > 1 ? "s" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          Jump to
+          <input
+            type="date"
+            onChange={(e) => jumpToDate(e.target.value)}
+            style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          />
+        </label>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
-        <div className="metric-card">
-          <div className="metric-icon teal">
-            <Gauge size={15} />
-          </div>
-          <p className="metric-label">Team utilization</p>
-          <p className="metric-value metric-value-lg">{teamUtilization}%</p>
-          <p className="metric-sub">{rows.length} active people</p>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-icon danger">
-            <AlertTriangle size={15} />
-          </div>
-          <p className="metric-label">Overloaded</p>
-          <p className="metric-value metric-value-lg">{overloadedCount}</p>
-          <p className="metric-sub">Over 100% this week</p>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-icon warning">
-            <Users size={15} />
-          </div>
-          <p className="metric-label">Near full capacity</p>
-          <p className="metric-value metric-value-lg">{nearFullCount}</p>
-          <p className="metric-sub">81–100% this week</p>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-icon">
-            <ListChecks size={15} />
-          </div>
-          <p className="metric-label">Tasks landing this week</p>
-          <p className="metric-value metric-value-lg">{tasksThisWeekCount}</p>
-          <p className="metric-sub">{missingEffortCount > 0 ? `${missingEffortCount} missing an effort size` : "All sized"}</p>
-        </div>
-      </div>
-
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
-        ) : rows.length === 0 ? (
-          <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>No active people found.</div>
         ) : (
-          <table className="data-table" style={{ width: "100%", tableLayout: "fixed" }}>
+          <table style={{ borderCollapse: "collapse", width: "max-content" }}>
             <thead>
               <tr>
-                <th style={{ width: "22%" }}>Person</th>
-                <th style={{ width: "16%" }}>Reports to</th>
-                <th style={{ width: "14%" }}>Tasks this week</th>
-                <th style={{ width: "16%" }}>Points / capacity</th>
-                <th style={{ width: "32%" }}>Utilization</th>
+                <th
+                  style={{
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 2,
+                    background: "var(--surface)",
+                    width: LABEL_W,
+                    minWidth: LABEL_W,
+                    borderBottom: "1px solid var(--border)",
+                  }}
+                />
+                {weeks.map((week, wi) => (
+                  <th
+                    key={wi}
+                    colSpan={7}
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: "var(--muted)",
+                      textTransform: "uppercase",
+                      letterSpacing: 0.3,
+                      padding: "6px 4px",
+                      borderBottom: "1px solid var(--border)",
+                      borderLeft: "1px solid var(--border)",
+                    }}
+                  >
+                    Week of {week[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  </th>
+                ))}
+              </tr>
+              <tr>
+                <th
+                  style={{
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 2,
+                    background: "var(--surface)",
+                    width: LABEL_W,
+                    minWidth: LABEL_W,
+                    borderBottom: "1px solid var(--border)",
+                    textAlign: "left",
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    color: "var(--muted)",
+                  }}
+                >
+                  Person
+                </th>
+                {days.map((d, i) => {
+                  const dow = d.getDay();
+                  const weekend = dow === 0 || dow === 6;
+                  return (
+                    <th
+                      key={i}
+                      style={{
+                        width: CELL_W,
+                        minWidth: CELL_W,
+                        padding: "4px 2px",
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: weekend ? "var(--muted)" : "var(--navy)",
+                        background: weekend ? "var(--hover-bg)" : undefined,
+                        borderBottom: "1px solid var(--border)",
+                        borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
+                      }}
+                    >
+                      {WEEKDAY_LABEL[dow]} {d.getDate()}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ person, tasksThisWeek, projectCount, weeklyPoints, weeklyPointCapacity, utilizationPct, tier }) => (
-                <tr key={person.id}>
-                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>{person.name}</td>
-                  <td style={{ color: "var(--muted)" }}>{managerName(person.reports_to)}</td>
-                  <td>
-                    {tasksThisWeek}
-                    {projectCount > 0 && (
-                      <span style={{ color: "var(--muted)", fontSize: 10.5 }}> ({projectCount} project{projectCount > 1 ? "s" : ""})</span>
-                    )}
-                  </td>
-                  <td style={{ color: "var(--muted)" }}>
-                    {weeklyPoints.toFixed(1)} / {weeklyPointCapacity.toFixed(1)}
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span className={`status-pill ${tier.tone}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title={tier.label}>
-                        <tier.Icon size={11} />
-                        {tier.key === "none" ? tier.label : `${Math.round(utilizationPct)}%`}
-                      </span>
-                      <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--hover-bg)", overflow: "hidden" }}>
-                        <div
-                          style={{
-                            width: `${Math.max(0, Math.min(100, utilizationPct))}%`,
-                            height: "100%",
-                            background:
-                              tier.tone === "danger"
-                                ? "var(--danger-text)"
-                                : tier.tone === "warning"
-                                ? "var(--warning-text)"
-                                : tier.tone === "success"
-                                ? "var(--success-text)"
-                                : tier.tone === "available"
-                                ? "var(--available-text)"
-                                : "var(--muted)",
-                          }}
-                        />
-                      </div>
-                    </div>
+              {people.length === 0 ? (
+                <tr>
+                  <td colSpan={1 + days.length} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    No active people found.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                people.map((person) => {
+                  const isExpanded = expanded.includes(person.id);
+                  const items = openTasksFor(person.id);
+                  return (
+                    <Fragment key={person.id}>
+                      <tr style={{ background: "#fafbfc" }}>
+                        <td
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 1,
+                            background: "#fafbfc",
+                            padding: "6px 10px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--navy)",
+                            borderBottom: "1px solid var(--border)",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                          onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            {person.name}
+                          </span>
+                        </td>
+                        {days.map((d, i) => {
+                          const dateStr = toISO(d);
+                          const dow = d.getDay();
+                          const blocked = dayBlocked(person.id, dateStr, dow);
+
+                          if (blocked === "holiday") {
+                            const h = holidayByDate.get(dateStr)!;
+                            return (
+                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 9, fontWeight: 600 }}>
+                                Holiday
+                              </td>
+                            );
+                          }
+                          if (blocked === "weekend") {
+                            return <td key={i} style={{ ...rollupCellStyle(i), background: "var(--hover-bg)" }} />;
+                          }
+                          const av = availabilityFor(person.id, dateStr);
+                          if (blocked === "off") {
+                            return (
+                              <td key={i} style={{ ...rollupCellStyle(i), background: "#f1f2f4", color: "var(--muted)", fontSize: 9.5, fontWeight: 600 }}>
+                                Off
+                              </td>
+                            );
+                          }
+                          const points = dailyPointsFor(person.id, dateStr);
+                          const capacity = dailyCapacityFor(person, av?.status === "half_day");
+                          const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
+                          const tier = tierOf(pct);
+                          return (
+                            <td
+                              key={i}
+                              style={{
+                                ...rollupCellStyle(i),
+                                background: tier.bg,
+                                color: tier.fg,
+                                fontSize: 10,
+                                fontWeight: 600,
+                              }}
+                              title={tier.label}
+                            >
+                              {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
+                              {av?.status === "half_day" && <span style={{ fontSize: 8, marginLeft: 2 }}>½</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      {isExpanded &&
+                        (items.length === 0 ? (
+                          <tr>
+                            <td
+                              style={{
+                                position: "sticky",
+                                left: 0,
+                                background: "var(--surface)",
+                                padding: "4px 10px 4px 28px",
+                                fontSize: 11,
+                                color: "var(--muted)",
+                                borderBottom: "1px solid var(--border)",
+                              }}
+                            >
+                              No open tasks assigned.
+                            </td>
+                            {days.map((_, i) => (
+                              <td key={i} style={subCellStyle(i)} />
+                            ))}
+                          </tr>
+                        ) : (
+                          items.map((t) => {
+                            const proj = projects.find((p) => p.id === t.project_id);
+                            const workingDays = taskWorkingDays(t);
+                            return (
+                              <tr key={t.id}>
+                                <td
+                                  title={!t.effort ? `${t.name} — no effort size set yet` : t.name}
+                                  style={{
+                                    position: "sticky",
+                                    left: 0,
+                                    zIndex: 1,
+                                    background: "var(--surface)",
+                                    padding: "4px 10px 4px 28px",
+                                    fontSize: 11,
+                                    color: "var(--text-secondary)",
+                                    borderBottom: "1px solid var(--border)",
+                                    whiteSpace: "nowrap",
+                                    maxWidth: LABEL_W,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {t.name}
+                                  {proj && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
+                                  {!t.effort && <span style={{ fontSize: 9.5, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
+                                </td>
+                                {days.map((d, i) => {
+                                  const dateStr = toISO(d);
+                                  const dow = d.getDay();
+                                  const blocked = dayBlocked(person.id, dateStr, dow);
+                                  const win = workingDays.includes(dateStr);
+                                  const value = taskPointsOnDate(t, dateStr);
+                                  return (
+                                    <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 10, color: "var(--muted)" }}>
+                                      {value > 0 ? value.toFixed(1) : ""}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })
+                        ))}
+                    </Fragment>
+                  );
+                })
+              )}
             </tbody>
           </table>
         )}
@@ -320,11 +510,6 @@ export default function Utilization() {
           </div>
         ))}
       </div>
-
-      <p style={{ color: "var(--muted)", fontSize: 11, marginTop: 10 }}>
-        This reads live from Projects &amp; Tasks — set each task's Effort (Light/Moderate/Heavy) and its start/due dates there, and
-        this view updates automatically.
-      </p>
     </div>
   );
 }

@@ -7,6 +7,9 @@ const mainItems = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/projects", label: "Projects & Tasks" },
   { to: "/extension-requests", label: "Extension requests" },
+];
+
+const resourcePlanningItems = [
   { to: "/utilization", label: "Utilization" },
   { to: "/day-planner", label: "Day Planner" },
 ];
@@ -88,6 +91,7 @@ export default function AppLayout() {
         </div>
 
         <NavGroup title="Main" items={mainItems} />
+        <NavGroup title="Resource Planning" items={resourcePlanningItems} />
         {groups.length > 1 && <NavGroup title="Admin" items={adminItems} />}
 
         <div className="nav-spacer" style={{ flex: 1 }} />
