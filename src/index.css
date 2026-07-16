@@ -17,11 +17,15 @@
   --danger-text: #c1443c;
   --hover-bg: #eef2f5;
 
-  --font-page-title: 20px;
-  --font-section: 15px;
-  --font-body: 13.5px;
-  --font-table: 12px;
-  --font-caption: 11px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  --font-page-title: 18px;
+  --font-section: 13px;
+  --font-body: 12.5px;
+  --font-table: 11px;
+  --font-caption: 10px;
+  --font-metric: 22px;
 }
 
 * {
@@ -40,48 +44,111 @@ h1 {
   font-size: var(--font-page-title);
   font-weight: 700;
   color: var(--navy);
-  margin: 0 0 12px;
+  margin: 0 0 2px;
+}
+
+h1 + p.subtitle {
+  font-size: var(--font-caption);
+  color: var(--muted);
+  margin: 0 0 14px;
 }
 
 h2 {
   font-size: var(--font-section);
   font-weight: 700;
-  color: var(--accent);
+  color: var(--navy);
   margin: 0 0 8px;
 }
 
 table {
   font-size: var(--font-table);
+  border-collapse: collapse;
+  width: 100%;
 }
 
-.status-pill {
-  display: inline-block;
-  padding: 1px 9px;
-  border-radius: 10px;
-  font-size: 10.5px;
-  font-weight: 500;
+.data-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
 }
-.status-pill.success { background: var(--success-bg); color: var(--success-text); }
-.status-pill.warning { background: var(--warning-bg); color: var(--warning-text); }
-.status-pill.danger { background: var(--danger-bg); color: var(--danger-text); }
+
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-table);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
 
 .metric-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
+
+.metric-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--hover-bg);
+  color: var(--accent);
+}
+.metric-icon.teal { background: var(--success-bg); color: var(--success-text); }
+.metric-icon.warning { background: var(--warning-bg); color: var(--warning-text); }
+.metric-icon.danger { background: var(--danger-bg); color: var(--danger-text); }
+
 .metric-label {
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
+  font-size: var(--font-caption);
+  font-weight: 700;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--muted);
-  margin: 0 0 2px;
+  margin: 0;
 }
 .metric-value {
-  font-size: 20px;
+  font-size: var(--font-metric);
   font-weight: 700;
   color: var(--navy);
   margin: 0;
+}
+.metric-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.status-pill.success { background: var(--success-bg); color: var(--success-text); }
+.status-pill.warning { background: var(--warning-bg); color: var(--warning-text); }
+.status-pill.danger { background: var(--danger-bg); color: var(--danger-text); }
+.status-pill.neutral { background: var(--hover-bg); color: var(--muted); }
+
+button {
+  border-radius: var(--radius-sm);
+  font-size: var(--font-body);
 }

@@ -1,6 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-const navItems = [
+const mainItems = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/projects", label: "Projects" },
   { to: "/tasks", label: "Tasks" },
@@ -8,51 +8,77 @@ const navItems = [
   { to: "/capacity", label: "Capacity" },
 ];
 
+const adminItems = [{ to: "/admin", label: "User management" }];
+
+function NavGroup({ title, items }: { title: string; items: typeof mainItems }) {
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "#7C8AA0",
+          padding: "0 10px 6px",
+        }}
+      >
+        {title}
+      </div>
+      {items.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.end}
+          style={({ isActive }) => ({
+            display: "block",
+            padding: "7px 10px",
+            borderRadius: 3,
+            marginBottom: 2,
+            fontSize: 12.5,
+            fontWeight: isActive ? 700 : 400,
+            textDecoration: "none",
+            color: isActive ? "#fff" : "#C7D0DD",
+            background: isActive ? "var(--navy-deep)" : "transparent",
+            borderLeft: isActive ? "3px solid var(--teal)" : "3px solid transparent",
+          })}
+          onMouseEnter={(e) => {
+            const active = e.currentTarget.getAttribute("aria-current") === "page";
+            if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+          }}
+          onMouseLeave={(e) => {
+            const active = e.currentTarget.getAttribute("aria-current") === "page";
+            if (!active) e.currentTarget.style.background = "transparent";
+          }}
+        >
+          {item.label}
+        </NavLink>
+      ))}
+    </div>
+  );
+}
+
 export default function AppLayout() {
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       <nav
         style={{
-          width: 210,
-          borderRight: "1px solid var(--border)",
-          background: "#fff",
+          width: 208,
+          background: "var(--navy)",
           padding: "16px 10px",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
-        <div style={{ fontWeight: 700, color: "var(--navy)", padding: "0 10px 16px", fontSize: 15 }}>
-          CapacIQ
+        <div style={{ padding: "0 10px 20px" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", color: "#7C8AA0", textTransform: "uppercase" }}>
+            Dermorepubliq L&amp;D
+          </div>
+          <div style={{ fontWeight: 700, color: "#fff", fontSize: 15 }}>CapacIQ</div>
         </div>
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            style={({ isActive }) => ({
-              display: "block",
-              padding: "8px 10px",
-              borderRadius: 6,
-              marginBottom: 4,
-              fontSize: 13,
-              fontWeight: isActive ? 500 : 400,
-              textDecoration: "none",
-              color: isActive ? "#fff" : "var(--text-secondary)",
-              background: isActive ? "var(--navy)" : "transparent",
-              borderLeft: isActive ? "3px solid var(--teal)" : "3px solid transparent",
-            })}
-            onMouseEnter={(e) => {
-              const active = e.currentTarget.getAttribute("aria-current") === "page";
-              if (!active) {
-                e.currentTarget.style.background = "var(--hover-bg)";
-              }
-            }}
-            onMouseLeave={(e) => {
-              const isActive = e.currentTarget.getAttribute("aria-current") === "page";
-              if (!isActive) e.currentTarget.style.background = "transparent";
-            }}
-          >
-            {item.label}
-          </NavLink>
-        ))}
+
+        <NavGroup title="Main" items={mainItems} />
+        <NavGroup title="Admin" items={adminItems} />
       </nav>
       <main style={{ flex: 1, padding: 20 }}>
         <Outlet />
