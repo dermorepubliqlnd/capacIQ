@@ -1,0 +1,20 @@
+:root {
+  --navy: #0f2942;
+  --navy-deep: #1f3864;
+  --accent: #2e75b6;
+  --teal: #4fd1a5;
+  --bg: #f4f6f8;
+  --border: #e3e7ec;
+  --text: #1a1f2b;
+  --muted: #8a94a6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
