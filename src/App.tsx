@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { HashRouter, Routes, Route } from "react-router-dom";
 import AppLayout from "./components/AppLayout";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
@@ -13,7 +13,7 @@ import Login from "./pages/Login";
 // useUnsavedChangesGuard hook (see src/lib/useUnsavedChangesGuard.ts).
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<AppLayout />}>
@@ -26,6 +26,6 @@ export default function App() {
           <Route path="/capacity" element={<Capacity />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
