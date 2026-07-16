@@ -6,7 +6,7 @@ export interface Person {
   id: string;
   name: string;
   email: string;
-  access_level: "full" | "standard";
+  access_level: "full" | "limited";
   reports_to: string | null;
   daily_capacity_hours: number;
   is_active: boolean;

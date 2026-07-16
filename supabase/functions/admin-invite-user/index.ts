@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
         auth_user_id: inviteData.user.id,
         name,
         email,
-        access_level: access_level === "full" ? "full" : "standard",
+        access_level: access_level === "full" ? "full" : "limited",
         reports_to: reports_to || null,
         daily_capacity_hours: daily_capacity_hours || 7.5,
       })

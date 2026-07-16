@@ -5,7 +5,7 @@ create table people (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   email text unique not null,
-  access_level text not null default 'standard' check (access_level in ('full','standard')),
+  access_level text not null default 'limited' check (access_level in ('full','limited')),
   reports_to uuid references people(id),
   daily_capacity_hours numeric not null default 7.5
 );

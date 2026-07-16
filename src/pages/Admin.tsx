@@ -29,7 +29,7 @@ export default function Admin() {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [accessLevel, setAccessLevel] = useState<"standard" | "full">("standard");
+  const [accessLevel, setAccessLevel] = useState<"limited" | "full">("limited");
   const [reportsTo, setReportsTo] = useState("");
   const [capacityHours, setCapacityHours] = useState("7.5");
 
@@ -86,7 +86,7 @@ export default function Admin() {
     setFormSuccess(`Invited ${name}. They'll get an email to set their password.`);
     setName("");
     setEmail("");
-    setAccessLevel("standard");
+    setAccessLevel("limited");
     setReportsTo("");
     setCapacityHours("7.5");
     setFormOpen(false);
@@ -106,7 +106,7 @@ export default function Admin() {
     const verb = p.is_active ? "deactivate" : "reactivate";
     const warning = p.is_active
       ? `Deactivate ${p.name}? They'll immediately lose access to CapacIQ. You can reactivate them any time.`
-      : `Reactivate ${p.name}? They'll regain the access level shown (${p.access_level === "full" ? "Full Access" : "Standard"}).`;
+      : `Reactivate ${p.name}? They'll regain the access level shown (${p.access_level === "full" ? "Full" : "Limited"}).`;
 
     if (!window.confirm(warning)) return;
 
@@ -118,7 +118,7 @@ export default function Admin() {
     loadPeople();
   }
 
-  async function changeAccessLevel(p: Person, level: "standard" | "full") {
+  async function changeAccessLevel(p: Person, level: "limited" | "full") {
     await supabase.from("people").update({ access_level: level }).eq("id", p.id);
     loadPeople();
   }
@@ -161,9 +161,9 @@ export default function Admin() {
           </label>
           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
             Access level
-            <select value={accessLevel} onChange={(e) => setAccessLevel(e.target.value as "standard" | "full")} style={inputStyle}>
-              <option value="standard">Standard</option>
-              <option value="full">Full Access</option>
+            <select value={accessLevel} onChange={(e) => setAccessLevel(e.target.value as "limited" | "full")} style={inputStyle}>
+              <option value="limited">Limited</option>
+              <option value="full">Full</option>
             </select>
           </label>
           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
@@ -227,11 +227,11 @@ export default function Admin() {
                 <td>
                   <select
                     value={p.access_level}
-                    onChange={(e) => changeAccessLevel(p, e.target.value as "standard" | "full")}
+                    onChange={(e) => changeAccessLevel(p, e.target.value as "limited" | "full")}
                     style={{ fontSize: 11, padding: "3px 5px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
                   >
-                    <option value="standard">Standard</option>
-                    <option value="full">Full Access</option>
+                    <option value="limited">Limited</option>
+                    <option value="full">Full</option>
                   </select>
                 </td>
                 <td>{people.find((x) => x.id === p.reports_to)?.name ?? "—"}</td>
