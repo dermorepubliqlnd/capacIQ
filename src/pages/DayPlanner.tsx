@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
@@ -113,12 +113,7 @@ function DayMenu({ onPick, onClose }: { onPick: (s: "off" | "half_day" | null) =
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [onClose]);
   return (
-    <div
-      ref={ref}
-      className="view-tab-dropdown"
-      style={{ top: "calc(100% + 2px)", left: "50%", transform: "translateX(-50%)", width: 118, textAlign: "left" }}
-      onClick={(e) => e.stopPropagation()}
-    >
+    <div ref={ref} className="view-tab-dropdown" style={{ position: "static", width: 118, textAlign: "left" }} onClick={(e) => e.stopPropagation()}>
       <button onClick={() => onPick("off")}>Mark Off</button>
       <button onClick={() => onPick("half_day")}>Mark Half day</button>
       <button onClick={() => onPick(null)}>Clear</button>
@@ -142,7 +137,7 @@ export default function DayPlanner() {
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [expanded, setExpanded] = useState<string[]>([]);
-  const [offMenuFor, setOffMenuFor] = useState<string | null>(null);
+  const [offMenu, setOffMenu] = useState<{ personId: string; date: string; x: number; y: number } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   async function loadAll() {
@@ -252,7 +247,23 @@ export default function DayPlanner() {
       if (!error && data) setAvailability((prev) => [...prev, data as AvailabilityRow]);
       if (error) window.alert(`Couldn't save: ${error.message}`);
     }
-    setOffMenuFor(null);
+    setOffMenu(null);
+  }
+
+  // Opens the Off/Half-day popover anchored to the clicked cell's own
+  // screen coordinates (position: fixed), rather than absolutely inside
+  // the cell — the card's horizontally-scrollable container computes
+  // overflow-y to "auto" as soon as overflow-x is "auto" (per the CSS
+  // overflow spec), which still clips an absolutely-positioned popover
+  // even when overflow-y is explicitly set to "visible". Fixed positioning
+  // escapes that entirely since there is no transformed ancestor here.
+  function openOffMenu(e: ReactMouseEvent, personId: string, dateStr: string) {
+    if (offMenu && offMenu.personId === personId && offMenu.date === dateStr) {
+      setOffMenu(null);
+      return;
+    }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setOffMenu({ personId, date: dateStr, x: rect.left + rect.width / 2, y: rect.bottom + 2 });
   }
 
   return (
@@ -403,7 +414,6 @@ export default function DayPlanner() {
                           const dateStr = toISO(d);
                           const dow = d.getDay();
                           const blocked = dayBlocked(person.id, dateStr, dow);
-                          const cellKey = `${person.id}|${dateStr}`;
 
                           if (blocked === "holiday") {
                             const h = holidayByDate.get(dateStr)!;
@@ -423,17 +433,15 @@ export default function DayPlanner() {
                                 key={i}
                                 style={{
                                   ...rollupCellStyle(i),
-                                  position: "relative",
                                   background: "#f1f2f4",
                                   color: "var(--muted)",
                                   fontSize: 9.5,
                                   fontWeight: 600,
                                   cursor: isMe ? "pointer" : undefined,
                                 }}
-                                onClick={() => isMe && setOffMenuFor(offMenuFor === cellKey ? null : cellKey)}
+                                onClick={(e) => isMe && openOffMenu(e, person.id, dateStr)}
                               >
                                 Off
-                                {isMe && offMenuFor === cellKey && <DayMenu onPick={(s) => setDayStatus(person.id, dateStr, s)} onClose={() => setOffMenuFor(null)} />}
                               </td>
                             );
                           }
@@ -448,19 +456,17 @@ export default function DayPlanner() {
                               key={i}
                               style={{
                                 ...rollupCellStyle(i),
-                                position: "relative",
                                 background: bg,
                                 color: total > 0 ? fg : "var(--muted)",
                                 fontSize: 10,
                                 fontWeight: 600,
                                 cursor: isMe ? "pointer" : undefined,
                               }}
-                              onClick={() => isMe && setOffMenuFor(offMenuFor === cellKey ? null : cellKey)}
+                              onClick={(e) => isMe && openOffMenu(e, person.id, dateStr)}
                               title={av?.status === "half_day" ? "Half day" : undefined}
                             >
                               {total > 0 ? `${Math.round(pct)}%` : "–"}
                               {av?.status === "half_day" && <span style={{ fontSize: 8, marginLeft: 2 }}>½</span>}
-                              {isMe && offMenuFor === cellKey && <DayMenu onPick={(s) => setDayStatus(person.id, dateStr, s)} onClose={() => setOffMenuFor(null)} />}
                             </td>
                           );
                         })}
@@ -541,6 +547,12 @@ export default function DayPlanner() {
           </table>
         )}
       </div>
+
+      {offMenu && (
+        <div style={{ position: "fixed", left: offMenu.x, top: offMenu.y, transform: "translateX(-50%)", zIndex: 50 }}>
+          <DayMenu onPick={(s) => setDayStatus(offMenu.personId, offMenu.date, s)} onClose={() => setOffMenu(null)} />
+        </div>
+      )}
     </div>
   );
 }
