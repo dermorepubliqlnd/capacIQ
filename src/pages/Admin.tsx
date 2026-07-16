@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type CSSProperties } from "react";
-import { UserPlus, ShieldCheck, ShieldOff } from "lucide-react";
+import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
 
@@ -32,6 +32,12 @@ export default function Admin() {
   const [accessLevel, setAccessLevel] = useState<"limited" | "full">("limited");
   const [reportsTo, setReportsTo] = useState("");
   const [capacityHours, setCapacityHours] = useState("7.5");
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editReportsTo, setEditReportsTo] = useState("");
+  const [editCapacity, setEditCapacity] = useState("7.5");
+  const [editSaving, setEditSaving] = useState(false);
 
   async function loadPeople() {
     setLoading(true);
@@ -120,6 +126,40 @@ export default function Admin() {
 
   async function changeAccessLevel(p: Person, level: "limited" | "full") {
     await supabase.from("people").update({ access_level: level }).eq("id", p.id);
+    loadPeople();
+  }
+
+  function startEdit(p: Person) {
+    setEditingId(p.id);
+    setEditName(p.name);
+    setEditReportsTo(p.reports_to ?? "");
+    setEditCapacity(String(p.daily_capacity_hours));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function saveEdit(p: Person) {
+    if (p.id === editReportsTo) {
+      window.alert("Someone can't report to themselves.");
+      return;
+    }
+    setEditSaving(true);
+    const { error } = await supabase
+      .from("people")
+      .update({
+        name: editName.trim() || p.name,
+        reports_to: editReportsTo || null,
+        daily_capacity_hours: Number(editCapacity) || p.daily_capacity_hours,
+      })
+      .eq("id", p.id);
+    setEditSaving(false);
+    if (error) {
+      window.alert(`Couldn't save changes: ${error.message}`);
+      return;
+    }
+    setEditingId(null);
     loadPeople();
   }
 
@@ -220,39 +260,119 @@ export default function Admin() {
                 <td colSpan={7} style={{ color: "var(--muted)" }}>No one yet.</td>
               </tr>
             )}
-            {people.map((p) => (
-              <tr key={p.id}>
-                <td style={{ fontWeight: 600, color: "var(--navy)" }}>{p.name}</td>
-                <td>{p.email}</td>
-                <td>
-                  <select
-                    value={p.access_level}
-                    onChange={(e) => changeAccessLevel(p, e.target.value as "limited" | "full")}
-                    style={{ fontSize: 11, padding: "3px 5px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
-                  >
-                    <option value="limited">Limited</option>
-                    <option value="full">Full</option>
-                  </select>
-                </td>
-                <td>{people.find((x) => x.id === p.reports_to)?.name ?? "—"}</td>
-                <td>{p.daily_capacity_hours}</td>
-                <td>
-                  <span className={`status-pill ${p.is_active ? "success" : "neutral"}`}>
-                    {p.is_active ? "Active" : "Deactivated"}
-                  </span>
-                </td>
-                <td>
-                  <button
-                    onClick={() => toggleActive(p)}
-                    title={p.is_active ? "Deactivate" : "Reactivate"}
-                    style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: p.is_active ? "var(--danger-text)" : "var(--success-text)", fontSize: 11 }}
-                  >
-                    {p.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
-                    {p.is_active ? "Deactivate" : "Reactivate"}
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {people.map((p) => {
+              const isEditing = editingId === p.id;
+              return (
+                <tr key={p.id}>
+                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>
+                    {isEditing ? (
+                      <input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
+                      />
+                    ) : (
+                      p.name
+                    )}
+                  </td>
+                  <td>{p.email}</td>
+                  <td>
+                    <select
+                      value={p.access_level}
+                      onChange={(e) => changeAccessLevel(p, e.target.value as "limited" | "full")}
+                      disabled={isEditing}
+                      style={{ fontSize: 11, padding: "3px 5px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+                    >
+                      <option value="limited">Limited</option>
+                      <option value="full">Full</option>
+                    </select>
+                  </td>
+                  <td>
+                    {isEditing ? (
+                      <select
+                        value={editReportsTo}
+                        onChange={(e) => setEditReportsTo(e.target.value)}
+                        style={{ ...inputStyle, marginTop: 0 }}
+                      >
+                        <option value="">— none —</option>
+                        {people
+                          .filter((x) => x.id !== p.id)
+                          .map((x) => (
+                            <option key={x.id} value={x.id}>
+                              {x.name}
+                            </option>
+                          ))}
+                      </select>
+                    ) : (
+                      people.find((x) => x.id === p.reports_to)?.name ?? "—"
+                    )}
+                  </td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        step="0.5"
+                        value={editCapacity}
+                        onChange={(e) => setEditCapacity(e.target.value)}
+                        style={{ ...inputStyle, marginTop: 0, width: 70 }}
+                      />
+                    ) : (
+                      p.daily_capacity_hours
+                    )}
+                  </td>
+                  <td>
+                    <span className={`status-pill ${p.is_active ? "success" : "neutral"}`}>
+                      {p.is_active ? "Active" : "Deactivated"}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {isEditing ? (
+                        <>
+                          <button
+                            onClick={() => saveEdit(p)}
+                            disabled={editSaving}
+                            title="Save"
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--success-text)", fontSize: 11, fontWeight: 600 }}
+                          >
+                            <Check size={13} />
+                            {editSaving ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            onClick={cancelEdit}
+                            disabled={editSaving}
+                            title="Cancel"
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11 }}
+                          >
+                            <X size={13} />
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => startEdit(p)}
+                            title="Edit"
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
+                          >
+                            <Pencil size={13} />
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => toggleActive(p)}
+                            title={p.is_active ? "Deactivate" : "Reactivate"}
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: p.is_active ? "var(--danger-text)" : "var(--success-text)", fontSize: 11 }}
+                          >
+                            {p.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                            {p.is_active ? "Deactivate" : "Reactivate"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
