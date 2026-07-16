@@ -414,14 +414,38 @@ export default function Projects() {
         label: "Start",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (p) => <InlineDate value={p.start_date} editable={canEditProject(p)} onCommit={(v) => updateProject(p.id, { start_date: v || null })} />,
+        render: (p) => (
+          <InlineDate
+            value={p.start_date}
+            editable={canEditProject(p)}
+            onCommit={(v) => {
+              if (v && p.end_date && v > p.end_date) {
+                window.alert("Start date can't be after the due date.");
+                return;
+              }
+              updateProject(p.id, { start_date: v || null });
+            }}
+          />
+        ),
       },
       {
         key: "end_date",
         label: "Due",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (p) => <InlineDate value={p.end_date} editable={canEditProject(p)} onCommit={(v) => updateProject(p.id, { end_date: v || null })} />,
+        render: (p) => (
+          <InlineDate
+            value={p.end_date}
+            editable={canEditProject(p)}
+            onCommit={(v) => {
+              if (v && p.start_date && v < p.start_date) {
+                window.alert("Due date can't be before the start date.");
+                return;
+              }
+              updateProject(p.id, { end_date: v || null });
+            }}
+          />
+        ),
       },
     ],
     [people, projects, me]
@@ -608,7 +632,19 @@ export default function Projects() {
         label: "Start",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (t) => <InlineDate value={t.start_date} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { start_date: v || null })} />,
+        render: (t) => (
+          <InlineDate
+            value={t.start_date}
+            editable={canEditTask(t)}
+            onCommit={(v) => {
+              if (v && t.current_due_date && v > t.current_due_date) {
+                window.alert("Start date can't be after the due date.");
+                return;
+              }
+              updateTask(t.id, { start_date: v || null });
+            }}
+          />
+        ),
       },
       {
         key: "timing",
@@ -625,7 +661,20 @@ export default function Projects() {
         label: "Due",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (t) => <InlineDate value={t.current_due_date} editable={canEditTask(t)} onCommit={(v) => v && updateTask(t.id, { current_due_date: v })} />,
+        render: (t) => (
+          <InlineDate
+            value={t.current_due_date}
+            editable={canEditTask(t)}
+            onCommit={(v) => {
+              if (!v) return;
+              if (t.start_date && v < t.start_date) {
+                window.alert("Due date can't be before the start date.");
+                return;
+              }
+              updateTask(t.id, { current_due_date: v });
+            }}
+          />
+        ),
       },
       {
         key: "estimated_hours",

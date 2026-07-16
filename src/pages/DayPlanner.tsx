@@ -71,6 +71,12 @@ function startOfWeek(d: Date): Date {
 }
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const RANGE_OPTIONS = [1, 2, 4] as const;
+// A project owner's own "project" row (as opposed to a specific task row)
+// defaults to a small recurring project-management/coordination allowance
+// rather than sitting blank — still edited like any other cell, just
+// capped low so it stays overhead time, not a place to log real project work.
+const PROJECT_PM_DEFAULT_HOURS = 0.5;
+const PROJECT_PM_MAX_HOURS = 2;
 const CELL_W = 46;
 const LABEL_W = 220;
 
@@ -222,17 +228,30 @@ export default function DayPlanner() {
   }
 
   function personTotalFor(personId: string, dateStr: string): number {
-    return allocations.filter((a) => a.person_id === personId && a.date === dateStr).reduce((sum, a) => sum + Number(a.hours), 0);
+    return subItemsFor(personId).reduce((sum, item) => {
+      const alloc = allocFor(personId, item.type, item.id, dateStr);
+      if (alloc) return sum + Number(alloc.hours);
+      if (item.type === "project" && inWindow(item, dateStr)) return sum + PROJECT_PM_DEFAULT_HOURS;
+      return sum;
+    }, 0);
   }
 
   async function commitHours(personId: string, itemType: SubItem["type"], itemId: string | null, dateStr: string, raw: string) {
     const hours = parseFloat(raw);
     const existing = allocFor(personId, itemType, itemId, dateStr);
-    if (!raw.trim() || isNaN(hours) || hours <= 0) {
+    if (!raw.trim() || isNaN(hours)) {
       if (existing) {
         setAllocations((prev) => prev.filter((a) => a.id !== existing.id));
         await supabase.from("time_allocations").delete().eq("id", existing.id);
       }
+      return;
+    }
+    if (hours < 0) {
+      window.alert("Hours can't be negative.");
+      return;
+    }
+    if (itemType === "project" && hours > PROJECT_PM_MAX_HOURS) {
+      window.alert(`Project management time is capped at ${PROJECT_PM_MAX_HOURS} hours/day — log real project work under its tasks instead.`);
       return;
     }
     if (existing) {
@@ -546,7 +565,8 @@ export default function DayPlanner() {
                               const win = inWindow(item, dateStr);
                               const alloc = allocFor(person.id, item.type, item.id, dateStr);
                               const draftKey = `${person.id}|${item.type}|${item.id ?? "adhoc"}|${dateStr}`;
-                              const value = drafts[draftKey] ?? (alloc ? String(alloc.hours) : "");
+                              const defaultValue = item.type === "project" ? String(PROJECT_PM_DEFAULT_HOURS) : "";
+                              const value = drafts[draftKey] ?? (alloc ? String(alloc.hours) : defaultValue);
                               const openForEntry = !blocked && win;
                               return (
                                 <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined }}>
@@ -555,6 +575,7 @@ export default function DayPlanner() {
                                       value={value}
                                       disabled={!isMe}
                                       placeholder={isMe ? "–" : ""}
+                                      title={item.type === "project" ? `Defaults to ${PROJECT_PM_DEFAULT_HOURS}h project management time — editable, capped at ${PROJECT_PM_MAX_HOURS}h/day` : undefined}
                                       onChange={(e) => setDrafts((prev) => ({ ...prev, [draftKey]: e.target.value }))}
                                       onFocus={(e) => e.target.select()}
                                       onBlur={(e) => {
