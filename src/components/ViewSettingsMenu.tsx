@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Settings2, Eye, EyeOff, X, ArrowUp, ArrowDown, Plus, Trash2 } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, SortRule } from "../lib/tableTypes";
 
@@ -17,6 +17,8 @@ interface ViewSettingsMenuProps<T> {
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 // One combined "View settings" panel (Group by + Property visibility),
@@ -37,19 +39,21 @@ export default function ViewSettingsMenu<T>({
   sortOptions,
   sorts,
   onSortsChange,
+  open,
+  onOpenChange,
 }: ViewSettingsMenuProps<T>) {
-  const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) onOpenChange(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, []);
+  }, [onOpenChange]);
 
   const activeOption = groupOptions.find((g) => g.key === groupBy);
+  const hasActiveConfig = Boolean(groupBy) || sorts.length > 0;
   const groupValues = activeOption
     ? Array.from(new Set(rows.map((r) => activeOption.getGroup(r)))).sort((a, b) => a.localeCompare(b))
     : [];
@@ -82,11 +86,37 @@ export default function ViewSettingsMenu<T>({
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
-        onClick={() => setOpen((v) => !v)}
-        style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", fontSize: 11.5, fontWeight: 500, color: "var(--text-secondary)", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", cursor: "pointer" }}
+        onClick={() => onOpenChange(!open)}
+        title={hasActiveConfig ? "View settings (sort/group active)" : "View settings"}
+        style={{
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 26,
+          height: 26,
+          color: open || hasActiveConfig ? "var(--accent)" : "var(--text-secondary)",
+          background: open || hasActiveConfig ? "#eaf1fb" : "transparent",
+          border: `1px solid ${open || hasActiveConfig ? "var(--accent)" : "var(--border)"}`,
+          borderRadius: "var(--radius-sm)",
+          cursor: "pointer",
+        }}
       >
         <Settings2 size={13} />
-        View settings
+        {hasActiveConfig && (
+          <span
+            style={{
+              position: "absolute",
+              top: -3,
+              right: -3,
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: "var(--accent)",
+              border: "1.5px solid var(--surface)",
+            }}
+          />
+        )}
       </button>
       {open && (
         <div
@@ -105,7 +135,7 @@ export default function ViewSettingsMenu<T>({
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
             <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>View settings</span>
-            <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+            <button onClick={() => onOpenChange(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
               <X size={13} />
             </button>
           </div>

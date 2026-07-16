@@ -263,7 +263,9 @@ select.inline-cell { cursor: pointer; }
 }
 .task-collapse-toggle:hover { background: var(--hover-bg); color: var(--navy); }
 .task-collapse-spacer { display: inline-block; width: 16px; flex-shrink: 0; }
-.add-subtask-btn {
+/* Generic small row-hover icon action (e.g. archive) — stays subtle since
+   it's a less-frequent, semi-destructive action. */
+.row-icon-btn {
   opacity: 0;
   display: inline-flex;
   align-items: center;
@@ -277,8 +279,29 @@ select.inline-cell { cursor: pointer; }
   flex-shrink: 0;
   border-radius: var(--radius-sm);
 }
+tr:hover .row-icon-btn { opacity: 1; }
+.row-icon-btn:hover { background: var(--hover-bg); color: var(--accent); }
+
+/* Add-subtask "+" affordance: this is a primary, frequently-used action, so
+   unlike .row-icon-btn it stays faintly visible at rest (a tinted circle)
+   instead of fully invisible until hover — it was easy to miss before. */
+.add-subtask-btn {
+  opacity: 0.55;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+  background: #eaf1fb;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 50%;
+  transition: opacity 0.1s, transform 0.1s;
+}
 tr:hover .add-subtask-btn { opacity: 1; }
-.add-subtask-btn:hover { background: var(--hover-bg); color: var(--accent); }
+.add-subtask-btn:hover { background: var(--accent); color: #fff; transform: scale(1.08); }
 
 /* Inline "add row" at the bottom of a dense table */
 .add-row-cell { padding: 4px 8px !important; }

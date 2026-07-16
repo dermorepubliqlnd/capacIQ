@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
-import { sortRows } from "../lib/tableTypes";
+import { sortRows, TONE_STYLES } from "../lib/tableTypes";
 
 interface DataTableProps<T> {
   columns: ColumnDef<T>[];
@@ -14,6 +14,7 @@ interface DataTableProps<T> {
   onRowClick?: (row: T) => void;
   emptyLabel?: string;
   footerRow?: (colSpan: number) => ReactNode;
+  groupFooterRow?: (colSpan: number, group: { key: string; rows: T[] }) => ReactNode;
 }
 
 const MIN_COL_WIDTH = 70;
@@ -33,6 +34,7 @@ export default function DataTable<T>({
   onRowClick,
   emptyLabel = "Nothing here yet.",
   footerRow,
+  groupFooterRow,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
@@ -196,18 +198,30 @@ export default function DataTable<T>({
           .filter(([groupName]) => !hiddenGroups.includes(groupName))
           .map(([groupName, groupRows]) => {
           const collapsed = collapsedGroups.includes(groupName);
+          const groupTone = activeGroupOption?.getTone?.(groupRows[0]);
           return (
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>
-                <td colSpan={visibleColumns.length || 1} style={{ fontWeight: 600, color: "var(--navy)", background: "var(--bg)", cursor: "pointer" }}>
+                <td
+                  colSpan={visibleColumns.length || 1}
+                  style={{
+                    fontWeight: 600,
+                    color: groupTone ? TONE_STYLES[groupTone]?.text ?? "var(--navy)" : "var(--navy)",
+                    background: groupTone ? TONE_STYLES[groupTone]?.bg ?? "var(--bg)" : "var(--bg)",
+                    cursor: "pointer",
+                  }}
+                >
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     {groupName}
-                    <span style={{ color: "var(--muted)", fontWeight: 400 }}>({groupRows.length})</span>
+                    <span style={{ opacity: 0.7, fontWeight: 400 }}>({groupRows.length})</span>
                   </span>
                 </td>
               </tr>
               {!collapsed && groupRows.map((row) => renderRow(row))}
+              {!collapsed && groupFooterRow && (
+                <tr>{groupFooterRow(visibleColumns.length || 1, { key: groupName, rows: groupRows })}</tr>
+              )}
             </Fragment>
           );
         })}
@@ -217,11 +231,17 @@ export default function DataTable<T>({
     body = <tbody>{sortedRows.map((row) => renderRow(row))}</tbody>;
   }
 
+  const footerContent = footerRow ? footerRow(visibleColumns.length || 1) : null;
+
   return (
     <table className="data-table" style={{ tableLayout: "fixed" }}>
       {header}
       {body}
-      {footerRow && <tfoot><tr>{footerRow(visibleColumns.length || 1)}</tr></tfoot>}
+      {footerContent != null && (
+        <tfoot>
+          <tr>{footerContent}</tr>
+        </tfoot>
+      )}
     </table>
   );
 }

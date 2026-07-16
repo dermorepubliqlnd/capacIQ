@@ -7,9 +7,9 @@ import DataTable from "../components/DataTable";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
+import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
-import { visibleOrderedColumns, widthOf } from "../lib/tableTypes";
 import {
   PROJECT_CATEGORY_OPTIONS,
   PROJECT_CATEGORY_TONES,
@@ -70,6 +70,15 @@ function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" |
   if (daysLeft < 0) return { label: "Overdue", tone: "danger" };
   if (daysLeft <= 7) return { label: "Due soon", tone: "warning" };
   return { label: "On track", tone: "success" };
+}
+
+// Severity order for sorting by Health: worst first (Overdue), then Due
+// soon, On track, and finally completed projects' own status label.
+function healthRank(label: string): number {
+  if (label === "Overdue") return 0;
+  if (label === "Due soon") return 1;
+  if (label === "On track") return 2;
+  return 3;
 }
 
 function priorityTone(priority: string | null): "success" | "warning" | "danger" | "neutral" {
@@ -142,11 +151,10 @@ export default function Projects() {
   const [people, setPeople] = useState<PersonOption[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [newTaskDraft, setNewTaskDraft] = useState(false);
-  const [newTaskName, setNewTaskName] = useState("");
-  const [newTaskProject, setNewTaskProject] = useState("");
-  const [newTaskDue, setNewTaskDue] = useState("");
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [taskSettingsOpen, setTaskSettingsOpen] = useState(false);
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
@@ -223,8 +231,13 @@ export default function Projects() {
   }
 
   async function archiveProject(p: ProjectRow) {
-    if (!window.confirm(`Archive "${p.name}"? It'll be hidden from this table and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`))
-      return;
+    const ok = await confirm({
+      title: "Archive project",
+      message: `Archive "${p.name}"? It'll be hidden from this table and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
+      confirmLabel: "Archive",
+      danger: true,
+    });
+    if (!ok) return;
     const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: new Date().toISOString() }).eq("id", p.id);
     if (error) {
       window.alert(`Couldn't archive: ${error.message}`);
@@ -249,7 +262,8 @@ export default function Projects() {
       childIds.length > 0
         ? `Archive "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? Hidden from this table, permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`
         : `Archive "${t.name}"? Hidden from this table, permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`;
-    if (!window.confirm(warning)) return;
+    const ok = await confirm({ title: "Archive task", message: warning, confirmLabel: "Archive", danger: true });
+    if (!ok) return;
     const { error } = await supabase
       .from("tasks")
       .update({ is_archived: true, archived_at: new Date().toISOString() })
@@ -404,10 +418,31 @@ export default function Projects() {
   );
 
   const projectGroupOptions: GroupOption<ProjectRow>[] = [
-    { key: "project_status", label: "Status", getGroup: (p) => p.project_status ?? "No status" },
-    { key: "priority", label: "Priority", getGroup: (p) => p.priority ?? "No priority" },
+    {
+      key: "project_status",
+      label: "Status",
+      getGroup: (p) => p.project_status ?? "No status",
+      getTone: (p) => statusTone(statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status)),
+    },
+    {
+      key: "priority",
+      label: "Priority",
+      getGroup: (p) => p.priority ?? "No priority",
+      getTone: (p) => priorityTone(p.priority),
+    },
     { key: "owner", label: "Owner", getGroup: (p) => ownerName(p.owner_id) },
-    { key: "category", label: "Category", getGroup: (p) => p.category ?? "Uncategorized" },
+    {
+      key: "category",
+      label: "Category",
+      getGroup: (p) => p.category ?? "Uncategorized",
+      getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
+    },
+    {
+      key: "health",
+      label: "Health",
+      getGroup: (p) => healthOf(p).label,
+      getTone: (p) => healthOf(p).tone,
+    },
   ];
 
   const projectSortOptions: SortOption<ProjectRow>[] = [
@@ -417,6 +452,7 @@ export default function Projects() {
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
     { key: "start_date", label: "Start date", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
     { key: "end_date", label: "Due date", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
+    { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p).label) },
   ];
 
   const projectViews = useTableViews("projects", me?.id, {
@@ -585,7 +621,12 @@ export default function Projects() {
 
   const taskGroupOptions: GroupOption<TaskWithDepth>[] = [
     { key: "project", label: "Project", getGroup: (t) => projectName(t.project_id) },
-    { key: "status", label: "Status", getGroup: (t) => t.status ?? "No status" },
+    {
+      key: "status",
+      label: "Status",
+      getGroup: (t) => t.status ?? "No status",
+      getTone: (t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status)),
+    },
     { key: "assignee", label: "Assignee", getGroup: (t) => ownerName(t.assignee_id) },
   ];
 
@@ -610,31 +651,33 @@ export default function Projects() {
     sorts: [],
   });
 
-  async function submitNewTask() {
-    if (!newTaskName.trim() || !newTaskProject || !newTaskDue) {
-      window.alert("Task name, project, and due date are required.");
+  // Instant, Notion-style row creation (mirrors createBlankProject): insert
+  // a sensibly-defaulted task immediately and let the person fill it in via
+  // the same inline cells every other row uses, instead of a separate
+  // multi-field add form.
+  async function createBlankTask(projectId: string) {
+    if (!projectId) {
+      window.alert("Create a project first before adding tasks.");
       return;
     }
+    const today = new Date().toISOString().slice(0, 10);
     const { error } = await supabase.from("tasks").insert({
-      project_id: newTaskProject,
-      name: newTaskName.trim(),
+      project_id: projectId,
+      name: "Untitled task",
       status: "Not Started",
-      original_due_date: newTaskDue,
-      current_due_date: newTaskDue,
+      original_due_date: today,
+      current_due_date: today,
     });
     if (error) {
       window.alert(`Couldn't create task: ${error.message}`);
       return;
     }
-    setNewTaskName("");
-    setNewTaskProject("");
-    setNewTaskDue("");
-    setNewTaskDraft(false);
     loadAll();
   }
 
   return (
     <div>
+      {confirmDialog}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h1>Projects &amp; Tasks</h1>
@@ -667,8 +710,16 @@ export default function Projects() {
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
+            onDuplicate={projectViews.duplicateView}
+            onEditView={(id) => {
+              projectViews.setActiveViewId(id);
+              setProjectSettingsOpen(true);
+            }}
+            confirm={confirm}
           />
           <ViewSettingsMenu
+            open={projectSettingsOpen}
+            onOpenChange={setProjectSettingsOpen}
             rows={projects}
             columns={projectColumns}
             hiddenColumns={projectViews.activeView.hiddenColumns}
@@ -705,7 +756,7 @@ export default function Projects() {
                   minWidth: 36,
                   render: (p) =>
                     canEditProject(p) ? (
-                      <button className="add-subtask-btn" onClick={() => archiveProject(p)} title="Archive project">
+                      <button className="row-icon-btn" onClick={() => archiveProject(p)} title="Archive project">
                         <Archive size={12} />
                       </button>
                     ) : null,
@@ -749,8 +800,16 @@ export default function Projects() {
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
+            onDuplicate={taskViews.duplicateView}
+            onEditView={(id) => {
+              taskViews.setActiveViewId(id);
+              setTaskSettingsOpen(true);
+            }}
+            confirm={confirm}
           />
           <ViewSettingsMenu
+            open={taskSettingsOpen}
+            onOpenChange={setTaskSettingsOpen}
             rows={visibleTasks}
             columns={taskColumns}
             hiddenColumns={taskViews.activeView.hiddenColumns}
@@ -787,7 +846,7 @@ export default function Projects() {
                   minWidth: 36,
                   render: (t) =>
                     canManageTasksIn(t.project_id) ? (
-                      <button className="add-subtask-btn" onClick={() => archiveTask(t)} title="Archive task">
+                      <button className="row-icon-btn" onClick={() => archiveTask(t)} title="Archive task">
                         <Archive size={12} />
                       </button>
                     ) : null,
@@ -801,100 +860,29 @@ export default function Projects() {
               sortOptions={taskSortOptions}
               emptyLabel="No tasks yet. Add one below."
               footerRow={
-                canCreateTask
-                  ? () => {
-                      if (!newTaskDraft) {
-                        return (
-                          <td className="add-row-cell" colSpan={visibleOrderedColumns(taskColumns, taskViews.activeView).length || 1}>
-                            <div className="add-row-trigger" onClick={() => setNewTaskDraft(true)}>
-                              <Plus size={12} />
-                              New task
-                            </div>
-                          </td>
-                        );
-                      }
-                      const cols = visibleOrderedColumns(taskColumns, taskViews.activeView);
+                canCreateTask && taskViews.activeView.groupBy !== "project"
+                  ? (colSpan) => (
+                      <td colSpan={colSpan} className="add-row-cell">
+                        <div className="add-row-trigger" onClick={() => createBlankTask(projects[0]?.id ?? "")}>
+                          <Plus size={12} />
+                          New task
+                        </div>
+                      </td>
+                    )
+                  : undefined
+              }
+              groupFooterRow={
+                taskViews.activeView.groupBy === "project"
+                  ? (colSpan, group) => {
+                      const projectId = group.rows[0]?.project_id;
+                      if (!projectId || !canManageTasksIn(projectId)) return null;
                       return (
-                        <>
-                          {cols.map((col) => {
-                            const width = widthOf(col, taskViews.activeView);
-                            if (col.key === "name") {
-                              return (
-                                <td key={col.key} className="add-row-cell" style={{ width, maxWidth: width }}>
-                                  <input
-                                    autoFocus
-                                    className="add-row-input"
-                                    spellCheck={false}
-                                    autoComplete="off"
-                                    placeholder="Task name"
-                                    value={newTaskName}
-                                    onChange={(e) => setNewTaskName(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") submitNewTask();
-                                      if (e.key === "Escape") setNewTaskDraft(false);
-                                    }}
-                                  />
-                                </td>
-                              );
-                            }
-                            if (col.key === "project") {
-                              return (
-                                <td key={col.key} className="add-row-cell" style={{ width, maxWidth: width }}>
-                                  <select
-                                    className="add-row-input"
-                                    value={newTaskProject}
-                                    onChange={(e) => setNewTaskProject(e.target.value)}
-                                  >
-                                    <option value="">Project…</option>
-                                    {projects.map((p) => (
-                                      <option key={p.id} value={p.id}>
-                                        {p.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </td>
-                              );
-                            }
-                            if (col.key === "current_due_date") {
-                              return (
-                                <td key={col.key} className="add-row-cell" style={{ width, maxWidth: width }}>
-                                  <input
-                                    type="date"
-                                    className="add-row-input"
-                                    value={newTaskDue}
-                                    onChange={(e) => setNewTaskDue(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") submitNewTask();
-                                      if (e.key === "Escape") setNewTaskDraft(false);
-                                    }}
-                                  />
-                                </td>
-                              );
-                            }
-                            return (
-                              <td key={col.key} className="add-row-cell" style={{ width, maxWidth: width, color: "var(--muted)" }}>
-                                {col.key === "timing" ? (
-                                  <span style={{ fontSize: 10.5 }}>—</span>
-                                ) : (
-                                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                    <button
-                                      onClick={submitNewTask}
-                                      style={{ fontSize: 11, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
-                                    >
-                                      Add
-                                    </button>
-                                    <button
-                                      onClick={() => setNewTaskDraft(false)}
-                                      style={{ fontSize: 11, color: "var(--muted)", background: "none", border: "none", cursor: "pointer" }}
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                )}
-                              </td>
-                            );
-                          })}
-                        </>
+                        <td colSpan={colSpan} className="add-row-cell">
+                          <div className="add-row-trigger" onClick={() => createBlankTask(projectId)}>
+                            <Plus size={12} />
+                            New task
+                          </div>
+                        </td>
                       );
                     }
                   : undefined

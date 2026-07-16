@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, MoreHorizontal, Pencil, Trash2, Table2 } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil, SlidersHorizontal, Copy, Trash2, Table2 } from "lucide-react";
 import type { GroupOption, TableView } from "../lib/tableTypes";
 
 interface ViewTabsProps<T> {
@@ -12,6 +12,9 @@ interface ViewTabsProps<T> {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
+  onEditView: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  confirm: (options: { title?: string; message: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
 }
 
 const MAX_VISIBLE = 6;
@@ -51,6 +54,9 @@ export default function ViewTabs<T>({
   onRename,
   onDelete,
   onColorChange,
+  onEditView,
+  onDuplicate,
+  confirm,
 }: ViewTabsProps<T>) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -133,7 +139,25 @@ export default function ViewTabs<T>({
                   <Pencil size={12} />
                   Rename
                 </button>
-                <div style={{ display: "flex", gap: 4, padding: "4px 6px" }}>
+                <button
+                  onClick={() => {
+                    setMenuOpenId(null);
+                    onEditView(v.id);
+                  }}
+                >
+                  <SlidersHorizontal size={12} />
+                  Edit view
+                </button>
+                <button
+                  onClick={() => {
+                    setMenuOpenId(null);
+                    onDuplicate(v.id);
+                  }}
+                >
+                  <Copy size={12} />
+                  Duplicate view
+                </button>
+                <div style={{ display: "flex", gap: 4, padding: "6px 6px 4px" }}>
                   {Object.entries(TAB_COLORS).map(([key, hex]) => (
                     <span
                       key={key}
@@ -156,13 +180,19 @@ export default function ViewTabs<T>({
                 {views.length > 1 && (
                   <button
                     className="danger"
-                    onClick={() => {
+                    onClick={async () => {
                       setMenuOpenId(null);
-                      if (window.confirm(`Delete the view "${v.name}"?`)) onDelete(v.id);
+                      const ok = await confirm({
+                        title: "Delete view",
+                        message: `Delete the view "${v.name}"? This can't be undone.`,
+                        confirmLabel: "Delete view",
+                        danger: true,
+                      });
+                      if (ok) onDelete(v.id);
                     }}
                   >
                     <Trash2 size={12} />
-                    Delete
+                    Delete view
                   </button>
                 )}
               </div>

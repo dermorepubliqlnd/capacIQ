@@ -12,7 +12,23 @@ export interface GroupOption<T> {
   key: string;
   label: string;
   getGroup: (row: T) => string;
+  // Optional: tone of a representative row in the group, used to tint that
+  // group's header row so it visually matches the pill color it's grouped
+  // by (e.g. grouping by Status colors each header like its status pill).
+  getTone?: (row: T) => string;
 }
+
+// Shared with the .status-pill classes in index.css so group headers and
+// pills always agree on color for the same tone name.
+export const TONE_STYLES: Record<string, { bg: string; text: string }> = {
+  success: { bg: "var(--success-bg)", text: "var(--success-text)" },
+  warning: { bg: "var(--warning-bg)", text: "var(--warning-text)" },
+  danger: { bg: "var(--danger-bg)", text: "var(--danger-text)" },
+  neutral: { bg: "var(--hover-bg)", text: "var(--muted)" },
+  accent: { bg: "#eaf1fb", text: "var(--accent)" },
+  purple: { bg: "#f3ecfa", text: "#7b4fb0" },
+  pink: { bg: "#fdecf3", text: "#c1447e" },
+};
 
 export interface SortOption<T> {
   key: string;

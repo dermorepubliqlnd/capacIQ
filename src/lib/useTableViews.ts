@@ -57,6 +57,20 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     setViews((vs) => vs.map((v) => (v.id === id ? { ...v, name } : v)));
   }
 
+  function duplicateView(id: string) {
+    const source = views.find((v) => v.id === id);
+    if (!source) return;
+    const newId = `view_${Date.now()}`;
+    const copy: TableView = { ...source, id: newId, name: `${source.name} copy` };
+    setViews((vs) => {
+      const idx = vs.findIndex((v) => v.id === id);
+      const next = [...vs];
+      next.splice(idx + 1, 0, copy);
+      return next;
+    });
+    setActiveViewId(newId);
+  }
+
   function setViewColor(id: string, color: string) {
     setViews((vs) => vs.map((v) => (v.id === id ? { ...v, color } : v)));
   }
@@ -73,5 +87,5 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     });
   }
 
-  return { views, activeView, activeViewId, setActiveViewId, updateActiveView, createView, renameView, setViewColor, deleteView };
+  return { views, activeView, activeViewId, setActiveViewId, updateActiveView, createView, renameView, duplicateView, setViewColor, deleteView };
 }
