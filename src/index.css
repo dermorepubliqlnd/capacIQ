@@ -71,6 +71,15 @@ h2.card-title, h2 {
 }
 
 table { font-family: var(--font); font-size: var(--font-table); border-collapse: collapse; width: 100%; }
+/* DataTable uses table-layout:fixed with an explicit pixel width per column
+   (for drag-resize). With the generic width:100% above, a fixed-layout
+   table whose declared column widths sum to less than its container
+   stretches every column proportionally to fill the gap — silently making
+   each <td> wider than the width its own inline style says, which is what
+   made row content (like the add-subtask button) drift toward the next
+   column's space. Auto width keeps the table exactly as wide as its
+   columns say, with any leftover container space simply left blank. */
+.data-table { width: auto; }
 .data-table th {
   text-align: left;
   font-size: var(--font-caption);
