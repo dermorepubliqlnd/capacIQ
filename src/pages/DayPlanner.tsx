@@ -77,8 +77,8 @@ const RANGE_OPTIONS = [1, 2, 4] as const;
 // capped low so it stays overhead time, not a place to log real project work.
 const PROJECT_PM_DEFAULT_HOURS = 0.5;
 const PROJECT_PM_MAX_HOURS = 2;
-const CELL_W = 46;
-const LABEL_W = 220;
+const CELL_W = 58;
+const LABEL_W = 275;
 
 function utilTone(pct: number): "success" | "warning" | "danger" {
   if (pct > 110) return "danger";
@@ -91,7 +91,7 @@ function rollupCellStyle(i: number): CSSProperties {
     width: CELL_W,
     minWidth: CELL_W,
     textAlign: "center",
-    padding: "6px 2px",
+    padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
   };
@@ -380,12 +380,12 @@ export default function DayPlanner() {
                     key={wi}
                     colSpan={7}
                     style={{
-                      fontSize: 10,
+                      fontSize: 12,
                       fontWeight: 600,
                       color: "var(--muted)",
                       textTransform: "uppercase",
                       letterSpacing: 0.3,
-                      padding: "6px 4px",
+                      padding: "8px 5px",
                       borderBottom: "1px solid var(--border)",
                       borderLeft: "1px solid var(--border)",
                     }}
@@ -405,8 +405,8 @@ export default function DayPlanner() {
                     minWidth: LABEL_W,
                     borderBottom: "1px solid var(--border)",
                     textAlign: "left",
-                    padding: "4px 10px",
-                    fontSize: 11,
+                    padding: "5px 13px",
+                    fontSize: 13,
                     color: "var(--muted)",
                   }}
                 >
@@ -421,8 +421,8 @@ export default function DayPlanner() {
                       style={{
                         width: CELL_W,
                         minWidth: CELL_W,
-                        padding: "4px 2px",
-                        fontSize: 10,
+                        padding: "5px 3px",
+                        fontSize: 12,
                         fontWeight: 600,
                         color: weekend ? "var(--muted)" : "var(--navy)",
                         background: weekend ? "var(--hover-bg)" : undefined,
@@ -457,8 +457,8 @@ export default function DayPlanner() {
                             left: 0,
                             zIndex: 1,
                             background: "#fafbfc",
-                            padding: "6px 10px",
-                            fontSize: 12,
+                            padding: "8px 13px",
+                            fontSize: 15,
                             fontWeight: 600,
                             color: "var(--navy)",
                             borderBottom: "1px solid var(--border)",
@@ -467,8 +467,8 @@ export default function DayPlanner() {
                           }}
                           onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
                         >
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                             {person.name}
                           </span>
                         </td>
@@ -480,7 +480,7 @@ export default function DayPlanner() {
                           if (blocked === "holiday") {
                             const h = holidayByDate.get(dateStr)!;
                             return (
-                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 9, fontWeight: 600 }}>
+                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 11, fontWeight: 600 }}>
                                 Holiday
                               </td>
                             );
@@ -497,7 +497,7 @@ export default function DayPlanner() {
                                   ...rollupCellStyle(i),
                                   background: "#f1f2f4",
                                   color: "var(--muted)",
-                                  fontSize: 9.5,
+                                  fontSize: 12,
                                   fontWeight: 600,
                                   cursor: isMe ? "pointer" : undefined,
                                 }}
@@ -520,15 +520,20 @@ export default function DayPlanner() {
                                 ...rollupCellStyle(i),
                                 background: bg,
                                 color: total > 0 ? fg : "var(--muted)",
-                                fontSize: 10,
+                                fontSize: 12.5,
                                 fontWeight: 600,
                                 cursor: isMe ? "pointer" : undefined,
                               }}
                               onClick={(e) => isMe && openOffMenu(e, person.id, dateStr)}
                               title={av?.status === "half_day" ? "Half day" : undefined}
                             >
-                              {total > 0 ? `${Math.round(pct)}%` : "–"}
-                              {av?.status === "half_day" && <span style={{ fontSize: 8, marginLeft: 2 }}>½</span>}
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                <span>
+                                  {total > 0 ? `${Math.round(pct)}%` : "–"}
+                                  {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
+                                </span>
+                                {total > 0 && <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>{total.toFixed(1)}h</span>}
+                              </div>
                             </td>
                           );
                         })}
@@ -543,8 +548,8 @@ export default function DayPlanner() {
                                 left: 0,
                                 zIndex: 1,
                                 background: "var(--surface)",
-                                padding: "4px 10px 4px 28px",
-                                fontSize: 11,
+                                padding: "5px 13px 5px 35px",
+                                fontSize: 14,
                                 color: "var(--text-secondary)",
                                 borderBottom: "1px solid var(--border)",
                                 whiteSpace: "nowrap",
@@ -555,7 +560,7 @@ export default function DayPlanner() {
                             >
                               {item.label}
                               {item.project && (
-                                <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>
+                                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>
                               )}
                             </td>
                             {days.map((d, i) => {
@@ -594,8 +599,8 @@ export default function DayPlanner() {
                                         border: "none",
                                         background: "transparent",
                                         textAlign: "center",
-                                        fontSize: 11,
-                                        padding: "6px 2px",
+                                        fontSize: 14,
+                                        padding: "8px 3px",
                                         color: alloc ? "var(--navy)" : "var(--muted)",
                                         cursor: isMe ? "text" : "default",
                                       }}

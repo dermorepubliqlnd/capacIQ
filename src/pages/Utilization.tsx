@@ -12,6 +12,9 @@ interface PersonRow {
 interface ProjectRow {
   id: string;
   name: string;
+  owner_id: string | null;
+  start_date: string | null;
+  end_date: string | null;
 }
 interface TaskRow {
   id: string;
@@ -60,8 +63,11 @@ function parseLocalDate(iso: string): Date {
 }
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const RANGE_OPTIONS = [1, 2, 4] as const;
-const CELL_W = 46;
-const LABEL_W = 220;
+// Scaled up ~1.25x from the original 46/220 for a roomier grid — keep
+// these two in lockstep with the same constants in DayPlanner.tsx so the
+// two grids stay visually matched.
+const CELL_W = 58;
+const LABEL_W = 275;
 
 // A "standard" workday, used only to normalize daily point-capacity — a
 // person whose own daily capacity (set in User management) equals this
@@ -69,12 +75,20 @@ const LABEL_W = 220;
 // other day. Not shown anywhere; purely a conversion factor.
 const STANDARD_DAILY_HOURS = 7.5;
 
+// Project-ownership "PM overhead" — mirrors the Day Planner's existing
+// manual PM default (0.5h/day, capped 2h/day) expressed in points
+// (0.5/7.5 ≈ 0.1, 2/7.5 ≈ 0.3), so a project owner with no assigned tasks
+// yet doesn't sit at a flat 0%, without ownership alone driving anyone
+// past "Available". Cap applies across ALL projects a person owns combined.
+const PROJECT_PM_POINTS_PER_DAY = 0.1;
+const PROJECT_PM_POINTS_CAP_PER_DAY = 0.3;
+
 function rollupCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
     textAlign: "center",
-    padding: "6px 2px",
+    padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
   };
@@ -84,7 +98,7 @@ function subCellStyle(i: number): CSSProperties {
     width: CELL_W,
     minWidth: CELL_W,
     textAlign: "center",
-    padding: "4px 2px",
+    padding: "5px 3px",
     borderBottom: "1px solid var(--border)",
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
   };
@@ -124,6 +138,23 @@ function taskWorkingDays(t: TaskRow): string[] {
   return days.length ? days : [t.current_due_date];
 }
 
+// A project's own working-day window, for PM-overhead points — unlike
+// tasks there's no due-date fallback: a project with no start/end date set
+// simply doesn't contribute PM points yet (same "set your dates" nudge
+// used everywhere else in the app).
+function projectWorkingDays(p: ProjectRow): string[] {
+  if (!p.start_date || !p.end_date) return [];
+  const windowStart = parseLocalDate(p.start_date);
+  const windowEnd = parseLocalDate(p.end_date);
+  if (windowEnd < windowStart) return [];
+  const days: string[] = [];
+  for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) days.push(toISO(d));
+  }
+  return days;
+}
+
 export default function Utilization() {
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -140,7 +171,7 @@ export default function Utilization() {
     setLoading(true);
     const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
-      supabase.from("projects").select("id,name").eq("is_archived", false),
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
@@ -192,6 +223,9 @@ export default function Utilization() {
   function openTasksFor(personId: string): TaskRow[] {
     return tasks.filter((t) => t.assignee_id === personId && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
   }
+  function ownedProjectsFor(personId: string): ProjectRow[] {
+    return projects.filter((p) => p.owner_id === personId);
+  }
 
   // A task's points on a specific date — 0 if that date isn't one of its
   // own working days (out of window, or effort not set yet).
@@ -203,13 +237,24 @@ export default function Utilization() {
     return points / workingDays.length;
   }
 
+  // PM-overhead points for everything a person owns on a given date, with
+  // the combined cap applied proportionally across projects so the
+  // expanded sub-rows always sum exactly to the rollup's PM contribution.
+  function pmPointsFor(personId: string, dateStr: string): { total: number; perProject: Map<string, number> } {
+    const owned = ownedProjectsFor(personId).filter((p) => projectWorkingDays(p).includes(dateStr));
+    const rawTotal = owned.length * PROJECT_PM_POINTS_PER_DAY;
+    const scale = rawTotal > PROJECT_PM_POINTS_CAP_PER_DAY && rawTotal > 0 ? PROJECT_PM_POINTS_CAP_PER_DAY / rawTotal : 1;
+    const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_POINTS_PER_DAY * scale]));
+    return { total: Math.min(rawTotal, PROJECT_PM_POINTS_CAP_PER_DAY), perProject };
+  }
+
   function dailyPointsFor(personId: string, dateStr: string): number {
-    return openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr), 0);
+    const taskPoints = openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr), 0);
+    return taskPoints + pmPointsFor(personId, dateStr).total;
   }
 
   function dailyCapacityFor(person: PersonRow, halfDay: boolean): number {
-    const base = (person.daily_capacity_hours / STANDARD_DAILY_HOURS) * (halfDay ? 0.5 : 1);
-    return base;
+    return (person.daily_capacity_hours / STANDARD_DAILY_HOURS) * (halfDay ? 0.5 : 1);
   }
 
   return (
@@ -217,7 +262,8 @@ export default function Utilization() {
       <h1>Utilization</h1>
       <p className="subtitle">
         Same grid as the Day Planner, but auto-computed: each task's Light/Moderate/Heavy effort is spread across its own start-to-due
-        working days. Set effort and dates on tasks in Projects &amp; Tasks — this view updates automatically.
+        working days, plus a small project-ownership allowance. Set effort and dates on tasks in Projects &amp; Tasks — this view
+        updates automatically.
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -290,12 +336,12 @@ export default function Utilization() {
                     key={wi}
                     colSpan={7}
                     style={{
-                      fontSize: 10,
+                      fontSize: 12,
                       fontWeight: 600,
                       color: "var(--muted)",
                       textTransform: "uppercase",
                       letterSpacing: 0.3,
-                      padding: "6px 4px",
+                      padding: "8px 5px",
                       borderBottom: "1px solid var(--border)",
                       borderLeft: "1px solid var(--border)",
                     }}
@@ -315,8 +361,8 @@ export default function Utilization() {
                     minWidth: LABEL_W,
                     borderBottom: "1px solid var(--border)",
                     textAlign: "left",
-                    padding: "4px 10px",
-                    fontSize: 11,
+                    padding: "5px 13px",
+                    fontSize: 13,
                     color: "var(--muted)",
                   }}
                 >
@@ -331,8 +377,8 @@ export default function Utilization() {
                       style={{
                         width: CELL_W,
                         minWidth: CELL_W,
-                        padding: "4px 2px",
-                        fontSize: 10,
+                        padding: "5px 3px",
+                        fontSize: 12,
                         fontWeight: 600,
                         color: weekend ? "var(--muted)" : "var(--navy)",
                         background: weekend ? "var(--hover-bg)" : undefined,
@@ -356,7 +402,8 @@ export default function Utilization() {
               ) : (
                 people.map((person) => {
                   const isExpanded = expanded.includes(person.id);
-                  const items = openTasksFor(person.id);
+                  const ownedProjects = ownedProjectsFor(person.id);
+                  const assignedTasks = openTasksFor(person.id);
                   return (
                     <Fragment key={person.id}>
                       <tr style={{ background: "#fafbfc" }}>
@@ -366,8 +413,8 @@ export default function Utilization() {
                             left: 0,
                             zIndex: 1,
                             background: "#fafbfc",
-                            padding: "6px 10px",
-                            fontSize: 12,
+                            padding: "8px 13px",
+                            fontSize: 15,
                             fontWeight: 600,
                             color: "var(--navy)",
                             borderBottom: "1px solid var(--border)",
@@ -376,8 +423,8 @@ export default function Utilization() {
                           }}
                           onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
                         >
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                             {person.name}
                           </span>
                         </td>
@@ -389,7 +436,7 @@ export default function Utilization() {
                           if (blocked === "holiday") {
                             const h = holidayByDate.get(dateStr)!;
                             return (
-                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 9, fontWeight: 600 }}>
+                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 11, fontWeight: 600 }}>
                                 Holiday
                               </td>
                             );
@@ -400,7 +447,7 @@ export default function Utilization() {
                           const av = availabilityFor(person.id, dateStr);
                           if (blocked === "off") {
                             return (
-                              <td key={i} style={{ ...rollupCellStyle(i), background: "#f1f2f4", color: "var(--muted)", fontSize: 9.5, fontWeight: 600 }}>
+                              <td key={i} style={{ ...rollupCellStyle(i), background: "#f1f2f4", color: "var(--muted)", fontSize: 12, fontWeight: 600 }}>
                                 Off
                               </td>
                             );
@@ -416,79 +463,125 @@ export default function Utilization() {
                                 ...rollupCellStyle(i),
                                 background: tier.bg,
                                 color: tier.fg,
-                                fontSize: 10,
+                                fontSize: 12.5,
                                 fontWeight: 600,
                               }}
                               title={tier.label}
                             >
-                              {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
-                              {av?.status === "half_day" && <span style={{ fontSize: 8, marginLeft: 2 }}>½</span>}
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                <tier.Icon size={13} />
+                                <span>
+                                  {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
+                                  {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
+                                </span>
+                              </div>
                             </td>
                           );
                         })}
                       </tr>
                       {isExpanded &&
-                        (items.length === 0 ? (
+                        (ownedProjects.length === 0 && assignedTasks.length === 0 ? (
                           <tr>
                             <td
                               style={{
                                 position: "sticky",
                                 left: 0,
                                 background: "var(--surface)",
-                                padding: "4px 10px 4px 28px",
-                                fontSize: 11,
+                                padding: "5px 13px 5px 35px",
+                                fontSize: 14,
                                 color: "var(--muted)",
                                 borderBottom: "1px solid var(--border)",
                               }}
                             >
-                              No open tasks assigned.
+                              No owned projects or assigned tasks.
                             </td>
                             {days.map((_, i) => (
                               <td key={i} style={subCellStyle(i)} />
                             ))}
                           </tr>
                         ) : (
-                          items.map((t) => {
-                            const proj = projects.find((p) => p.id === t.project_id);
-                            const workingDays = taskWorkingDays(t);
-                            return (
-                              <tr key={t.id}>
-                                <td
-                                  title={!t.effort ? `${t.name} — no effort size set yet` : t.name}
-                                  style={{
-                                    position: "sticky",
-                                    left: 0,
-                                    zIndex: 1,
-                                    background: "var(--surface)",
-                                    padding: "4px 10px 4px 28px",
-                                    fontSize: 11,
-                                    color: "var(--text-secondary)",
-                                    borderBottom: "1px solid var(--border)",
-                                    whiteSpace: "nowrap",
-                                    maxWidth: LABEL_W,
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                  }}
-                                >
-                                  {t.name}
-                                  {proj && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
-                                  {!t.effort && <span style={{ fontSize: 9.5, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
-                                </td>
-                                {days.map((d, i) => {
-                                  const dateStr = toISO(d);
-                                  const dow = d.getDay();
-                                  const blocked = dayBlocked(person.id, dateStr, dow);
-                                  const win = workingDays.includes(dateStr);
-                                  const value = taskPointsOnDate(t, dateStr);
-                                  return (
-                                    <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 10, color: "var(--muted)" }}>
-                                      {value > 0 ? value.toFixed(1) : ""}
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            );
-                          })
+                          <>
+                            {ownedProjects.map((p) => {
+                              const workingDays = projectWorkingDays(p);
+                              return (
+                                <tr key={`pm-${p.id}`}>
+                                  <td
+                                    title={workingDays.length === 0 ? `${p.name} — set start/due dates to count project-management time` : `${p.name} — project management`}
+                                    style={{
+                                      position: "sticky",
+                                      left: 0,
+                                      zIndex: 1,
+                                      background: "var(--surface)",
+                                      padding: "5px 13px 5px 35px",
+                                      fontSize: 14,
+                                      color: "var(--text-secondary)",
+                                      borderBottom: "1px solid var(--border)",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: LABEL_W,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {p.name}
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>project management</span>
+                                  </td>
+                                  {days.map((d, i) => {
+                                    const dateStr = toISO(d);
+                                    const dow = d.getDay();
+                                    const blocked = dayBlocked(person.id, dateStr, dow);
+                                    const win = workingDays.includes(dateStr);
+                                    const value = win ? pmPointsFor(person.id, dateStr).perProject.get(p.id) ?? 0 : 0;
+                                    return (
+                                      <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                        {value > 0 ? value.toFixed(2) : ""}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                            {assignedTasks.map((t) => {
+                              const proj = projects.find((p) => p.id === t.project_id);
+                              const workingDays = taskWorkingDays(t);
+                              return (
+                                <tr key={t.id}>
+                                  <td
+                                    title={!t.effort ? `${t.name} — no effort size set yet` : t.name}
+                                    style={{
+                                      position: "sticky",
+                                      left: 0,
+                                      zIndex: 1,
+                                      background: "var(--surface)",
+                                      padding: "5px 13px 5px 35px",
+                                      fontSize: 14,
+                                      color: "var(--text-secondary)",
+                                      borderBottom: "1px solid var(--border)",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: LABEL_W,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {t.name}
+                                    {proj && <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
+                                    {!t.effort && <span style={{ fontSize: 11, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
+                                  </td>
+                                  {days.map((d, i) => {
+                                    const dateStr = toISO(d);
+                                    const dow = d.getDay();
+                                    const blocked = dayBlocked(person.id, dateStr, dow);
+                                    const win = workingDays.includes(dateStr);
+                                    const value = taskPointsOnDate(t, dateStr);
+                                    return (
+                                      <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                        {value > 0 ? value.toFixed(1) : ""}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </>
                         ))}
                     </Fragment>
                   );
