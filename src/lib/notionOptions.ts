@@ -21,6 +21,28 @@ export const PROJECT_CATEGORY_OPTIONS = [
 
 export const PROJECT_EFFORT_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3"];
 
+// Task Effort: a lightweight, fun sizing scale used to auto-compute weekly
+// capacity (see Capacity page) without relying on estimated/actual hours.
+// Each level carries a fixed point value; a person's week-of-work is summed
+// in points and compared against their point capacity.
+export const TASK_EFFORT_OPTIONS = ["Light", "Moderate", "Heavy"];
+
+export const TASK_EFFORT_POINTS: Record<string, number> = {
+  Light: 0.5,
+  Moderate: 1,
+  Heavy: 2,
+};
+
+// Fallback tones if task_effort_colors hasn't loaded yet (or a level is
+// missing a row) — matches the seeded defaults in the DB. Sandra can
+// recolor each level herself from the Tasks toolbar (Full Access only);
+// the DB values always win once loaded.
+export const TASK_EFFORT_DEFAULT_TONES: Record<string, string> = {
+  Light: "success",
+  Moderate: "warning",
+  Heavy: "danger",
+};
+
 export const PROJECT_PRIORITY_OPTIONS = ["Low", "Medium", "High"];
 
 // Notion's "Project Status" and task "Status" are grouped status properties

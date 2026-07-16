@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Feather, Weight, BicepsFlexed, Palette } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
-import ViewTabs from "../components/ViewTabs";
+import ViewTabs, { TAB_COLORS } from "../components/ViewTabs";
 import ViewSettingsMenu from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
 import { useConfirm } from "../lib/useConfirm";
@@ -20,6 +20,9 @@ import {
   TASK_STATUS_GROUPED,
   PROJECT_CATEGORY_ICONS,
   DEFAULT_PROJECT_ICON,
+  TASK_EFFORT_OPTIONS,
+  TASK_EFFORT_POINTS,
+  TASK_EFFORT_DEFAULT_TONES,
   statusGroupOf,
 } from "../lib/notionOptions";
 
@@ -54,6 +57,7 @@ interface TaskRow {
   estimated_hours: number | null;
   time_spent_hours: number | null;
   validated_completion_date: string | null;
+  effort: string | null;
   is_archived: boolean;
   archived_at: string | null;
 }
@@ -61,7 +65,19 @@ interface TaskRow {
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "category", "effort_level", "start_date", "end_date"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "start_date", "current_due_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "estimated_hours", "time_spent_hours"];
+
+// "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
+// feather for quick work, a weight plate for a moderate lift, and a flexed
+// bicep for the heavy stuff. Colors are NOT hardcoded to these icons; the
+// tone comes from task_effort_colors (DB-driven, Sandra can recolor each
+// level herself) so the icon always inherits the pill's own darker tone
+// via currentColor.
+const TASK_EFFORT_ICON: Record<string, typeof Feather> = {
+  Light: Feather,
+  Moderate: Weight,
+  Heavy: BicepsFlexed,
+};
 
 function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status);
@@ -145,6 +161,68 @@ function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
   return result;
 }
 
+// Lets Sandra (Full Access) recolor each Task Effort level herself instead
+// of the tones being hardcoded — same swatch-row pattern as the View tab
+// color picker (ViewTabs.tsx), rendered fixed-positioned so it can't get
+// clipped by the table's own horizontal-scroll container (the fix that
+// finally solved the same problem for the Day Planner's Off menu).
+function EffortColorMenu({
+  effortColors,
+  onPick,
+  onClose,
+}: {
+  effortColors: Record<string, string>;
+  onPick: (level: string, tone: string) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      className="view-tab-dropdown"
+      style={{ position: "static", width: 190, textAlign: "left" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div style={{ padding: "4px 8px 6px", fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>Effort colors</div>
+      {TASK_EFFORT_OPTIONS.map((level) => {
+        const Icon = TASK_EFFORT_ICON[level];
+        return (
+          <div key={level} style={{ padding: "4px 8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 500, marginBottom: 4 }}>
+              <Icon size={11} />
+              {level}
+            </div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {Object.entries(TAB_COLORS).map(([key, hex]) => (
+                <span
+                  key={key}
+                  onClick={() => onPick(level, key)}
+                  title={key}
+                  style={{
+                    width: 14,
+                    height: 14,
+                    borderRadius: "50%",
+                    background: hex,
+                    cursor: "pointer",
+                    border: effortColors[level] === key ? "2px solid var(--navy)" : "1px solid var(--border)",
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function Projects() {
   const { person: me } = useSession();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -162,6 +240,12 @@ export default function Projects() {
   const [archivedTasks, setArchivedTasks] = useState<TaskRow[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
 
+  // Task Effort colors: DB-driven so Sandra (Full Access) can recolor each
+  // level herself instead of it being hardcoded. Falls back to the seeded
+  // defaults if a level's row hasn't loaded yet.
+  const [effortColors, setEffortColors] = useState<Record<string, string>>(TASK_EFFORT_DEFAULT_TONES);
+  const [effortMenuPos, setEffortMenuPos] = useState<{ x: number; y: number } | null>(null);
+
   const isFullAccess = me?.access_level === "full";
   const ARCHIVE_RETENTION_DAYS = 30;
 
@@ -178,15 +262,32 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: effortColorData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("name"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("current_due_date"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
+      supabase.from("task_effort_colors").select("*"),
     ]);
     setProjects((projectData as ProjectRow[]) ?? []);
     setTasks((taskData as TaskRow[]) ?? []);
     setPeople((peopleData as PersonOption[]) ?? []);
+    if (effortColorData && effortColorData.length) {
+      setEffortColors((prev) => {
+        const next = { ...prev };
+        for (const row of effortColorData as { level: string; tone: string }[]) next[row.level] = row.tone;
+        return next;
+      });
+    }
     setLoading(false);
+  }
+
+  // Full Access only (gated by the insert/update RLS policies too, but we
+  // hide the picker from anyone else). Optimistic update so the swatch
+  // feels instant, then upsert into task_effort_colors.
+  async function setEffortColor(level: string, tone: string) {
+    setEffortColors((prev) => ({ ...prev, [level]: tone }));
+    const { error } = await supabase.from("task_effort_colors").upsert({ level, tone }, { onConflict: "level" });
+    if (error) window.alert(`Couldn't save color: ${error.message}`);
   }
 
   async function loadArchived() {
@@ -448,7 +549,7 @@ export default function Projects() {
         ),
       },
     ],
-    [people, projects, me]
+    [people, projects, me, effortColors]
   );
 
   const projectGroupOptions: GroupOption<ProjectRow>[] = [
@@ -628,6 +729,35 @@ export default function Projects() {
         ),
       },
       {
+        key: "effort",
+        label: "Effort",
+        defaultWidth: 120,
+        maxWidth: 150,
+        render: (t) => {
+          const tone = t.effort ? effortColors[t.effort] ?? "neutral" : "neutral";
+          const Icon = t.effort ? TASK_EFFORT_ICON[t.effort] : null;
+          return (
+            <InlineSelect
+              value={t.effort ?? ""}
+              editable={canEditTask(t)}
+              allowEmpty
+              options={TASK_EFFORT_OPTIONS}
+              renderReadOnly={() =>
+                t.effort ? (
+                  <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {Icon && <Icon size={11} />}
+                    {t.effort}
+                  </span>
+                ) : (
+                  "—"
+                )
+              }
+              onCommit={(v) => updateTask(t.id, { effort: v || null })}
+            />
+          );
+        },
+      },
+      {
         key: "start_date",
         label: "Start",
         defaultWidth: 110,
@@ -703,6 +833,12 @@ export default function Projects() {
       getTone: (t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status)),
     },
     { key: "assignee", label: "Assignee", getGroup: (t) => ownerName(t.assignee_id) },
+    {
+      key: "effort",
+      label: "Effort",
+      getGroup: (t) => t.effort ?? "No effort set",
+      getTone: (t) => (t.effort ? effortColors[t.effort] ?? "neutral" : "neutral"),
+    },
   ];
 
   const taskSortOptions: SortOption<TaskWithDepth>[] = [
@@ -714,6 +850,7 @@ export default function Projects() {
     { key: "current_due_date", label: "Due date", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
     { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => t.time_spent_hours ?? null },
+    { key: "effort", label: "Effort", getValue: (t) => (t.effort ? TASK_EFFORT_POINTS[t.effort] ?? null : null) },
   ];
 
   const taskViews = useTableViews("tasks", me?.id, {
@@ -908,7 +1045,28 @@ export default function Projects() {
             sorts={taskViews.activeView.sorts}
             onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
           />
+          {isFullAccess && (
+            <button
+              className="row-icon-btn"
+              title="Customize Task Effort colors"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setEffortMenuPos(effortMenuPos ? null : { x: rect.left, y: rect.bottom + 4 });
+              }}
+            >
+              <Palette size={13} />
+            </button>
+          )}
         </div>
+        {effortMenuPos && (
+          <div style={{ position: "fixed", left: effortMenuPos.x, top: effortMenuPos.y, zIndex: 50 }}>
+            <EffortColorMenu
+              effortColors={effortColors}
+              onPick={(level, tone) => setEffortColor(level, tone)}
+              onClose={() => setEffortMenuPos(null)}
+            />
+          </div>
+        )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
