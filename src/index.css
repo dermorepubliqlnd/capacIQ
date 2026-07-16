@@ -4,17 +4,84 @@
   --accent: #2e75b6;
   --teal: #4fd1a5;
   --bg: #f4f6f8;
+  --surface: #ffffff;
   --border: #e3e7ec;
   --text: #1a1f2b;
+  --text-secondary: #3a4250;
   --muted: #8a94a6;
+  --success-bg: #e9f7f0;
+  --success-text: #1e8a5f;
+  --warning-bg: #fff6e5;
+  --warning-text: #b8860b;
+  --danger-bg: #fdecec;
+  --danger-text: #c1443c;
+  --hover-bg: #eef2f5;
+
+  --font-page-title: 20px;
+  --font-section: 15px;
+  --font-body: 13.5px;
+  --font-table: 12px;
+  --font-caption: 11px;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  font-size: 14px;
+  font-size: var(--font-body);
+}
+
+h1 {
+  font-size: var(--font-page-title);
+  font-weight: 700;
+  color: var(--navy);
+  margin: 0 0 12px;
+}
+
+h2 {
+  font-size: var(--font-section);
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+
+table {
+  font-size: var(--font-table);
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.status-pill.success { background: var(--success-bg); color: var(--success-text); }
+.status-pill.warning { background: var(--warning-bg); color: var(--warning-text); }
+.status-pill.danger { background: var(--danger-bg); color: var(--danger-text); }
+
+.metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.metric-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 2px;
+}
+.metric-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--navy);
+  margin: 0;
 }
