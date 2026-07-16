@@ -1,26 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Columns3 } from "lucide-react";
-import type { ColumnDef, GroupOption } from "../lib/tableTypes";
+import type { ColumnDef } from "../lib/tableTypes";
 
 interface ColumnsMenuProps<T> {
   columns: ColumnDef<T>[];
   hiddenColumns: string[];
   onToggleColumn: (key: string) => void;
-  groupOptions?: GroupOption<T>[];
-  groupBy: string | null;
-  onGroupByChange?: (key: string | null) => void;
 }
 
-// Dropdown panel (Notion "Properties"-style) for showing/hiding columns and,
-// if the table supports it, picking a group-by field.
-export default function ColumnsMenu<T>({
-  columns,
-  hiddenColumns,
-  onToggleColumn,
-  groupOptions,
-  groupBy,
-  onGroupByChange,
-}: ColumnsMenuProps<T>) {
+// Dropdown panel (Notion "Properties"-style) for showing/hiding columns.
+export default function ColumnsMenu<T>({ columns, hiddenColumns, onToggleColumn }: ColumnsMenuProps<T>) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -56,25 +45,6 @@ export default function ColumnsMenu<T>({
             width: 200,
           }}
         >
-          {groupOptions && groupOptions.length > 0 && (
-            <div style={{ marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid var(--border)" }}>
-              <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
-                Group by
-              </div>
-              <select
-                value={groupBy ?? ""}
-                onChange={(e) => onGroupByChange?.(e.target.value || null)}
-                style={{ width: "100%", fontSize: 11.5, padding: "5px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
-              >
-                <option value="">No grouping</option>
-                {groupOptions.map((g) => (
-                  <option key={g.key} value={g.key}>
-                    {g.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
           <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
             Show / hide
           </div>

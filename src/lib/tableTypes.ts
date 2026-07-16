@@ -21,6 +21,7 @@ export interface TableView {
   hiddenColumns: string[];
   columnWidths: Record<string, number>;
   groupBy: string | null;
+  hiddenGroups: string[];
 }
 
 export type DefaultView = Omit<TableView, "id" | "name">;

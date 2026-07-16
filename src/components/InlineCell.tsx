@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { OptionGroup } from "../lib/notionOptions";
 
 interface BaseProps {
@@ -53,13 +53,45 @@ function isGrouped(options: string[] | OptionGroup[]): options is OptionGroup[] 
 }
 
 export function InlineSelect({ value, onCommit, options, editable, allowEmpty, emptyLabel = "—", renderReadOnly }: InlineSelectProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const selectRef = useRef<HTMLSelectElement>(null);
+
+  useEffect(() => {
+    if (isEditing && selectRef.current) {
+      selectRef.current.focus();
+      // Progressive enhancement: open the native picker immediately on click
+      // (Chrome 121+/similar). Falls back silently to a focused, unopened
+      // select on browsers without showPicker() for <select>.
+      const el = selectRef.current as HTMLSelectElement & { showPicker?: () => void };
+      try {
+        el.showPicker?.();
+      } catch {
+        // ignore — requires a user gesture in some browsers, focus is enough
+      }
+    }
+  }, [isEditing]);
+
   if (!editable) return <>{renderReadOnly ? renderReadOnly(value) : value || emptyLabel}</>;
+
+  if (!isEditing) {
+    return (
+      <span className="inline-select-trigger" onClick={() => setIsEditing(true)}>
+        {renderReadOnly ? renderReadOnly(value) : value || emptyLabel}
+      </span>
+    );
+  }
+
   const grouped = isGrouped(options);
   return (
     <select
+      ref={selectRef}
       className="inline-cell"
       value={value}
-      onChange={(e: ChangeEvent<HTMLSelectElement>) => onCommit(e.target.value)}
+      onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+        onCommit(e.target.value);
+        setIsEditing(false);
+      }}
+      onBlur={() => setIsEditing(false)}
       onClick={(e) => e.stopPropagation()}
     >
       {allowEmpty && <option value="">{emptyLabel}</option>}

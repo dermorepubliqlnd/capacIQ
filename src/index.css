@@ -243,22 +243,42 @@ select.inline-cell { cursor: pointer; }
 }
 .inline-cell.readonly:hover { border-color: transparent; background: transparent; }
 
-/* Task name indentation for 2-level subtasking */
+/* Task name cell: Notion-style sub-task affordances — a collapse/expand
+   chevron on parents that have a sub-task, and a bare "+" icon (hover-only)
+   to add one, capped at parent + 1 sub-task level (no deeper nesting). */
 .task-name-cell { display: flex; align-items: center; gap: 4px; }
 .subtask-connector { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.task-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.task-collapse-toggle:hover { background: var(--hover-bg); color: var(--navy); }
+.task-collapse-spacer { display: inline-block; width: 16px; flex-shrink: 0; }
 .add-subtask-btn {
   opacity: 0;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 10px;
-  color: var(--accent);
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
   background: none;
   border: none;
   cursor: pointer;
   flex-shrink: 0;
+  border-radius: var(--radius-sm);
 }
 tr:hover .add-subtask-btn { opacity: 1; }
+.add-subtask-btn:hover { background: var(--hover-bg); color: var(--accent); }
 
 /* Inline "add row" at the bottom of a dense table */
 .add-row-cell { padding: 4px 8px !important; }
@@ -297,3 +317,27 @@ tr:hover .add-subtask-btn { opacity: 1; }
   cursor: pointer;
 }
 .filter-chip.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+/* Extra pill tones for select-type fields beyond success/warning/danger/neutral
+   (Category, Effort Level, Phase) so every dropdown value is color-coded,
+   loosely matching the colors already assigned to these options in Notion. */
+.status-pill.accent { background: #eaf1fb; color: var(--accent); }
+.status-pill.purple { background: #f3ecfa; color: #7b4fb0; }
+.status-pill.pink { background: #fdecf3; color: #c1447e; }
+
+/* Inline select cells: no visible chevron/border until the cell is actively
+   being edited, so a full table of data doesn't turn into a wall of dropdown
+   arrows. Click a cell to activate its dropdown. */
+.inline-select-trigger { cursor: pointer; border-radius: var(--radius-sm); padding: 3px 4px; display: inline-flex; }
+.inline-select-trigger:hover { background: var(--hover-bg); }
+
+/* Est./Spent hours cells: plain numeric input, no spinner arrows */
+input.inline-cell[type="number"]::-webkit-outer-spin-button,
+input.inline-cell[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.inline-cell[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

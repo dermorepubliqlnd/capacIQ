@@ -12,7 +12,9 @@ function load(storageKey: string, defaultView: DefaultView): TableView[] {
     const raw = localStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw) as TableView[];
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      // Backfill any fields added after a view was first saved (e.g.
+      // hiddenGroups) so older localStorage data doesn't crash newer code.
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((v) => ({ ...defaultView, ...v }));
     }
   } catch {
     // ignore corrupt storage, fall through to default

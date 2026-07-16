@@ -56,3 +56,27 @@ export function statusGroupOf(groups: OptionGroup[], value: string | null): "to_
 }
 
 export const TASK_PHASE_OPTIONS = ["Delivery", "Design", "Development"];
+
+// Tone mapping for color-coded pills, loosely matching each option's color
+// in the source Notion databases (translated to this app's pill palette).
+export const PROJECT_CATEGORY_TONES: Record<string, string> = {
+  "Onboarding": "warning",
+  "Compliance & Safety": "warning",
+  "Technical & Systems": "success",
+  "Leadership": "purple",
+  "Professional Development": "pink",
+  "Operational Support": "danger",
+  "L&D Improvments": "neutral",
+};
+
+export const PROJECT_EFFORT_LEVEL_TONES: Record<string, string> = {
+  "Level 1": "success",
+  "Level 2": "accent",
+  "Level 3": "warning",
+};
+
+export const TASK_PHASE_TONES: Record<string, string> = {
+  Design: "warning",
+  Development: "accent",
+  Delivery: "success",
+};

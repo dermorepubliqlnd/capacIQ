@@ -168,9 +168,12 @@ export default function DataTable<T>({
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g)!.push(row);
     });
+    const hiddenGroups = view.hiddenGroups ?? [];
     body = (
       <tbody>
-        {Array.from(groups.entries()).map(([groupName, groupRows]) => {
+        {Array.from(groups.entries())
+          .filter(([groupName]) => !hiddenGroups.includes(groupName))
+          .map(([groupName, groupRows]) => {
           const collapsed = collapsedGroups.includes(groupName);
           return (
             <Fragment key={`group_${groupName}`}>

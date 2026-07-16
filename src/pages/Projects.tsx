@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, CornerDownRight } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
 import ViewTabs from "../components/ViewTabs";
 import ColumnsMenu from "../components/ColumnsMenu";
+import GroupMenu from "../components/GroupMenu";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import type { ColumnDef, GroupOption } from "../lib/tableTypes";
 import {
   PROJECT_CATEGORY_OPTIONS,
+  PROJECT_CATEGORY_TONES,
   PROJECT_EFFORT_LEVEL_OPTIONS,
+  PROJECT_EFFORT_LEVEL_TONES,
   PROJECT_PRIORITY_OPTIONS,
   PROJECT_STATUS_GROUPED,
   TASK_STATUS_GROUPED,
-  TASK_PHASE_OPTIONS,
   statusGroupOf,
 } from "../lib/notionOptions";
 
@@ -40,7 +42,6 @@ interface TaskRow {
   project_id: string;
   parent_task_id: string | null;
   name: string;
-  phase: string | null;
   status: string | null;
   assignee_id: string | null;
   current_due_date: string;
@@ -52,7 +53,7 @@ interface TaskRow {
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "category", "effort_level", "start_date", "end_date"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "phase", "status", "current_due_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "current_due_date", "estimated_hours", "time_spent_hours"];
 
 function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status);
@@ -114,7 +115,6 @@ export default function Projects() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [projectFilter, setProjectFilter] = useState<string[]>([]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
@@ -124,6 +124,7 @@ export default function Projects() {
   const [newTaskName, setNewTaskName] = useState("");
   const [newTaskProject, setNewTaskProject] = useState("");
   const [newTaskDue, setNewTaskDue] = useState("");
+  const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
 
   const isFullAccess = me?.access_level === "full";
 
@@ -246,13 +247,16 @@ export default function Projects() {
       {
         key: "category",
         label: "Category",
-        defaultWidth: 150,
+        defaultWidth: 170,
         render: (p) => (
           <InlineSelect
             value={p.category ?? ""}
             editable={canEditProject(p)}
             allowEmpty
             options={PROJECT_CATEGORY_OPTIONS}
+            renderReadOnly={() =>
+              p.category ? <span className={`status-pill ${PROJECT_CATEGORY_TONES[p.category] ?? "neutral"}`}>{p.category}</span> : "—"
+            }
             onCommit={(v) => updateProject(p.id, { category: v || null })}
           />
         ),
@@ -267,6 +271,9 @@ export default function Projects() {
             editable={canEditProject(p)}
             allowEmpty
             options={PROJECT_EFFORT_LEVEL_OPTIONS}
+            renderReadOnly={() =>
+              p.effort_level ? <span className={`status-pill ${PROJECT_EFFORT_LEVEL_TONES[p.effort_level] ?? "neutral"}`}>{p.effort_level}</span> : "—"
+            }
             onCommit={(v) => updateProject(p.id, { effort_level: v || null })}
           />
         ),
@@ -299,6 +306,7 @@ export default function Projects() {
     hiddenColumns: [],
     columnWidths: {},
     groupBy: null,
+    hiddenGroups: [],
   });
 
   async function submitNewProject() {
@@ -317,12 +325,14 @@ export default function Projects() {
     loadAll();
   }
 
-  const visibleTasks = useMemo(() => {
-    const base = projectFilter.length === 0 ? tasks : tasks.filter((t) => projectFilter.includes(t.project_id));
-    return buildTaskTree(base);
-  }, [tasks, projectFilter]);
+  const visibleTasks = useMemo(
+    () => buildTaskTree(tasks).filter((t) => !(t.parent_task_id && collapsedParents.includes(t.parent_task_id))),
+    [tasks, collapsedParents]
+  );
+  const hasChildren = (taskId: string) => tasks.some((t) => t.parent_task_id === taskId);
 
   async function addSubtask(parent: TaskWithDepth) {
+    if (parent._depth > 0) return; // only 2 layers total: parent + 1 sub-task level
     const name = window.prompt("Subtask name:");
     if (!name || !name.trim()) return;
     const { error } = await supabase.from("tasks").insert({
@@ -347,20 +357,34 @@ export default function Projects() {
         label: "Task",
         defaultWidth: 260,
         minWidth: 180,
-        render: (t) => (
-          <div className="task-name-cell" style={{ paddingLeft: t._depth * 16 }}>
-            {t._depth > 0 && <CornerDownRight size={11} className="subtask-connector" />}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+        render: (t) => {
+          const children = t._depth === 0 && hasChildren(t.id);
+          const collapsed = children && collapsedParents.includes(t.id);
+          return (
+            <div className="task-name-cell" style={{ paddingLeft: t._depth * 16 }}>
+              {t._depth > 0 && <CornerDownRight size={11} className="subtask-connector" />}
+              {children ? (
+                <button
+                  className="task-collapse-toggle"
+                  onClick={() => setCollapsedParents((prev) => (collapsed ? prev.filter((id) => id !== t.id) : [...prev, t.id]))}
+                  title={collapsed ? "Expand sub-tasks" : "Collapse sub-tasks"}
+                >
+                  {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                </button>
+              ) : (
+                t._depth === 0 && <span className="task-collapse-spacer" />
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+              </div>
+              {t._depth === 0 && canManageTasksIn(t.project_id) && (
+                <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
+                  <Plus size={12} />
+                </button>
+              )}
             </div>
-            {t._depth < 2 && canManageTasksIn(t.project_id) && (
-              <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add subtask">
-                <Plus size={10} />
-                Sub
-              </button>
-            )}
-          </div>
-        ),
+          );
+        },
       },
       {
         key: "project",
@@ -395,14 +419,6 @@ export default function Projects() {
               updateTask(t.id, { assignee_id: person?.id ?? null });
             }}
           />
-        ),
-      },
-      {
-        key: "phase",
-        label: "Phase",
-        defaultWidth: 110,
-        render: (t) => (
-          <InlineSelect value={t.phase ?? ""} editable={canEditTask(t)} allowEmpty options={TASK_PHASE_OPTIONS} onCommit={(v) => updateTask(t.id, { phase: v || null })} />
         ),
       },
       {
@@ -454,8 +470,8 @@ export default function Projects() {
   );
 
   const taskGroupOptions: GroupOption<TaskWithDepth>[] = [
-    { key: "status", label: "Status", getGroup: (t) => t.status ?? "No status" },
     { key: "project", label: "Project", getGroup: (t) => projectName(t.project_id) },
+    { key: "status", label: "Status", getGroup: (t) => t.status ?? "No status" },
     { key: "assignee", label: "Assignee", getGroup: (t) => ownerName(t.assignee_id) },
   ];
 
@@ -463,7 +479,8 @@ export default function Projects() {
     columnOrder: TASK_COLUMN_ORDER,
     hiddenColumns: [],
     columnWidths: {},
-    groupBy: null,
+    groupBy: "project",
+    hiddenGroups: [],
   });
 
   async function submitNewTask() {
@@ -507,20 +524,27 @@ export default function Projects() {
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
           />
-          <ColumnsMenu
-            columns={projectColumns}
-            hiddenColumns={projectViews.activeView.hiddenColumns}
-            onToggleColumn={(key) =>
-              projectViews.updateActiveView({
-                hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
-                  ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
-                  : [...projectViews.activeView.hiddenColumns, key],
-              })
-            }
-            groupOptions={projectGroupOptions}
-            groupBy={projectViews.activeView.groupBy}
-            onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy })}
-          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <GroupMenu
+              rows={projects}
+              groupOptions={projectGroupOptions}
+              groupBy={projectViews.activeView.groupBy}
+              hiddenGroups={projectViews.activeView.hiddenGroups}
+              onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+              onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
+            />
+            <ColumnsMenu
+              columns={projectColumns}
+              hiddenColumns={projectViews.activeView.hiddenColumns}
+              onToggleColumn={(key) =>
+                projectViews.updateActiveView({
+                  hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
+                    ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
+                    : [...projectViews.activeView.hiddenColumns, key],
+                })
+              }
+            />
+          </div>
         </div>
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
@@ -589,27 +613,6 @@ export default function Projects() {
       </div>
 
       <h2 style={{ marginTop: 0 }}>Tasks</h2>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-        <span
-          className={`filter-chip${projectFilter.length === 0 ? " active" : ""}`}
-          onClick={() => setProjectFilter([])}
-        >
-          All projects
-        </span>
-        {[...projects]
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .map((p) => (
-            <span
-              key={p.id}
-              className={`filter-chip${projectFilter.includes(p.id) ? " active" : ""}`}
-              onClick={() =>
-                setProjectFilter((prev) => (prev.includes(p.id) ? prev.filter((id) => id !== p.id) : [...prev, p.id]))
-              }
-            >
-              {p.name}
-            </span>
-          ))}
-      </div>
 
       <div className="card" style={{ padding: 0 }}>
         <div className="table-toolbar">
@@ -621,20 +624,27 @@ export default function Projects() {
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
           />
-          <ColumnsMenu
-            columns={taskColumns}
-            hiddenColumns={taskViews.activeView.hiddenColumns}
-            onToggleColumn={(key) =>
-              taskViews.updateActiveView({
-                hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
-                  ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
-                  : [...taskViews.activeView.hiddenColumns, key],
-              })
-            }
-            groupOptions={taskGroupOptions}
-            groupBy={taskViews.activeView.groupBy}
-            onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy })}
-          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <GroupMenu
+              rows={visibleTasks}
+              groupOptions={taskGroupOptions}
+              groupBy={taskViews.activeView.groupBy}
+              hiddenGroups={taskViews.activeView.hiddenGroups}
+              onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+              onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
+            />
+            <ColumnsMenu
+              columns={taskColumns}
+              hiddenColumns={taskViews.activeView.hiddenColumns}
+              onToggleColumn={(key) =>
+                taskViews.updateActiveView({
+                  hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
+                    ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
+                    : [...taskViews.activeView.hiddenColumns, key],
+                })
+              }
+            />
+          </div>
         </div>
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
