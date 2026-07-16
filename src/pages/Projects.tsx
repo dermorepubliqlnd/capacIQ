@@ -481,14 +481,15 @@ export default function Projects() {
   );
   const hasChildren = (taskId: string) => tasks.some((t) => t.parent_task_id === taskId);
 
+  // Instant creation like createBlankTask/createBlankProject, instead of a
+  // blocking window.prompt() — inherits the parent's due date and is
+  // immediately editable inline via the normal Name cell.
   async function addSubtask(parent: TaskWithDepth) {
     if (parent._depth > 0) return; // only 2 layers total: parent + 1 sub-task level
-    const name = window.prompt("Subtask name:");
-    if (!name || !name.trim()) return;
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
-      name: name.trim(),
+      name: "Untitled sub-task",
       status: "Not Started",
       original_due_date: parent.current_due_date,
       current_due_date: parent.current_due_date,

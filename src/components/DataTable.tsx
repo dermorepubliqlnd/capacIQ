@@ -54,8 +54,13 @@ export default function DataTable<T>({
     .map((k) => columns.find((c) => c.key === k)!)
     .filter(Boolean);
 
-  function widthFor(key: string, def?: number) {
-    return view.columnWidths[key] ?? def ?? 140;
+  function widthFor(key: string, def?: number, min?: number) {
+    const stored = view.columnWidths[key] ?? def ?? 140;
+    // Clamp against the column's minWidth so a stale stored width (saved
+    // before a minWidth existed, or from a narrower column set) can't make
+    // the <td> narrower than the <th> above it — that mismatch is what
+    // made row content look like it was "floating" into the next column.
+    return Math.max(stored, min ?? MIN_COL_WIDTH);
   }
 
   function handleDrop(targetKey: string) {
@@ -74,13 +79,15 @@ export default function DataTable<T>({
     e.preventDefault();
     e.stopPropagation();
     isResizingRef.current = true;
-    const startWidth = widthFor(key, columns.find((c) => c.key === key)?.defaultWidth);
+    const col = columns.find((c) => c.key === key);
+    const startWidth = widthFor(key, col?.defaultWidth, col?.minWidth);
+    const minForCol = col?.minWidth ?? MIN_COL_WIDTH;
     resizeState.current = { key, startX: e.clientX, startWidth };
 
     function onMove(ev: MouseEvent) {
       if (!resizeState.current) return;
       const delta = ev.clientX - resizeState.current.startX;
-      const newWidth = Math.max(MIN_COL_WIDTH, resizeState.current.startWidth + delta);
+      const newWidth = Math.max(minForCol, resizeState.current.startWidth + delta);
       view.columnWidths[resizeState.current.key] = newWidth;
       forceRerender((n) => n + 1);
     }
@@ -129,8 +136,8 @@ export default function DataTable<T>({
             onDrop={() => handleDrop(c.key)}
             style={{
               position: "relative",
-              width: widthFor(c.key, c.defaultWidth),
-              maxWidth: widthFor(c.key, c.defaultWidth),
+              width: widthFor(c.key, c.defaultWidth, c.minWidth),
+              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
               cursor: "grab",
               userSelect: "none",
@@ -158,8 +165,9 @@ export default function DataTable<T>({
           <td
             key={c.key}
             style={{
-              width: widthFor(c.key, c.defaultWidth),
-              maxWidth: widthFor(c.key, c.defaultWidth),
+              width: widthFor(c.key, c.defaultWidth, c.minWidth),
+              maxWidth: widthFor(c.key, c.defaultWidth, c.minWidth),
+              minWidth: c.minWidth ?? MIN_COL_WIDTH,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
