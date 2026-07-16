@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { ColumnDef, GroupOption, TableView } from "../lib/tableTypes";
-import ColumnsMenu from "./ColumnsMenu";
+import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
+import { sortRows } from "../lib/tableTypes";
 
 interface DataTableProps<T> {
   columns: ColumnDef<T>[];
@@ -10,6 +10,7 @@ interface DataTableProps<T> {
   view: TableView;
   onViewChange: (patch: Partial<TableView>) => void;
   groupOptions?: GroupOption<T>[];
+  sortOptions?: SortOption<T>[];
   onRowClick?: (row: T) => void;
   emptyLabel?: string;
   footerRow?: (colSpan: number) => ReactNode;
@@ -28,6 +29,7 @@ export default function DataTable<T>({
   view,
   onViewChange,
   groupOptions,
+  sortOptions,
   onRowClick,
   emptyLabel = "Nothing here yet.",
   footerRow,
@@ -35,6 +37,7 @@ export default function DataTable<T>({
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+  const isResizingRef = useRef(false);
   const [, forceRerender] = useState(0);
 
   const orderedKeys = useMemo(() => {
@@ -68,6 +71,7 @@ export default function DataTable<T>({
   function startResize(key: string, e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    isResizingRef.current = true;
     const startWidth = widthFor(key, columns.find((c) => c.key === key)?.defaultWidth);
     resizeState.current = { key, startX: e.clientX, startWidth };
 
@@ -83,6 +87,11 @@ export default function DataTable<T>({
         onViewChange({ columnWidths: { ...view.columnWidths } });
       }
       resizeState.current = null;
+      // Small delay so a trailing click/dragstart triggered by the same
+      // gesture doesn't briefly re-enter drag-reorder mode.
+      setTimeout(() => {
+        isResizingRef.current = false;
+      }, 0);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     }
@@ -95,15 +104,25 @@ export default function DataTable<T>({
   }
 
   const activeGroupOption = groupOptions?.find((g) => g.key === view.groupBy);
+  const sortedRows = useMemo(
+    () => (sortOptions && view.sorts?.length ? sortRows(rows, view.sorts, sortOptions) : rows),
+    [rows, sortOptions, view.sorts]
+  );
 
   const header = (
     <thead>
-      <tr>
+      <tr className={activeGroupOption ? "is-grouped" : undefined}>
         {visibleColumns.map((c) => (
           <th
             key={c.key}
             draggable
-            onDragStart={() => setDragKey(c.key)}
+            onDragStart={(e) => {
+              if (isResizingRef.current) {
+                e.preventDefault();
+                return;
+              }
+              setDragKey(c.key);
+            }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => handleDrop(c.key)}
             style={{
@@ -120,7 +139,9 @@ export default function DataTable<T>({
             {c.label}
             <span
               onMouseDown={(e) => startResize(c.key, e)}
-              style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize" }}
+              draggable={false}
+              onDragStart={(e) => e.preventDefault()}
+              style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 1 }}
             />
           </th>
         ))}
@@ -151,7 +172,7 @@ export default function DataTable<T>({
 
   let body: ReactNode;
 
-  if (rows.length === 0) {
+  if (sortedRows.length === 0) {
     body = (
       <tbody>
         <tr>
@@ -163,7 +184,7 @@ export default function DataTable<T>({
     );
   } else if (activeGroupOption) {
     const groups = new Map<string, T[]>();
-    rows.forEach((row) => {
+    sortedRows.forEach((row) => {
       const g = activeGroupOption.getGroup(row) || "—";
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g)!.push(row);
@@ -193,7 +214,7 @@ export default function DataTable<T>({
       </tbody>
     );
   } else {
-    body = <tbody>{rows.map((row) => renderRow(row))}</tbody>;
+    body = <tbody>{sortedRows.map((row) => renderRow(row))}</tbody>;
   }
 
   return (
@@ -205,4 +226,3 @@ export default function DataTable<T>({
   );
 }
 
-export { ColumnsMenu };

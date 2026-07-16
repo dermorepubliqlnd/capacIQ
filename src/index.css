@@ -154,7 +154,7 @@ input, select { font-family: var(--font); }
 /* Notion-style view tabs above a data table: flat icon + label list, no
    boxes/borders — active view is just bolder/darker text, like Notion's own
    view-tab bar. */
-.view-tabs { display: flex; align-items: center; gap: 18px; padding: 8px 2px; flex-wrap: nowrap; overflow: hidden; }
+.view-tabs { display: flex; align-items: center; gap: 18px; padding: 8px 2px; flex-wrap: nowrap; overflow-x: auto; overflow-y: visible; }
 .view-tab {
   position: relative;
   display: flex;
@@ -340,4 +340,45 @@ input.inline-cell[type="number"]::-webkit-inner-spin-button {
 input.inline-cell[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
+}
+
+/* Auto-assigned flat-color emoji badge for a project, based on its Category */
+.project-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.project-icon-badge.success { background: var(--success-bg); }
+.project-icon-badge.warning { background: var(--warning-bg); }
+.project-icon-badge.danger { background: var(--danger-bg); }
+.project-icon-badge.neutral { background: var(--hover-bg); }
+.project-icon-badge.accent { background: #eaf1fb; }
+.project-icon-badge.purple { background: #f3ecfa; }
+.project-icon-badge.pink { background: #fdecf3; }
+
+/* Subtle highlight on column headers while a table is grouped, to signal
+   the rows below are segmented rather than a flat list. */
+.data-table thead tr.is-grouped th {
+  background: var(--hover-bg);
+}
+
+/* Count badge inside a view tab (toggled per-view in View Settings) */
+.view-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--hover-bg);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
 }

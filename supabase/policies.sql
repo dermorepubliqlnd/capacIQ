@@ -119,3 +119,23 @@ create policy tasks_update on tasks for update
 -- since every task must belong to exactly one project (no orphan tasks).
 alter table tasks add column if not exists parent_task_id uuid references tasks(id);
 alter table tasks alter column project_id set not null;
+
+-- Archive/restore for Projects & Tasks (soft-delete): archived items drop out
+-- of the main table immediately but stay recoverable for 30 days via a
+-- "View archived" panel, then get purged for good. Archiving is gated to
+-- the same people who can edit the row (project owner or Full Access) --
+-- notably NOT a task's assignee, since making a task disappear from the
+-- project owner's view is a bigger action than editing your own task.
+alter table projects add column if not exists is_archived boolean not null default false;
+alter table projects add column if not exists archived_at timestamptz;
+alter table tasks add column if not exists is_archived boolean not null default false;
+alter table tasks add column if not exists archived_at timestamptz;
+
+create policy projects_delete on projects for delete
+  using (my_access_level() = 'full' or owner_id = my_person_id());
+
+create policy tasks_delete on tasks for delete
+  using (
+    my_access_level() = 'full'
+    or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
+  );

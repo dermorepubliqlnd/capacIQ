@@ -33,10 +33,14 @@ export const PROJECT_STATUS_GROUPED: OptionGroup[] = [
   { label: "Complete", options: ["Canceled", "Done", "Merged"] },
 ];
 
+// Simplified to exactly 3 task statuses per request (Notion's Task DB had
+// Archived/Cancelled as separate "Complete" values, but with the app's own
+// archive/restore system now covering that, a task's own status only needs
+// to track its actual progress).
 export const TASK_STATUS_GROUPED: OptionGroup[] = [
   { label: "To-do", options: ["Not Started"] },
   { label: "In Progress", options: ["In Progress"] },
-  { label: "Complete", options: ["Archived", "Cancelled", "Done"] },
+  { label: "Complete", options: ["Done"] },
 ];
 
 function flatten(groups: OptionGroup[]): string[] {
@@ -80,3 +84,17 @@ export const TASK_PHASE_TONES: Record<string, string> = {
   Development: "accent",
   Delivery: "success",
 };
+
+// Flat-color emoji badges per Category, auto-assigned to each project (no
+// manual icon picking needed) — reuses the same tone colors as the pills.
+export const PROJECT_CATEGORY_ICONS: Record<string, { emoji: string; tone: string }> = {
+  "Onboarding": { emoji: "\ud83d\udc4b", tone: "warning" },
+  "Compliance & Safety": { emoji: "\ud83d\udee1\ufe0f", tone: "warning" },
+  "Technical & Systems": { emoji: "\ud83d\udcbb", tone: "success" },
+  "Leadership": { emoji: "\ud83d\udc51", tone: "purple" },
+  "Professional Development": { emoji: "\ud83d\udcc8", tone: "pink" },
+  "Operational Support": { emoji: "\ud83d\udee0\ufe0f", tone: "danger" },
+  "L&D Improvments": { emoji: "\u2728", tone: "neutral" },
+};
+
+export const DEFAULT_PROJECT_ICON = { emoji: "\ud83d\udcc1", tone: "neutral" };

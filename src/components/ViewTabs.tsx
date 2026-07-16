@@ -1,23 +1,57 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, MoreHorizontal, Pencil, Trash2, Table2 } from "lucide-react";
-import type { TableView } from "../lib/tableTypes";
+import type { GroupOption, TableView } from "../lib/tableTypes";
 
-interface ViewTabsProps {
+interface ViewTabsProps<T> {
   views: TableView[];
   activeViewId: string;
+  rows: T[];
+  groupOptions: GroupOption<T>[];
   onSelect: (id: string) => void;
   onCreate: (name: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onColorChange: (id: string, color: string) => void;
 }
 
 const MAX_VISIBLE = 6;
 
-// Flat, icon + label view-tab bar (matches Notion's own view switcher: no
-// boxes or borders, active view is just bolder/darker text). A small "⋯"
-// menu (visible on hover) opens Rename/Delete instead of cluttering every
-// tab with permanent icons; views beyond MAX_VISIBLE collapse into "N more".
-export default function ViewTabs({ views, activeViewId, onSelect, onCreate, onRename, onDelete }: ViewTabsProps) {
+export const TAB_COLORS: Record<string, string> = {
+  neutral: "var(--navy)",
+  accent: "var(--accent)",
+  success: "var(--success-text)",
+  warning: "var(--warning-text)",
+  danger: "var(--danger-text)",
+  purple: "#7b4fb0",
+  pink: "#c1447e",
+};
+
+// Count of rows still visible under a given view's own grouping settings
+// (its groupBy + hiddenGroups), independent of whichever view is active —
+// each view remembers its own configuration, so this can be computed for
+// every tab, not just the selected one.
+function visibleCountFor<T>(view: TableView, rows: T[], groupOptions: GroupOption<T>[]): number {
+  const option = groupOptions.find((g) => g.key === view.groupBy);
+  if (!option) return rows.length;
+  return rows.filter((r) => !view.hiddenGroups.includes(option.getGroup(r) || "—")).length;
+}
+
+// Flat, icon + label view-tab bar (matches Notion's own view switcher). A
+// small "⋯" menu (visible on hover) opens Rename/Color/Delete instead of
+// cluttering every tab with permanent icons; views beyond MAX_VISIBLE
+// collapse into "N more". Optional per-view count badge (toggled per view
+// in View Settings) and per-view color tint.
+export default function ViewTabs<T>({
+  views,
+  activeViewId,
+  rows,
+  groupOptions,
+  onSelect,
+  onCreate,
+  onRename,
+  onDelete,
+  onColorChange,
+}: ViewTabsProps<T>) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -52,14 +86,19 @@ export default function ViewTabs({ views, activeViewId, onSelect, onCreate, onRe
   }
 
   const activeIdx = views.findIndex((v) => v.id === activeViewId);
-  // Keep the active view within the visible set even if it'd otherwise overflow.
   const visible = activeIdx >= MAX_VISIBLE ? [...views.slice(0, MAX_VISIBLE - 1), views[activeIdx]] : views.slice(0, MAX_VISIBLE);
   const overflow = views.filter((v) => !visible.includes(v));
 
   function renderTab(v: TableView) {
     const active = v.id === activeViewId;
+    const color = TAB_COLORS[v.color] ?? TAB_COLORS.neutral;
     return (
-      <div key={v.id} className={`view-tab${active ? " active" : ""}`} onClick={() => onSelect(v.id)}>
+      <div
+        key={v.id}
+        className={`view-tab${active ? " active" : ""}`}
+        style={{ color: active ? color : undefined }}
+        onClick={() => onSelect(v.id)}
+      >
         {editingId === v.id ? (
           <input
             autoFocus
@@ -75,8 +114,9 @@ export default function ViewTabs({ views, activeViewId, onSelect, onCreate, onRe
           />
         ) : (
           <>
-            <Table2 size={12} className="view-tab-icon" />
+            <Table2 size={12} className="view-tab-icon" style={{ color }} />
             {v.name}
+            {v.showCount && <span className="view-tab-count">{visibleCountFor(v, rows, groupOptions)}</span>}
             <button
               className={`view-tab-menu-btn${menuOpenId === v.id ? " menu-open" : ""}`}
               onClick={(e) => {
@@ -93,6 +133,26 @@ export default function ViewTabs({ views, activeViewId, onSelect, onCreate, onRe
                   <Pencil size={12} />
                   Rename
                 </button>
+                <div style={{ display: "flex", gap: 4, padding: "4px 6px" }}>
+                  {Object.entries(TAB_COLORS).map(([key, hex]) => (
+                    <span
+                      key={key}
+                      onClick={() => {
+                        onColorChange(v.id, key);
+                        setMenuOpenId(null);
+                      }}
+                      title={key}
+                      style={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: "50%",
+                        background: hex,
+                        cursor: "pointer",
+                        border: v.color === key ? "2px solid var(--navy)" : "1px solid var(--border)",
+                      }}
+                    />
+                  ))}
+                </div>
                 {views.length > 1 && (
                   <button
                     className="danger"
