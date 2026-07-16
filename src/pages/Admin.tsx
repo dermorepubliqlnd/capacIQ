@@ -66,7 +66,20 @@ export default function Admin() {
     setSubmitting(false);
 
     if (error || (data as { error?: string })?.error) {
-      setFormError((data as { error?: string })?.error || error?.message || "Failed to invite user.");
+      // supabase-js only gives a generic "non-2xx" message on `error` — the
+      // real reason is in the JSON body of the failed response, reachable via
+      // error.context (the raw Response object).
+      let message = (data as { error?: string })?.error || error?.message || "Failed to invite user.";
+      const context = (error as { context?: Response } | undefined)?.context;
+      if (context && typeof context.json === "function") {
+        try {
+          const body = await context.clone().json();
+          if (body?.error) message = body.error;
+        } catch {
+          // response wasn't JSON — keep the generic message
+        }
+      }
+      setFormError(message);
       return;
     }
 
@@ -81,7 +94,27 @@ export default function Admin() {
   }
 
   async function toggleActive(p: Person) {
-    await supabase.from("people").update({ is_active: !p.is_active }).eq("id", p.id);
+    if (p.id === me?.id && p.is_active) {
+      window.alert(
+        "You can't deactivate your own account from here \u2014 it would immediately lock you out of Admin, " +
+          "since deactivating removes Full Access on the spot. Ask another Full Access person to do it, or deactivate " +
+          "yourself last."
+      );
+      return;
+    }
+
+    const verb = p.is_active ? "deactivate" : "reactivate";
+    const warning = p.is_active
+      ? `Deactivate ${p.name}? They'll immediately lose access to CapacIQ. You can reactivate them any time.`
+      : `Reactivate ${p.name}? They'll regain the access level shown (${p.access_level === "full" ? "Full Access" : "Standard"}).`;
+
+    if (!window.confirm(warning)) return;
+
+    const { error } = await supabase.from("people").update({ is_active: !p.is_active }).eq("id", p.id);
+    if (error) {
+      window.alert(`Couldn't ${verb} ${p.name}: ${error.message}`);
+      return;
+    }
     loadPeople();
   }
 
