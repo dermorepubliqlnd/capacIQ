@@ -87,6 +87,7 @@ function rollupCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
+    height: 31,
     textAlign: "center",
     padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
@@ -97,6 +98,7 @@ function subCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
+    height: 18,
     textAlign: "center",
     padding: "5px 3px",
     borderBottom: "1px solid var(--border)",
@@ -414,7 +416,7 @@ export default function Utilization() {
                             zIndex: 1,
                             background: "#fafbfc",
                             padding: "8px 13px",
-                            fontSize: 15,
+                            fontSize: 12,
                             fontWeight: 600,
                             color: "var(--navy)",
                             borderBottom: "1px solid var(--border)",
@@ -423,8 +425,8 @@ export default function Utilization() {
                           }}
                           onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
                         >
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                             {person.name}
                           </span>
                         </td>
@@ -488,7 +490,7 @@ export default function Utilization() {
                                 left: 0,
                                 background: "var(--surface)",
                                 padding: "5px 13px 5px 35px",
-                                fontSize: 14,
+                                fontSize: 11,
                                 color: "var(--muted)",
                                 borderBottom: "1px solid var(--border)",
                               }}
@@ -513,7 +515,7 @@ export default function Utilization() {
                                       zIndex: 1,
                                       background: "var(--surface)",
                                       padding: "5px 13px 5px 35px",
-                                      fontSize: 14,
+                                      fontSize: 11,
                                       color: "var(--text-secondary)",
                                       borderBottom: "1px solid var(--border)",
                                       whiteSpace: "nowrap",
@@ -523,7 +525,7 @@ export default function Utilization() {
                                     }}
                                   >
                                     {p.name}
-                                    <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>project management</span>
+                                    <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>(PM)</span>
                                   </td>
                                   {days.map((d, i) => {
                                     const dateStr = toISO(d);
@@ -553,7 +555,7 @@ export default function Utilization() {
                                       zIndex: 1,
                                       background: "var(--surface)",
                                       padding: "5px 13px 5px 35px",
-                                      fontSize: 14,
+                                      fontSize: 11,
                                       color: "var(--text-secondary)",
                                       borderBottom: "1px solid var(--border)",
                                       whiteSpace: "nowrap",
@@ -563,8 +565,8 @@ export default function Utilization() {
                                     }}
                                   >
                                     {t.name}
-                                    {proj && <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
-                                    {!t.effort && <span style={{ fontSize: 11, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
+                                    {proj && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
+                                    {!t.effort && <span style={{ fontSize: 9.5, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
                                   </td>
                                   {days.map((d, i) => {
                                     const dateStr = toISO(d);

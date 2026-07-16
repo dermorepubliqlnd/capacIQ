@@ -90,6 +90,7 @@ function rollupCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
+    height: 31,
     textAlign: "center",
     padding: "9px 3px",
     borderBottom: "1px solid var(--border)",
@@ -100,6 +101,7 @@ function subCellStyle(i: number): CSSProperties {
   return {
     width: CELL_W,
     minWidth: CELL_W,
+    height: 18,
     padding: 0,
     borderBottom: "1px solid var(--border)",
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
@@ -458,7 +460,7 @@ export default function DayPlanner() {
                             zIndex: 1,
                             background: "#fafbfc",
                             padding: "8px 13px",
-                            fontSize: 15,
+                            fontSize: 12,
                             fontWeight: 600,
                             color: "var(--navy)",
                             borderBottom: "1px solid var(--border)",
@@ -467,8 +469,8 @@ export default function DayPlanner() {
                           }}
                           onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
                         >
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                             {person.name}
                           </span>
                         </td>
@@ -549,7 +551,7 @@ export default function DayPlanner() {
                                 zIndex: 1,
                                 background: "var(--surface)",
                                 padding: "5px 13px 5px 35px",
-                                fontSize: 14,
+                                fontSize: 11,
                                 color: "var(--text-secondary)",
                                 borderBottom: "1px solid var(--border)",
                                 whiteSpace: "nowrap",
@@ -560,7 +562,7 @@ export default function DayPlanner() {
                             >
                               {item.label}
                               {item.project && (
-                                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>
+                                <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>
                               )}
                             </td>
                             {days.map((d, i) => {
@@ -599,8 +601,8 @@ export default function DayPlanner() {
                                         border: "none",
                                         background: "transparent",
                                         textAlign: "center",
-                                        fontSize: 14,
-                                        padding: "8px 3px",
+                                        fontSize: 11,
+                                        padding: "5px 3px",
                                         color: alloc ? "var(--navy)" : "var(--muted)",
                                         cursor: isMe ? "text" : "default",
                                       }}
