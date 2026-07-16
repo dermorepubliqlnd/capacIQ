@@ -543,6 +543,8 @@ export default function Projects() {
                             <input
                               autoFocus
                               className="add-row-input"
+                              spellCheck={false}
+                              autoComplete="off"
                               placeholder="Project name"
                               value={newProjectName}
                               onChange={(e) => setNewProjectName(e.target.value)}
@@ -655,6 +657,8 @@ export default function Projects() {
                             <input
                               autoFocus
                               className="add-row-input"
+                              spellCheck={false}
+                              autoComplete="off"
                               placeholder="Task name"
                               value={newTaskName}
                               onChange={(e) => setNewTaskName(e.target.value)}

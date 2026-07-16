@@ -18,6 +18,8 @@ export function InlineText({ value, onCommit, editable, bold, emptyLabel = "—"
   return (
     <input
       className="inline-cell"
+      spellCheck={false}
+      autoComplete="off"
       style={bold ? { fontWeight: 600, color: "var(--navy)" } : undefined}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}

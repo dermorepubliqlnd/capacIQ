@@ -193,7 +193,7 @@ export default function Admin() {
         <form onSubmit={handleInvite} className="card" style={{ marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
             Full name
-            <input required value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+            <input required spellCheck={false} autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
           </label>
           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
             Email
@@ -269,6 +269,8 @@ export default function Admin() {
                       <input
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
                         style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
                       />
                     ) : (

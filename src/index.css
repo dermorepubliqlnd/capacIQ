@@ -151,31 +151,31 @@ input, select { font-family: var(--font); }
   border-bottom: 1px solid var(--border);
 }
 
-/* Notion-style view tabs above a data table */
-.view-tabs { display: flex; align-items: center; gap: 4px; }
+/* Notion-style view tabs above a data table: flat icon + label list, no
+   boxes/borders — active view is just bolder/darker text, like Notion's own
+   view-tab bar. */
+.view-tabs { display: flex; align-items: center; gap: 18px; padding: 8px 2px; flex-wrap: nowrap; overflow: hidden; }
 .view-tab {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  font-size: 11.5px;
+  gap: 5px;
+  padding: 2px 0;
+  font-size: 12px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--muted);
   background: transparent;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.view-tab:hover { background: var(--hover-bg); color: var(--navy); }
+.view-tab:hover { color: var(--navy); }
 .view-tab.active {
-  background: var(--surface);
   color: var(--navy);
   font-weight: 600;
-  box-shadow: inset 0 -2px 0 var(--accent);
-  border: 1px solid var(--border);
-  border-bottom: 1px solid var(--surface);
 }
+.view-tab-icon { flex-shrink: 0; opacity: 0.8; }
 .view-tab-menu-btn {
   display: flex;
   align-items: center;
