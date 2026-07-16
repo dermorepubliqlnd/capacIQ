@@ -154,6 +154,7 @@ export default function DataTable<T>({
             />
           </th>
         ))}
+        <th style={{ width: "auto" }} />
       </tr>
     </thead>
   );
@@ -176,6 +177,7 @@ export default function DataTable<T>({
             {c.render(row)}
           </td>
         ))}
+        <td />
       </tr>
     );
   }
@@ -186,7 +188,7 @@ export default function DataTable<T>({
     body = (
       <tbody>
         <tr>
-          <td colSpan={visibleColumns.length || 1} style={{ color: "var(--muted)" }}>
+          <td colSpan={(visibleColumns.length || 1) + 1} style={{ color: "var(--muted)" }}>
             {emptyLabel}
           </td>
         </tr>
@@ -211,7 +213,7 @@ export default function DataTable<T>({
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>
                 <td
-                  colSpan={visibleColumns.length || 1}
+                  colSpan={(visibleColumns.length || 1) + 1}
                   style={{
                     fontWeight: 600,
                     color: groupTone ? TONE_STYLES[groupTone]?.text ?? "var(--navy)" : "var(--navy)",
@@ -228,7 +230,7 @@ export default function DataTable<T>({
               </tr>
               {!collapsed && groupRows.map((row) => renderRow(row))}
               {!collapsed && groupFooterRow && (
-                <tr>{groupFooterRow(visibleColumns.length || 1, { key: groupName, rows: groupRows })}</tr>
+                <tr>{groupFooterRow((visibleColumns.length || 1) + 1, { key: groupName, rows: groupRows })}</tr>
               )}
             </Fragment>
           );
@@ -239,7 +241,7 @@ export default function DataTable<T>({
     body = <tbody>{sortedRows.map((row) => renderRow(row))}</tbody>;
   }
 
-  const footerContent = footerRow ? footerRow(visibleColumns.length || 1) : null;
+  const footerContent = footerRow ? footerRow((visibleColumns.length || 1) + 1) : null;
 
   return (
     <table className="data-table" style={{ tableLayout: "fixed" }}>
