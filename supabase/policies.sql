@@ -113,3 +113,9 @@ create policy tasks_update on tasks for update
     or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
     or assignee_id = my_person_id()
   );
+
+-- Sub-tasking (2 levels beneath a top-level task, mirrors Notion's
+-- Parent-task/Sub-tasks relation) + tightening project_id to required,
+-- since every task must belong to exactly one project (no orphan tasks).
+alter table tasks add column if not exists parent_task_id uuid references tasks(id);
+alter table tasks alter column project_id set not null;

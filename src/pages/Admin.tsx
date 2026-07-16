@@ -280,7 +280,6 @@ export default function Admin() {
                     <select
                       value={p.access_level}
                       onChange={(e) => changeAccessLevel(p, e.target.value as "limited" | "full")}
-                      disabled={isEditing}
                       style={{ fontSize: 11, padding: "3px 5px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
                     >
                       <option value="limited">Limited</option>

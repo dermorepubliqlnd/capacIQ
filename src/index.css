@@ -150,3 +150,150 @@ input, select { font-family: var(--font); }
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
+
+/* Notion-style view tabs above a data table */
+.view-tabs { display: flex; align-items: center; gap: 4px; }
+.view-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+  user-select: none;
+}
+.view-tab:hover { background: var(--hover-bg); color: var(--navy); }
+.view-tab.active {
+  background: var(--surface);
+  color: var(--navy);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border: 1px solid var(--border);
+  border-bottom: 1px solid var(--surface);
+}
+.view-tab-menu-btn {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+.view-tab:hover .view-tab-menu-btn, .view-tab-menu-btn.menu-open { opacity: 1; }
+.view-tab-menu-btn:hover { background: var(--border); }
+.view-tab-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(15,41,66,0.14);
+  padding: 4px;
+  width: 130px;
+}
+.view-tab-dropdown button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+.view-tab-dropdown button:hover { background: var(--hover-bg); }
+.view-tab-dropdown button.danger { color: var(--danger-text); }
+
+/* Inline, click-to-edit table cells (Notion-style): invisible chrome until
+   hover/focus so the dense table doesn't look like a form. */
+.inline-cell {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: var(--font);
+  font-size: var(--font-table);
+  color: var(--text);
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.inline-cell:hover { border-color: var(--border); background: var(--surface); }
+.inline-cell:focus { border-color: var(--accent); background: var(--surface); outline: none; cursor: text; }
+select.inline-cell { cursor: pointer; }
+.inline-cell.readonly {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+  color: var(--text);
+}
+.inline-cell.readonly:hover { border-color: transparent; background: transparent; }
+
+/* Task name indentation for 2-level subtasking */
+.task-name-cell { display: flex; align-items: center; gap: 4px; }
+.subtask-connector { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.add-subtask-btn {
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+tr:hover .add-subtask-btn { opacity: 1; }
+
+/* Inline "add row" at the bottom of a dense table */
+.add-row-cell { padding: 4px 8px !important; }
+.add-row-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font);
+  font-size: var(--font-table);
+  color: var(--text);
+  padding: 3px 4px;
+}
+.add-row-input:focus { outline: none; }
+.add-row-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.add-row-trigger:hover { color: var(--accent); }
+
+/* Multi-select style project filter chips above the Tasks table */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.filter-chip.active { background: var(--navy); border-color: var(--navy); color: #fff; }

@@ -5,8 +5,7 @@ import { useSession } from "../lib/useSession";
 
 const mainItems = [
   { to: "/", label: "Dashboard", end: true },
-  { to: "/projects", label: "Projects" },
-  { to: "/tasks", label: "Tasks" },
+  { to: "/projects", label: "Projects & Tasks" },
   { to: "/extension-requests", label: "Extension requests" },
   { to: "/capacity", label: "Capacity" },
 ];

@@ -12,6 +12,7 @@ interface DataTableProps<T> {
   groupOptions?: GroupOption<T>[];
   onRowClick?: (row: T) => void;
   emptyLabel?: string;
+  footerRow?: (colSpan: number) => ReactNode;
 }
 
 const MIN_COL_WIDTH = 70;
@@ -29,6 +30,7 @@ export default function DataTable<T>({
   groupOptions,
   onRowClick,
   emptyLabel = "Nothing here yet.",
+  footerRow,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
@@ -195,6 +197,7 @@ export default function DataTable<T>({
     <table className="data-table" style={{ tableLayout: "fixed" }}>
       {header}
       {body}
+      {footerRow && <tfoot><tr>{footerRow(visibleColumns.length || 1)}</tr></tfoot>}
     </table>
   );
 }
