@@ -47,7 +47,7 @@ interface HolidayRow {
   category: "legal_ph" | "local" | "internal";
 }
 
-type SubItem = { type: "adhoc" | "project" | "task"; id: string | null; label: string; start: string | null; end: string | null };
+type SubItem = { type: "adhoc" | "project" | "task"; id: string | null; label: string; project?: string; start: string | null; end: string | null };
 
 // Local-timezone date formatting/math throughout — avoids the classic
 // `new Date("YYYY-MM-DD")` UTC-midnight parsing shift (see timingOf() in
@@ -70,7 +70,7 @@ function startOfWeek(d: Date): Date {
   return addDays(r, diff);
 }
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const DAYS_SHOWN = 14;
+const RANGE_OPTIONS = [1, 2, 4] as const;
 const CELL_W = 46;
 const LABEL_W = 220;
 
@@ -136,6 +136,7 @@ export default function DayPlanner() {
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
+  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(2);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [offMenu, setOffMenu] = useState<{ personId: string; date: string; x: number; y: number } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -165,8 +166,19 @@ export default function DayPlanner() {
 
   const days = useMemo(() => {
     const base = addDays(startOfWeek(new Date()), weekOffset * 7);
-    return Array.from({ length: DAYS_SHOWN }, (_, i) => addDays(base, i));
-  }, [weekOffset]);
+    return Array.from({ length: rangeWeeks * 7 }, (_, i) => addDays(base, i));
+  }, [weekOffset, rangeWeeks]);
+
+  // Jump directly to the week containing a chosen date, instead of only
+  // stepping week by week.
+  function jumpToDate(dateStr: string) {
+    if (!dateStr) return;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const chosenMonday = startOfWeek(new Date(y, (m ?? 1) - 1, d ?? 1));
+    const todayMonday = startOfWeek(new Date());
+    const diffWeeks = Math.round((chosenMonday.getTime() - todayMonday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    setWeekOffset(diffWeeks);
+  }
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
 
@@ -181,9 +193,14 @@ export default function DayPlanner() {
   }
 
   function subItemsFor(personId: string): SubItem[] {
-    const items: SubItem[] = [{ type: "adhoc", id: null, label: "Adhoc (meetings, training, non-project work)", start: null, end: null }];
+    const items: SubItem[] = [{ type: "adhoc", id: null, label: "Adhoc", start: null, end: null }];
     projects.filter((p) => p.owner_id === personId).forEach((p) => items.push({ type: "project", id: p.id, label: p.name, start: p.start_date, end: p.end_date }));
-    tasks.filter((t) => t.assignee_id === personId).forEach((t) => items.push({ type: "task", id: t.id, label: t.name, start: t.start_date, end: t.current_due_date }));
+    tasks
+      .filter((t) => t.assignee_id === personId)
+      .forEach((t) => {
+        const proj = projects.find((p) => p.id === t.project_id);
+        items.push({ type: "task", id: t.id, label: t.name, project: proj?.name, start: t.start_date, end: t.current_due_date });
+      });
     return items;
   }
 
@@ -274,15 +291,15 @@ export default function DayPlanner() {
         enter hours or mark days off on your own row.
       </p>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <button onClick={() => setWeekOffset((w) => w - 1)} className="planner-nav-btn" title="Previous week">
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <button onClick={() => setWeekOffset((w) => w - rangeWeeks)} className="planner-nav-btn" title={`Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
           <ChevronLeft size={14} />
         </button>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--navy)" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--navy)", minWidth: 150 }}>
           {days[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })} –{" "}
           {days[days.length - 1].toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
         </span>
-        <button onClick={() => setWeekOffset((w) => w + 1)} className="planner-nav-btn" title="Next week">
+        <button onClick={() => setWeekOffset((w) => w + rangeWeeks)} className="planner-nav-btn" title={`Next ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
           <ChevronRight size={14} />
         </button>
         {weekOffset !== 0 && (
@@ -293,6 +310,32 @@ export default function DayPlanner() {
             Today
           </button>
         )}
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          Show
+          <select
+            value={rangeWeeks}
+            onChange={(e) => setRangeWeeks(Number(e.target.value) as (typeof RANGE_OPTIONS)[number])}
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          >
+            {RANGE_OPTIONS.map((w) => (
+              <option key={w} value={w}>
+                {w} week{w > 1 ? "s" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          Jump to
+          <input
+            type="date"
+            onChange={(e) => jumpToDate(e.target.value)}
+            style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          />
+        </label>
       </div>
 
       <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
@@ -475,7 +518,7 @@ export default function DayPlanner() {
                         items.map((item) => (
                           <tr key={`${person.id}-${item.type}-${item.id ?? "adhoc"}`}>
                             <td
-                              title={item.label}
+                              title={item.project ? `${item.label} — ${item.project}` : item.label}
                               style={{
                                 position: "sticky",
                                 left: 0,
@@ -492,6 +535,9 @@ export default function DayPlanner() {
                               }}
                             >
                               {item.label}
+                              {item.project && (
+                                <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>
+                              )}
                             </td>
                             {days.map((d, i) => {
                               const dateStr = toISO(d);
