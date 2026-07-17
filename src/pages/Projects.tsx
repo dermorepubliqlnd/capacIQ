@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Feather, Weight, BicepsFlexed, Palette } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Feather, Weight, BicepsFlexed } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
-import ViewTabs, { TAB_COLORS } from "../components/ViewTabs";
+import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
 import { useConfirm } from "../lib/useConfirm";
@@ -161,68 +161,6 @@ function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
   return result;
 }
 
-// Lets Sandra (Full Access) recolor each Task Effort level herself instead
-// of the tones being hardcoded — same swatch-row pattern as the View tab
-// color picker (ViewTabs.tsx), rendered fixed-positioned so it can't get
-// clipped by the table's own horizontal-scroll container (the fix that
-// finally solved the same problem for the Day Planner's Off menu).
-function EffortColorMenu({
-  effortColors,
-  onPick,
-  onClose,
-}: {
-  effortColors: Record<string, string>;
-  onPick: (level: string, tone: string) => void;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [onClose]);
-  return (
-    <div
-      ref={ref}
-      className="view-tab-dropdown"
-      style={{ position: "static", width: 190, textAlign: "left" }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div style={{ padding: "4px 8px 6px", fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>Effort colors</div>
-      {TASK_EFFORT_OPTIONS.map((level) => {
-        const Icon = TASK_EFFORT_ICON[level];
-        return (
-          <div key={level} style={{ padding: "4px 8px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 500, marginBottom: 4 }}>
-              <Icon size={11} />
-              {level}
-            </div>
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-              {Object.entries(TAB_COLORS).map(([key, hex]) => (
-                <span
-                  key={key}
-                  onClick={() => onPick(level, key)}
-                  title={key}
-                  style={{
-                    width: 14,
-                    height: 14,
-                    borderRadius: "50%",
-                    background: hex,
-                    cursor: "pointer",
-                    border: effortColors[level] === key ? "2px solid var(--navy)" : "1px solid var(--border)",
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function Projects() {
   const { person: me } = useSession();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -237,12 +175,6 @@ export default function Projects() {
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<TaskRow[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
-
-  // Task Effort colors: DB-driven so Sandra (Full Access) can recolor each
-  // level herself instead of it being hardcoded. Falls back to the seeded
-  // defaults if a level's row hasn't loaded yet.
-  const [effortColors, setEffortColors] = useState<Record<string, string>>(TASK_EFFORT_DEFAULT_TONES);
-  const [effortMenuPos, setEffortMenuPos] = useState<{ x: number; y: number } | null>(null);
 
   const isFullAccess = me?.access_level === "full";
   const ARCHIVE_RETENTION_DAYS = 30;
@@ -260,32 +192,15 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: effortColorData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("name"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("current_due_date"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
-      supabase.from("task_effort_colors").select("*"),
     ]);
     setProjects((projectData as ProjectRow[]) ?? []);
     setTasks((taskData as TaskRow[]) ?? []);
     setPeople((peopleData as PersonOption[]) ?? []);
-    if (effortColorData && effortColorData.length) {
-      setEffortColors((prev) => {
-        const next = { ...prev };
-        for (const row of effortColorData as { level: string; tone: string }[]) next[row.level] = row.tone;
-        return next;
-      });
-    }
     setLoading(false);
-  }
-
-  // Full Access only (gated by the insert/update RLS policies too, but we
-  // hide the picker from anyone else). Optimistic update so the swatch
-  // feels instant, then upsert into task_effort_colors.
-  async function setEffortColor(level: string, tone: string) {
-    setEffortColors((prev) => ({ ...prev, [level]: tone }));
-    const { error } = await supabase.from("task_effort_colors").upsert({ level, tone }, { onConflict: "level" });
-    if (error) window.alert(`Couldn't save color: ${error.message}`);
   }
 
   async function loadArchived() {
@@ -547,7 +462,7 @@ export default function Projects() {
         ),
       },
     ],
-    [people, projects, me, effortColors]
+    [people, projects, me]
   );
 
   const projectGroupOptions: GroupOption<ProjectRow>[] = [
@@ -733,7 +648,7 @@ export default function Projects() {
         minWidth: 60,
         maxWidth: 100,
         render: (t) => {
-          const tone = t.effort ? effortColors[t.effort] ?? "neutral" : "neutral";
+          const tone = t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral";
           const Icon = t.effort ? TASK_EFFORT_ICON[t.effort] : null;
           return (
             <InlineSelect
@@ -835,7 +750,7 @@ export default function Projects() {
       key: "effort",
       label: "Effort",
       getGroup: (t) => t.effort ?? "No effort set",
-      getTone: (t) => (t.effort ? effortColors[t.effort] ?? "neutral" : "neutral"),
+      getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
     },
   ];
 
@@ -1046,18 +961,6 @@ export default function Projects() {
               sorts={taskViews.activeView.sorts}
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
             />
-            {isFullAccess && (
-              <button
-                className="toolbar-icon-btn"
-                title="Customize Task Effort colors"
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  setEffortMenuPos(effortMenuPos ? null : { x: rect.left, y: rect.bottom + 4 });
-                }}
-              >
-                <Palette size={13} />
-              </button>
-            )}
           </div>
         </div>
         <ViewFilterPills
@@ -1070,15 +973,6 @@ export default function Projects() {
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
         />
-        {effortMenuPos && (
-          <div style={{ position: "fixed", left: effortMenuPos.x, top: effortMenuPos.y, zIndex: 50 }}>
-            <EffortColorMenu
-              effortColors={effortColors}
-              onPick={(level, tone) => setEffortColor(level, tone)}
-              onClose={() => setEffortMenuPos(null)}
-            />
-          </div>
-        )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (

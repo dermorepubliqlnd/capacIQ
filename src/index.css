@@ -96,11 +96,12 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
   color: var(--muted);
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  border-right: 1px solid var(--border);
 }
 .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); font-size: var(--font-table); }
-/* Light column-width guides, like Notion's own database grid lines. */
-.data-table th:last-child, .data-table td:last-child { border-right: none; }
+/* Light column-width guides, like Notion's own database grid lines --
+   row cells only, not the header row (Notion doesn't divide its header
+   labels with vertical rules, only the rows below them). */
+.data-table td:last-child { border-right: none; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; }
 
@@ -459,8 +460,8 @@ input.inline-cell[type="date"] {
   flex: 0 0 auto;
 }
 input.inline-cell[type="date"]::-webkit-calendar-picker-indicator {
-  margin-left: 4px;
-  padding: 2px;
+  margin-left: 2px;
+  padding: 1px;
 }
 
 /* Auto-assigned flat-color emoji badge for a project, based on its Category */
