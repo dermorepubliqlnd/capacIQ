@@ -262,17 +262,24 @@ export default function DataTable<T>({
     <thead>
       <tr className={activeGroupOption ? "is-grouped" : undefined}>
         {hasGutter && (
-          <th style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH }}>
+          <th style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH, padding: 0 }}>
             {selectable && (
-              <input
-                type="checkbox"
-                className="row-checkbox"
-                checked={allSelected}
-                ref={(el) => {
-                  if (el) el.indeterminate = !allSelected && someSelected;
-                }}
-                onChange={() => onToggleSelectAll?.(allVisibleKeys)}
-              />
+              // Matches the body row's gutter layout exactly (an invisible
+              // spacer standing in for the grip handle's width + gap) so
+              // the header checkbox lines up with the ones below it,
+              // instead of sitting flush against the column's left edge.
+              <div style={{ display: "flex", alignItems: "center", gap: 2, paddingLeft: 8 }}>
+                <span style={{ display: "inline-block", width: 16, flexShrink: 0 }} />
+                <input
+                  type="checkbox"
+                  className="row-checkbox"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = !allSelected && someSelected;
+                  }}
+                  onChange={() => onToggleSelectAll?.(allVisibleKeys)}
+                />
+              </div>
             )}
           </th>
         )}
@@ -350,7 +357,7 @@ export default function DataTable<T>({
               {selectable && (
                 <input type="checkbox" className="row-checkbox" checked={isSelected} onChange={() => onToggleSelect?.(key)} />
               )}
-              {rowMenuActions && actions.length > 0 && <RowActionMenu actions={actions} />}
+              {rowMenuActions && actions.length > 0 && !isSelected && <RowActionMenu actions={actions} />}
             </div>
           </td>
         )}

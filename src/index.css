@@ -460,8 +460,8 @@ input.inline-cell[type="date"] {
   flex: 0 0 auto;
 }
 input.inline-cell[type="date"]::-webkit-calendar-picker-indicator {
-  margin-left: 2px;
-  padding: 1px;
+  margin-left: -4px;
+  padding: 0;
 }
 
 /* Auto-assigned flat-color emoji badge for a project, based on its Category */

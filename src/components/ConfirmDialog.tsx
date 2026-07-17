@@ -6,6 +6,10 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  // When true, renders as a plain OK-only notice (no Cancel button, no
+  // danger styling implied) -- used for validation/error messages that
+  // used to be window.alert(), so they match the app's own dialog style.
+  hideCancel?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -20,12 +24,13 @@ export default function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   danger = false,
+  hideCancel = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   return (
     <div
-      onClick={onCancel}
+      onClick={hideCancel ? onConfirm : onCancel}
       style={{
         position: "fixed",
         inset: 0,
@@ -59,12 +64,14 @@ export default function ConfirmDialog({
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button
-            onClick={onCancel}
-            style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }}
-          >
-            {cancelLabel}
-          </button>
+          {!hideCancel && (
+            <button
+              onClick={onCancel}
+              style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }}
+            >
+              {cancelLabel}
+            </button>
+          )}
           <button
             onClick={onConfirm}
             style={{

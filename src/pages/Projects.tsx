@@ -102,6 +102,17 @@ function healthRank(label: string): number {
   return 3;
 }
 
+// Same worst-first idea as healthRank, for Tasks' analogous computed
+// "Timing" column (Overdue/Due soon/On track while open, Late/On time once
+// complete).
+function timingRank(label: string): number {
+  if (label === "Overdue") return 0;
+  if (label === "Late") return 1;
+  if (label === "Due soon") return 2;
+  if (label === "On track") return 3;
+  return 4;
+}
+
 function priorityTone(priority: string | null): "success" | "warning" | "danger" | "neutral" {
   if (priority === "High") return "danger";
   if (priority === "Medium") return "warning";
@@ -230,7 +241,7 @@ export default function Projects() {
   const [loading, setLoading] = useState(true);
 
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
-  const { confirm, dialog: confirmDialog } = useConfirm();
+  const { confirm, alert, dialog: confirmDialog } = useConfirm();
 
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
@@ -303,7 +314,7 @@ export default function Projects() {
     setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
     const { error } = await supabase.from("projects").update(patch).eq("id", id);
     if (error) {
-      window.alert(`Couldn't save: ${error.message}`);
+      alert(`Couldn't save: ${error.message}`);
       loadAll();
     }
   }
@@ -312,33 +323,46 @@ export default function Projects() {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
     const { error } = await supabase.from("tasks").update(patch).eq("id", id);
     if (error) {
-      window.alert(`Couldn't save: ${error.message}`);
+      alert(`Couldn't save: ${error.message}`);
       loadAll();
     }
   }
 
   async function archiveProject(p: ProjectRow) {
+    const childTaskCount = tasks.filter((t) => t.project_id === p.id).length;
     const ok = await confirm({
       title: "Delete project",
-      message: `Delete "${p.name}"? It'll be archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
+      message:
+        childTaskCount > 0
+          ? `Delete "${p.name}"? This will also archive its ${childTaskCount} task${childTaskCount > 1 ? "s" : ""}. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
+          : `Delete "${p.name}"? It'll be archived and can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: new Date().toISOString() }).eq("id", p.id);
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: now }).eq("id", p.id);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
+    // Projects are the only thing that gets a 30-day archive/restore -- but
+    // a project's tasks shouldn't keep showing on the main Tasks table once
+    // their parent project is gone, so they're cascade-archived alongside
+    // it (and cascade-restored in restoreProject below) even though a task
+    // can't be archived any other way (see deleteTask/bulkDeleteTasks,
+    // which hard-delete instead).
+    await supabase.from("tasks").update({ is_archived: true, archived_at: now }).eq("project_id", p.id);
     loadAll();
   }
 
   async function restoreProject(id: string) {
     const { error } = await supabase.from("projects").update({ is_archived: false, archived_at: null }).eq("id", id);
     if (error) {
-      window.alert(`Couldn't restore: ${error.message}`);
+      alert(`Couldn't restore: ${error.message}`);
       return;
     }
+    await supabase.from("tasks").update({ is_archived: false, archived_at: null }).eq("project_id", id);
     loadArchived();
     loadAll();
   }
@@ -351,9 +375,10 @@ export default function Projects() {
       danger: true,
     });
     if (!ok) return;
+    await supabase.from("tasks").delete().eq("project_id", p.id);
     const { error } = await supabase.from("projects").delete().eq("id", p.id);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadArchived();
@@ -365,7 +390,7 @@ export default function Projects() {
     setProjects((prev) => prev.map((p) => (ids.includes(p.id) ? { ...p, ...patch } : p)));
     const { error } = await supabase.from("projects").update(patch).in("id", ids);
     if (error) {
-      window.alert(`Couldn't update: ${error.message}`);
+      alert(`Couldn't update: ${error.message}`);
       loadAll();
     }
   }
@@ -373,18 +398,24 @@ export default function Projects() {
   async function bulkDeleteProjects() {
     const ids = selectedProjectIds;
     if (ids.length === 0) return;
+    const childTaskCount = tasks.filter((t) => ids.includes(t.project_id)).length;
     const ok = await confirm({
       title: "Delete projects",
-      message: `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? They'll be archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
+      message:
+        childTaskCount > 0
+          ? `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? This will also archive ${childTaskCount} task${childTaskCount > 1 ? "s" : ""} in them. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
+          : `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? They'll be archived and can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: new Date().toISOString() }).in("id", ids);
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: now }).in("id", ids);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
+    await supabase.from("tasks").update({ is_archived: true, archived_at: now }).in("project_id", ids);
     setSelectedProjectIds([]);
     loadAll();
   }
@@ -404,7 +435,7 @@ export default function Projects() {
     setProjects((prev) => prev.map((p) => (p.id === draggedId ? { ...p, sort_order: newVal } : p)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)));
     const { error } = await supabase.from("projects").update({ sort_order: newVal }).eq("id", draggedId);
     if (error) {
-      window.alert(`Couldn't reorder: ${error.message}`);
+      alert(`Couldn't reorder: ${error.message}`);
       loadAll();
     }
   }
@@ -413,20 +444,25 @@ export default function Projects() {
     setSelectedProjectIds((prev) => (keys.every((k) => prev.includes(k)) ? prev.filter((k) => !keys.includes(k)) : Array.from(new Set([...prev, ...keys]))));
   }
 
-  async function archiveTask(t: TaskRow) {
+  // Tasks are never archived on their own -- only projects get the 30-day
+  // archive/restore treatment (a task can still end up briefly archived as
+  // a side effect of its parent project being deleted, see archiveProject
+  // above). Deleting a task directly is a plain, immediate, hard delete
+  // behind a simple "are you sure" confirmation.
+  async function deleteTask(t: TaskRow) {
     const childIds = tasks.filter((x) => x.parent_task_id === t.id).map((x) => x.id);
     const warning =
       childIds.length > 0
-        ? `Delete "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`
-        : `Delete "${t.name}"? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`;
+        ? `Delete "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? This can't be undone.`
+        : `Delete "${t.name}"? This can't be undone.`;
     const ok = await confirm({ title: "Delete task", message: warning, confirmLabel: "Delete", danger: true });
     if (!ok) return;
     const { error } = await supabase
       .from("tasks")
-      .update({ is_archived: true, archived_at: new Date().toISOString() })
+      .delete()
       .in("id", [t.id, ...childIds]);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadAll();
@@ -435,7 +471,7 @@ export default function Projects() {
   async function restoreTask(id: string) {
     const { error } = await supabase.from("tasks").update({ is_archived: false, archived_at: null }).eq("id", id);
     if (error) {
-      window.alert(`Couldn't restore: ${error.message}`);
+      alert(`Couldn't restore: ${error.message}`);
       return;
     }
     loadArchived();
@@ -452,7 +488,7 @@ export default function Projects() {
     if (!ok) return;
     const { error } = await supabase.from("tasks").delete().eq("id", t.id);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadArchived();
@@ -464,7 +500,7 @@ export default function Projects() {
     setTasks((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, ...patch } : t)));
     const { error } = await supabase.from("tasks").update(patch).in("id", ids);
     if (error) {
-      window.alert(`Couldn't update: ${error.message}`);
+      alert(`Couldn't update: ${error.message}`);
       loadAll();
     }
   }
@@ -476,14 +512,14 @@ export default function Projects() {
     const allIds = Array.from(new Set([...ids, ...childIds]));
     const ok = await confirm({
       title: "Delete tasks",
-      message: `Delete ${ids.length} task${ids.length > 1 ? "s" : ""}${childIds.length ? ` (and ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""})` : ""}? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`,
+      message: `Delete ${ids.length} task${ids.length > 1 ? "s" : ""}${childIds.length ? ` (and ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""})` : ""}? This can't be undone.`,
       confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("tasks").update({ is_archived: true, archived_at: new Date().toISOString() }).in("id", allIds);
+    const { error } = await supabase.from("tasks").delete().in("id", allIds);
     if (error) {
-      window.alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error.message}`);
       return;
     }
     setSelectedTaskIds([]);
@@ -505,7 +541,7 @@ export default function Projects() {
     setTasks((prev) => prev.map((t) => (t.id === draggedId ? { ...t, sort_order: newVal } : t)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)));
     const { error } = await supabase.from("tasks").update({ sort_order: newVal }).eq("id", draggedId);
     if (error) {
-      window.alert(`Couldn't reorder: ${error.message}`);
+      alert(`Couldn't reorder: ${error.message}`);
       loadAll();
     }
   }
@@ -648,7 +684,7 @@ export default function Projects() {
             editable={canEditProject(p)}
             onCommit={(v) => {
               if (v && p.end_date && v > p.end_date) {
-                window.alert("Start date can't be after the due date.");
+                alert("Start date can't be after the due date.");
                 return;
               }
               updateProject(p.id, { start_date: v || null });
@@ -667,7 +703,7 @@ export default function Projects() {
             editable={canEditProject(p)}
             onCommit={(v) => {
               if (v && p.start_date && v < p.start_date) {
-                window.alert("Due date can't be before the start date.");
+                alert("Due date can't be before the start date.");
                 return;
               }
               updateProject(p.id, { end_date: v || null });
@@ -679,6 +715,12 @@ export default function Projects() {
     [people, projects, me]
   );
 
+  // Labels here are kept identical to each column's own header text
+  // (e.g. "Project" not "Name", "Start"/"Due" not "Start date"/"Due date")
+  // so the Sort/Group-by pickers read as the same fields people see in the
+  // table, and every column that makes sense to sort or group by is listed
+  // -- previously Owner and Effort were missing from Sort, silently making
+  // some columns impossible to sort on.
   const projectGroupOptions: GroupOption<ProjectRow>[] = [
     {
       key: "project_status",
@@ -700,6 +742,12 @@ export default function Projects() {
       getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
     },
     {
+      key: "effort_level",
+      label: "Effort",
+      getGroup: (p) => p.effort_level ?? "No effort set",
+      getTone: (p) => PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral",
+    },
+    {
       key: "health",
       label: "Health",
       getGroup: (p) => healthOf(p).label,
@@ -708,12 +756,14 @@ export default function Projects() {
   ];
 
   const projectSortOptions: SortOption<ProjectRow>[] = [
-    { key: "name", label: "Name", getValue: (p) => p.name ?? "" },
+    { key: "name", label: "Project", getValue: (p) => p.name ?? "" },
+    { key: "owner", label: "Owner", getValue: (p) => ownerName(p.owner_id) },
     { key: "priority", label: "Priority", getValue: (p) => PROJECT_PRIORITY_OPTIONS.indexOf(p.priority ?? "") },
     { key: "project_status", label: "Status", getValue: (p) => p.project_status ?? "" },
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
-    { key: "start_date", label: "Start date", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
-    { key: "end_date", label: "Due date", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
+    { key: "effort_level", label: "Effort", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
+    { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
+    { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p).label) },
   ];
 
@@ -731,7 +781,7 @@ export default function Projects() {
   async function createBlankProject() {
     const { error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() });
     if (error) {
-      window.alert(`Couldn't create project: ${error.message}`);
+      alert(`Couldn't create project: ${error.message}`);
       return;
     }
     loadAll();
@@ -758,7 +808,7 @@ export default function Projects() {
       sort_order: Date.now(),
     });
     if (error) {
-      window.alert(`Couldn't add subtask: ${error.message}`);
+      alert(`Couldn't add subtask: ${error.message}`);
       return;
     }
     loadAll();
@@ -896,7 +946,7 @@ export default function Projects() {
             editable={canEditTask(t)}
             onCommit={(v) => {
               if (v && t.current_due_date && v > t.current_due_date) {
-                window.alert("Start date can't be after the due date.");
+                alert("Start date can't be after the due date.");
                 return;
               }
               updateTask(t.id, { start_date: v || null });
@@ -926,7 +976,7 @@ export default function Projects() {
             onCommit={(v) => {
               if (!v) return;
               if (t.start_date && v < t.start_date) {
-                window.alert("Due date can't be before the start date.");
+                alert("Due date can't be before the start date.");
                 return;
               }
               updateTask(t.id, { current_due_date: v });
@@ -967,18 +1017,28 @@ export default function Projects() {
       getGroup: (t) => t.effort ?? "No effort set",
       getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
     },
+    {
+      key: "timing",
+      label: "Timing",
+      getGroup: (t) => timingOf(t).label,
+      getTone: (t) => timingOf(t).tone,
+    },
   ];
 
+  // Labels here match each column's own header text exactly (e.g. "Task"
+  // not "Name", "Start"/"Due" not "Start date"/"Due date"), and every
+  // sortable column is listed -- "Timing" was previously missing entirely.
   const taskSortOptions: SortOption<TaskWithDepth>[] = [
-    { key: "name", label: "Name", getValue: (t) => t.name ?? "" },
+    { key: "name", label: "Task", getValue: (t) => t.name ?? "" },
     { key: "project", label: "Project", getValue: (t) => projectName(t.project_id) },
     { key: "assignee", label: "Assignee", getValue: (t) => ownerName(t.assignee_id) },
     { key: "status", label: "Status", getValue: (t) => t.status ?? "" },
-    { key: "start_date", label: "Start date", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
-    { key: "current_due_date", label: "Due date", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
+    { key: "effort", label: "Effort", getValue: (t) => (t.effort ? TASK_EFFORT_POINTS[t.effort] ?? null : null) },
+    { key: "start_date", label: "Start", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
+    { key: "timing", label: "Timing", getValue: (t) => timingRank(timingOf(t).label) },
+    { key: "current_due_date", label: "Due", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
     { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => t.time_spent_hours ?? null },
-    { key: "effort", label: "Effort", getValue: (t) => (t.effort ? TASK_EFFORT_POINTS[t.effort] ?? null : null) },
   ];
 
   const taskViews = useTableViews("tasks", me?.id, {
@@ -998,7 +1058,7 @@ export default function Projects() {
   // multi-field add form.
   async function createBlankTask(projectId: string) {
     if (!projectId) {
-      window.alert("Create a project first before adding tasks.");
+      alert("Create a project first before adding tasks.");
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -1011,7 +1071,7 @@ export default function Projects() {
       sort_order: Date.now(),
     });
     if (error) {
-      window.alert(`Couldn't create task: ${error.message}`);
+      alert(`Couldn't create task: ${error.message}`);
       return;
     }
     loadAll();
@@ -1247,7 +1307,7 @@ export default function Projects() {
               onToggleSelectAll={toggleTaskSelectAll}
               orderable
               onReorder={reorderTasks}
-              rowMenuActions={(t) => (canManageTasksIn(t.project_id) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => archiveTask(t) }] : [])}
+              rowMenuActions={(t) => (canManageTasksIn(t.project_id) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => deleteTask(t) }] : [])}
               footerRow={
                 canCreateTask && taskViews.activeView.groupBy !== "project"
                   ? (colSpan) => (

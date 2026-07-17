@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpDown, ListFilter, SlidersHorizontal, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
+import { ArrowUpDown, Layers, SlidersHorizontal, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, SortRule } from "../lib/tableTypes";
 
 interface ViewControlsProps<T> {
@@ -201,12 +201,12 @@ export default function ViewSettingsMenu<T>({
         )}
       </IconPopoverButton>
 
-      <IconPopoverButton icon={<ListFilter size={13} />} label="Filter" active={Boolean(groupBy)}>
+      <IconPopoverButton icon={<Layers size={13} />} label="Group by" active={Boolean(groupBy)}>
         {(close) => (
           <>
-            <PopoverHeader label="Filter" onClose={close} />
+            <PopoverHeader label="Group by" onClose={close} />
             <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
-              Filter by
+              Group by
             </div>
             <select
               value={groupBy ?? ""}
@@ -302,9 +302,9 @@ export function ViewFilterPills<T>({
     <div className="view-filter-pills">
       {activeOption && (
         <span className="filter-pill">
-          Filtered by {activeOption.label}
+          Grouped by {activeOption.label}
           <button
-            title="Clear filter"
+            title="Clear grouping"
             onClick={() => {
               onGroupByChange(null);
               onHiddenGroupsChange([]);
