@@ -2201,7 +2201,7 @@ export default function Projects() {
               style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", padding: "5px 10px", cursor: "pointer" }}
             >
               <CalendarClock size={13} />
-              Request another extension
+              {dueDateExtStatus(extDetailTask).label === "Extended" ? "Request another extension" : "Request extension"}
             </button>
           )}
         </Modal>
