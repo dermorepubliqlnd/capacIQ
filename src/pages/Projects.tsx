@@ -1190,7 +1190,7 @@ export default function Projects() {
                 })
               }
               groupOptions={projectGroupOptions}
-              groupBy={projectViews.activeView.groupBy}
+              groupBy={projectViews.activeView.viewType === "board" ? "project_status" : projectViews.activeView.groupBy}
               hiddenGroups={projectViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
@@ -1205,7 +1205,7 @@ export default function Projects() {
         </div>
         <ViewFilterPills
           groupOptions={projectGroupOptions}
-          groupBy={projectViews.activeView.groupBy}
+          groupBy={projectViews.activeView.viewType === "board" ? "project_status" : projectViews.activeView.groupBy}
           hiddenGroups={projectViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
@@ -1325,7 +1325,7 @@ export default function Projects() {
                 })
               }
               groupOptions={taskGroupOptions}
-              groupBy={taskViews.activeView.groupBy}
+              groupBy={taskViews.activeView.viewType === "board" ? "status" : taskViews.activeView.groupBy}
               hiddenGroups={taskViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
@@ -1340,7 +1340,7 @@ export default function Projects() {
         </div>
         <ViewFilterPills
           groupOptions={taskGroupOptions}
-          groupBy={taskViews.activeView.groupBy}
+          groupBy={taskViews.activeView.viewType === "board" ? "status" : taskViews.activeView.groupBy}
           hiddenGroups={taskViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
