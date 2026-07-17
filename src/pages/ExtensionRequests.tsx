@@ -24,6 +24,7 @@ interface ExtensionRequestRow {
   task: {
     id: string;
     name: string;
+    assignee_id: string | null;
     original_due_date: string;
     current_due_date: string;
     project_id: string;
@@ -61,7 +62,7 @@ export default function ExtensionRequests() {
         .from("extension_requests")
         .select(
           `id, requested_new_due_date, reason_category, reason_notes, status, decided_at, decision_notes, is_manager_initiated, created_at,
-           task:tasks!extension_requests_task_id_fkey ( id, name, original_due_date, current_due_date, project_id, project:projects ( id, name, owner_id ) ),
+           task:tasks!extension_requests_task_id_fkey ( id, name, assignee_id, original_due_date, current_due_date, project_id, project:projects ( id, name, owner_id ) ),
            requester:people!extension_requests_requested_by_fkey ( id, name ),
            decider:people!extension_requests_decided_by_fkey ( id, name )`
         )
@@ -93,6 +94,8 @@ export default function ExtensionRequests() {
     }
     return false;
   }
+
+  const assigneeName = (id: string | null) => people.find((p) => p.id === id)?.name ?? "\u2014";
 
   async function decide(row: ExtensionRequestRow, status: "Approved" | "Rejected") {
     if (status === "Rejected") {
@@ -130,6 +133,7 @@ export default function ExtensionRequests() {
           <tr>
             <th style={{ width: 22 }}></th>
             <th>Task</th>
+            <th>Assignee</th>
             <th>Project</th>
             <th>Requested by</th>
             <th>Current due</th>
@@ -154,8 +158,16 @@ export default function ExtensionRequests() {
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "var(--muted)" }}>(manager-initiated)</span>
                     )}
                   </td>
+                  <td>{assigneeName(row.task?.assignee_id ?? null)}</td>
                   <td>{row.task?.project?.name ?? "—"}</td>
-                  <td>{row.requester?.name ?? "—"}</td>
+                  <td style={{ fontWeight: row.task?.assignee_id !== row.requester?.id ? 600 : 400 }}>
+                    {row.requester?.name ?? "—"}
+                    {row.task && row.requester && row.task.assignee_id !== row.requester.id && (
+                      <span style={{ marginLeft: 5, fontSize: 9, fontWeight: 600, color: "var(--muted)" }} title="Requested on behalf of the assignee">
+                        (on behalf)
+                      </span>
+                    )}
+                  </td>
                   <td>{row.task?.current_due_date ?? "—"}</td>
                   <td style={{ fontWeight: 600 }}>{row.requested_new_due_date}</td>
                   <td>
@@ -170,7 +182,7 @@ export default function ExtensionRequests() {
                 {expanded && (
                   <tr>
                     <td></td>
-                    <td colSpan={7} style={{ background: "var(--bg)", padding: "10px 14px" }}>
+                    <td colSpan={8} style={{ background: "var(--bg)", padding: "10px 14px" }}>
                       <div style={{ fontSize: 11.5, marginBottom: 6 }}>
                         <span style={{ color: "var(--muted)" }}>Reason notes:</span> {row.reason_notes}
                       </div>
@@ -253,14 +265,23 @@ export default function ExtensionRequests() {
     }, [requests]);
     const topCategory = categoryCounts[0]?.[0] ?? "—";
 
+    // "On behalf of" = requester isn't the task's assignee -- almost
+    // always the project owner acting for someone else. Requested by
+    // Sandra to distinguish self-service extension requests from ones
+    // filed on an assignee's behalf, since those are different behavior
+    // patterns worth tracking separately (2026-07-17).
+    const onBehalfCount = requests.filter((r) => r.task && r.task.assignee_id !== r.requester?.id).length;
+    const onBehalfRate = requests.length > 0 ? Math.round((onBehalfCount / requests.length) * 100) : null;
+
     // Per requester: count, approval rate, avg days extended, how many
     // needed manager escalation (a proxy for "requesting extensions on
-    // their own project" -- the one case that bypasses owner approval).
+    // their own project" -- the one case that bypasses owner approval),
+    // and how many were filed on behalf of a different assignee.
     const byRequester = useMemo(() => {
-      const map: Record<string, { name: string; total: number; approved: number; rejected: number; pending: number; escalated: number; daysList: number[] }> = {};
+      const map: Record<string, { name: string; total: number; approved: number; rejected: number; pending: number; escalated: number; onBehalf: number; daysList: number[] }> = {};
       requests.forEach((r) => {
         const id = r.requester?.id ?? "unknown";
-        if (!map[id]) map[id] = { name: r.requester?.name ?? "—", total: 0, approved: 0, rejected: 0, pending: 0, escalated: 0, daysList: [] };
+        if (!map[id]) map[id] = { name: r.requester?.name ?? "—", total: 0, approved: 0, rejected: 0, pending: 0, escalated: 0, onBehalf: 0, daysList: [] };
         map[id].total += 1;
         if (r.status === "Approved") {
           map[id].approved += 1;
@@ -269,6 +290,7 @@ export default function ExtensionRequests() {
         if (r.status === "Rejected") map[id].rejected += 1;
         if (r.status === "Pending") map[id].pending += 1;
         if (r.is_manager_initiated === false && r.task?.project?.owner_id === r.requester?.id) map[id].escalated += 1;
+        if (r.task && r.task.assignee_id !== r.requester?.id) map[id].onBehalf += 1;
       });
       return Object.values(map).sort((a, b) => b.total - a.total);
     }, [requests]);
@@ -310,11 +332,12 @@ export default function ExtensionRequests() {
 
     return (
       <div style={{ marginTop: 16 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 24 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 24 }}>
           <SummaryCard label="Total requests" value={String(requests.length)} />
           <SummaryCard label="Approval rate" value={approvalRate === null ? "—" : `${approvalRate}%`} sub={`${approved.length} approved / ${rejected.length} rejected`} />
           <SummaryCard label="Avg. days extended" value={avgDaysExtended === null ? "—" : `${avgDaysExtended}d`} sub="beyond original due date, approved only" />
           <SummaryCard label="Top reason" value={topCategory} />
+          <SummaryCard label="Requested on behalf" value={onBehalfRate === null ? "—" : `${onBehalfRate}%`} sub={`${onBehalfCount} of ${requests.length} -- not the assignee`} />
         </div>
 
         <h2 style={{ fontSize: 13, margin: "0 0 8px" }}>Who's requesting</h2>
@@ -326,6 +349,7 @@ export default function ExtensionRequests() {
               <th>Approval rate</th>
               <th>Avg. days extended</th>
               <th>Manager-escalated</th>
+              <th>On behalf of assignee</th>
             </tr>
           </thead>
           <tbody>
@@ -340,6 +364,7 @@ export default function ExtensionRequests() {
                   <td>{rate === null ? "—" : `${rate}%`}</td>
                   <td>{avg === null ? "—" : `${avg}d`}</td>
                   <td>{r.escalated}</td>
+                  <td>{r.onBehalf}</td>
                 </tr>
               );
             })}
