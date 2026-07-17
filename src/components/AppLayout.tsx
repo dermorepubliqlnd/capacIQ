@@ -118,7 +118,7 @@ export default function AppLayout() {
           </div>
         )}
       </nav>
-      <main style={{ flex: 1, padding: 20 }}>
+      <main style={{ flex: 1, minWidth: 0, padding: 20 }}>
         <Outlet />
       </main>
     </div>
