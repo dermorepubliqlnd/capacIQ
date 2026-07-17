@@ -87,6 +87,21 @@ export default function DataTable<T>({
     return baseWidths[key] ?? 140;
   }
 
+  // table-layout:fixed only makes columns keep their literal pixel widths
+  // when the <table> itself has an explicit total width -- left as "auto"
+  // (or 100%), the browser instead treats each column's width as a mere
+  // proportion within whatever width the table resolves to (a plain block
+  // box, which fills its container), so a column dragged wider than the
+  // container was getting silently squeezed back down instead of causing
+  // overflow. Setting the table's own width to the exact sum of its visible
+  // columns is what makes the wrapping div's overflow-x:auto (below) able
+  // to kick in.
+  const totalWidth = useMemo(
+    () => visibleColumns.reduce((sum, c) => sum + displayWidth(c.key), 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleColumns, baseWidths]
+  );
+
   function handleDrop(targetKey: string) {
     if (!dragKey || dragKey === targetKey) {
       setDragKey(null);
@@ -267,7 +282,7 @@ export default function DataTable<T>({
 
   return (
     <div style={{ width: "100%", overflowX: "auto" }}>
-      <table className="data-table" style={{ tableLayout: "fixed" }}>
+      <table className="data-table" style={{ tableLayout: "fixed", width: totalWidth }}>
         {header}
         {body}
         {footerContent != null && (
