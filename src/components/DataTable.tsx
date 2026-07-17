@@ -44,7 +44,7 @@ interface DataTableProps<T> {
 const MIN_COL_WIDTH = 38;
 // Fixed width of the leading checkbox/grip/menu gutter column -- not
 // resizable or draggable like the real data columns.
-const GUTTER_WIDTH = 54;
+const GUTTER_WIDTH = 68;
 
 // Dense, Notion-style data table: drag column headers to reorder, drag the
 // right edge to resize, use the Columns menu to hide/show or group, and
