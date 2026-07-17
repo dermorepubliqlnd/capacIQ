@@ -5,7 +5,7 @@ import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
 import ViewTabs, { TAB_COLORS } from "../components/ViewTabs";
-import ViewSettingsMenu from "../components/ViewSettingsMenu";
+import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
@@ -231,8 +231,6 @@ export default function Projects() {
   const [loading, setLoading] = useState(true);
 
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
-  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
-  const [taskSettingsOpen, setTaskSettingsOpen] = useState(false);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   const [archivedOpen, setArchivedOpen] = useState(false);
@@ -924,37 +922,44 @@ export default function Projects() {
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
             onDuplicate={projectViews.duplicateView}
-            onEditView={(id) => {
-              projectViews.setActiveViewId(id);
-              setProjectSettingsOpen(true);
-            }}
+            onEditView={projectViews.setActiveViewId}
             confirm={confirm}
           />
-          <ViewSettingsMenu
-            open={projectSettingsOpen}
-            onOpenChange={setProjectSettingsOpen}
-            rows={projects}
-            columns={projectColumns}
-            hiddenColumns={projectViews.activeView.hiddenColumns}
-            onToggleColumn={(key) =>
-              projectViews.updateActiveView({
-                hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
-                  ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
-                  : [...projectViews.activeView.hiddenColumns, key],
-              })
-            }
-            groupOptions={projectGroupOptions}
-            groupBy={projectViews.activeView.groupBy}
-            hiddenGroups={projectViews.activeView.hiddenGroups}
-            onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-            onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
-            showCount={projectViews.activeView.showCount}
-            onShowCountChange={(showCount) => projectViews.updateActiveView({ showCount })}
-            sortOptions={projectSortOptions}
-            sorts={projectViews.activeView.sorts}
-            onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-          />
+          <div className="toolbar-actions">
+            <ViewSettingsMenu
+              rows={projects}
+              columns={projectColumns}
+              hiddenColumns={projectViews.activeView.hiddenColumns}
+              onToggleColumn={(key) =>
+                projectViews.updateActiveView({
+                  hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
+                    ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
+                    : [...projectViews.activeView.hiddenColumns, key],
+                })
+              }
+              groupOptions={projectGroupOptions}
+              groupBy={projectViews.activeView.groupBy}
+              hiddenGroups={projectViews.activeView.hiddenGroups}
+              onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+              onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
+              showCount={projectViews.activeView.showCount}
+              onShowCountChange={(showCount) => projectViews.updateActiveView({ showCount })}
+              sortOptions={projectSortOptions}
+              sorts={projectViews.activeView.sorts}
+              onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
+            />
+          </div>
         </div>
+        <ViewFilterPills
+          groupOptions={projectGroupOptions}
+          groupBy={projectViews.activeView.groupBy}
+          hiddenGroups={projectViews.activeView.hiddenGroups}
+          onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+          onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
+          sortOptions={projectSortOptions}
+          sorts={projectViews.activeView.sorts}
+          onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
+        />
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
@@ -1015,49 +1020,56 @@ export default function Projects() {
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
             onDuplicate={taskViews.duplicateView}
-            onEditView={(id) => {
-              taskViews.setActiveViewId(id);
-              setTaskSettingsOpen(true);
-            }}
+            onEditView={taskViews.setActiveViewId}
             confirm={confirm}
           />
-          <ViewSettingsMenu
-            open={taskSettingsOpen}
-            onOpenChange={setTaskSettingsOpen}
-            rows={visibleTasks}
-            columns={taskColumns}
-            hiddenColumns={taskViews.activeView.hiddenColumns}
-            onToggleColumn={(key) =>
-              taskViews.updateActiveView({
-                hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
-                  ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
-                  : [...taskViews.activeView.hiddenColumns, key],
-              })
-            }
-            groupOptions={taskGroupOptions}
-            groupBy={taskViews.activeView.groupBy}
-            hiddenGroups={taskViews.activeView.hiddenGroups}
-            onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-            onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
-            showCount={taskViews.activeView.showCount}
-            onShowCountChange={(showCount) => taskViews.updateActiveView({ showCount })}
-            sortOptions={taskSortOptions}
-            sorts={taskViews.activeView.sorts}
-            onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-          />
-          {isFullAccess && (
-            <button
-              className="row-icon-btn"
-              title="Customize Task Effort colors"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                setEffortMenuPos(effortMenuPos ? null : { x: rect.left, y: rect.bottom + 4 });
-              }}
-            >
-              <Palette size={13} />
-            </button>
-          )}
+          <div className="toolbar-actions">
+            <ViewSettingsMenu
+              rows={visibleTasks}
+              columns={taskColumns}
+              hiddenColumns={taskViews.activeView.hiddenColumns}
+              onToggleColumn={(key) =>
+                taskViews.updateActiveView({
+                  hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
+                    ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
+                    : [...taskViews.activeView.hiddenColumns, key],
+                })
+              }
+              groupOptions={taskGroupOptions}
+              groupBy={taskViews.activeView.groupBy}
+              hiddenGroups={taskViews.activeView.hiddenGroups}
+              onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+              onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
+              showCount={taskViews.activeView.showCount}
+              onShowCountChange={(showCount) => taskViews.updateActiveView({ showCount })}
+              sortOptions={taskSortOptions}
+              sorts={taskViews.activeView.sorts}
+              onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
+            />
+            {isFullAccess && (
+              <button
+                className="toolbar-icon-btn"
+                title="Customize Task Effort colors"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setEffortMenuPos(effortMenuPos ? null : { x: rect.left, y: rect.bottom + 4 });
+                }}
+              >
+                <Palette size={13} />
+              </button>
+            )}
+          </div>
         </div>
+        <ViewFilterPills
+          groupOptions={taskGroupOptions}
+          groupBy={taskViews.activeView.groupBy}
+          hiddenGroups={taskViews.activeView.hiddenGroups}
+          onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+          onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
+          sortOptions={taskSortOptions}
+          sorts={taskViews.activeView.sorts}
+          onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
+        />
         {effortMenuPos && (
           <div style={{ position: "fixed", left: effortMenuPos.x, top: effortMenuPos.y, zIndex: 50 }}>
             <EffortColorMenu
