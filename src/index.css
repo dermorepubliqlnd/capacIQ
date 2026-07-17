@@ -209,7 +209,7 @@ input, select { font-family: var(--font); }
 
 /* Active sort/filter shown as dismissible pills under the view tabs,
    matching Notion's own filter-pill row. */
-.view-filter-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; }
+.view-filter-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 10px 16px; }
 .filter-pill {
   display: inline-flex;
   align-items: center;
@@ -447,6 +447,20 @@ input.inline-cell[type="number"]::-webkit-inner-spin-button {
 input.inline-cell[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
+}
+
+/* Date cells: don't stretch to the column's full width (that's what
+   pushed the native calendar icon far away from the date text, into
+   empty space) -- size to content instead so the icon sits right next
+   to the date, like Notion's own date property. */
+input.inline-cell[type="date"] {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+input.inline-cell[type="date"]::-webkit-calendar-picker-indicator {
+  margin-left: 4px;
+  padding: 2px;
 }
 
 /* Auto-assigned flat-color emoji badge for a project, based on its Category */

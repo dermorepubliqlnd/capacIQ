@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
 import { sortRows, TONE_STYLES } from "../lib/tableTypes";
@@ -17,7 +17,9 @@ interface DataTableProps<T> {
   groupFooterRow?: (colSpan: number, group: { key: string; rows: T[] }) => ReactNode;
 }
 
-const MIN_COL_WIDTH = 70;
+// ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
+// readable floor for text columns when a max width no longer applies.
+const MIN_COL_WIDTH = 38;
 
 // Dense, Notion-style data table: drag column headers to reorder, drag the
 // right edge to resize, use the Columns menu to hide/show or group, and
@@ -41,22 +43,6 @@ export default function DataTable<T>({
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const isResizingRef = useRef(false);
   const [, forceRerender] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerWidth, setContainerWidth] = useState(0);
-
-  // Measure the card's available width so the table can fill it by default
-  // (rather than sitting at the bare sum of its column widths, or relying
-  // on CSS auto-stretch which broke column alignment — see widthFor below).
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width;
-      if (w) setContainerWidth(w);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   const orderedKeys = useMemo(() => {
     const known = columns.map((c) => c.key);
@@ -70,66 +56,35 @@ export default function DataTable<T>({
     .map((k) => columns.find((c) => c.key === k)!)
     .filter(Boolean);
 
-  function widthFor(key: string, def?: number, min?: number, max?: number) {
+  function widthFor(key: string, def?: number, min?: number) {
     const stored = view.columnWidths[key] ?? def ?? 140;
     // Clamp against the column's minWidth so a stale stored width (saved
     // before a minWidth existed, or from a narrower column set) can't make
     // the <td> narrower than the <th> above it — that mismatch is what
     // made row content look like it was "floating" into the next column.
-    // Also clamp against maxWidth so a column sized for short content
-    // (dates, statuses) can't be dragged out to an unreasonable width.
-    const withMin = Math.max(stored, min ?? MIN_COL_WIDTH);
-    return max ? Math.min(withMin, max) : withMin;
+    // No upper clamp: columns can be dragged as wide as the user wants:
+    // when the table's total width exceeds the card, the table container
+    // scrolls horizontally instead (see the wrapping div below) rather than
+    // forcing columns to shrink or stretch to fit.
+    return Math.max(stored, min ?? MIN_COL_WIDTH);
   }
 
-  // Base (stored/default) width per visible column, before any fill-to-
-  // container distribution.
+  // Each column's actual (stored/default) width -- the table is never
+  // stretched or shrunk to fill the container; if it's narrower than the
+  // card, the leftover space is just blank, and if it's wider, the
+  // container scrolls (Notion does the same rather than distorting columns
+  // to fit the window).
   const baseWidths = useMemo(() => {
     const map: Record<string, number> = {};
     visibleColumns.forEach((c) => {
-      map[c.key] = widthFor(c.key, c.defaultWidth, c.minWidth, c.maxWidth);
+      map[c.key] = widthFor(c.key, c.defaultWidth, c.minWidth);
     });
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleColumns, view.columnWidths]);
 
-  // Fills any leftover width in the card out to the real columns instead of
-  // leaving it blank — each column can only grow up to its own maxWidth
-  // (a Name column can soak up a lot of extra space; a Status or date
-  // column shouldn't), so the fill favors the columns that actually
-  // benefit from more room. A CSS-only stretch (table width:100% with
-  // table-layout:fixed) was tried first but proportionally stretched EVERY
-  // column including ones with fixed pixel widths, breaking alignment; this
-  // computes explicit per-column pixel widths instead, so it's exact.
-  const filledWidths = useMemo(() => {
-    const result = { ...baseWidths };
-    if (!containerWidth) return result;
-    const totalBase = visibleColumns.reduce((sum, c) => sum + result[c.key], 0);
-    let extra = containerWidth - totalBase;
-    if (extra <= 0) return result;
-    let growable = visibleColumns.filter((c) => !c.maxWidth || result[c.key] < c.maxWidth);
-    let guard = 0;
-    while (extra > 0.5 && growable.length > 0 && guard < 20) {
-      guard++;
-      const share = extra / growable.length;
-      let used = 0;
-      const stillGrowable: typeof growable = [];
-      for (const c of growable) {
-        const room = c.maxWidth ? c.maxWidth - result[c.key] : Infinity;
-        const grant = Math.min(share, room);
-        result[c.key] += grant;
-        used += grant;
-        if (!c.maxWidth || result[c.key] < c.maxWidth - 0.5) stillGrowable.push(c);
-      }
-      extra -= used;
-      growable = stillGrowable;
-    }
-    return result;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseWidths, containerWidth, visibleColumns]);
-
   function displayWidth(key: string) {
-    return filledWidths[key] ?? baseWidths[key] ?? 140;
+    return baseWidths[key] ?? 140;
   }
 
   function handleDrop(targetKey: string) {
@@ -151,14 +106,12 @@ export default function DataTable<T>({
     const col = columns.find((c) => c.key === key);
     const startWidth = displayWidth(key);
     const minForCol = col?.minWidth ?? MIN_COL_WIDTH;
-    const maxForCol = col?.maxWidth;
     resizeState.current = { key, startX: e.clientX, startWidth };
 
     function onMove(ev: MouseEvent) {
       if (!resizeState.current) return;
       const delta = ev.clientX - resizeState.current.startX;
-      let newWidth = Math.max(minForCol, resizeState.current.startWidth + delta);
-      if (maxForCol) newWidth = Math.min(newWidth, maxForCol);
+      const newWidth = Math.max(minForCol, resizeState.current.startWidth + delta);
       view.columnWidths[resizeState.current.key] = newWidth;
       forceRerender((n) => n + 1);
     }
@@ -313,7 +266,7 @@ export default function DataTable<T>({
   const footerContent = footerRow ? footerRow(visibleColumns.length || 1) : null;
 
   return (
-    <div ref={containerRef} style={{ width: "100%" }}>
+    <div style={{ width: "100%", overflowX: "auto" }}>
       <table className="data-table" style={{ tableLayout: "fixed" }}>
         {header}
         {body}
