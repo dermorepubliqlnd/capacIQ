@@ -72,6 +72,28 @@ function flatten(groups: OptionGroup[]): string[] {
 export const PROJECT_STATUS_OPTIONS = flatten(PROJECT_STATUS_GROUPED);
 export const TASK_STATUS_OPTIONS = flatten(TASK_STATUS_GROUPED);
 
+// Per-exact-value status colors (not just a 3-bucket To-do/In Progress/
+// Complete tone) matching the color coding already used in the team's
+// Notion "Project Status" property, so CapacIQ's status pills and Board
+// columns read the same way people already expect. "warning" (orange) is
+// shared by Planning/Evaluation/Merged and "pink" only by Design, since
+// the app's tone palette doesn't yet have as many distinct hues as
+// Notion's full color picker -- flag to Sandra if tighter differentiation
+// between those three is wanted later.
+export const PROJECT_STATUS_TONES: Record<string, string> = {
+  Backlog: "neutral",
+  Queued: "neutral",
+  Planning: "warning",
+  Design: "pink",
+  Development: "gold",
+  Delivery: "accent",
+  Evaluation: "warning",
+  Paused: "purple",
+  Done: "success",
+  Canceled: "danger",
+  Merged: "warning",
+};
+
 export function statusGroupOf(groups: OptionGroup[], value: string | null): "to_do" | "in_progress" | "complete" | null {
   if (!value) return null;
   const idx = groups.findIndex((g) => g.options.includes(value));

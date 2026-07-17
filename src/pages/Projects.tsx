@@ -10,6 +10,7 @@ import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMen
 import Modal from "../components/Modal";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
+import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows } from "../lib/tableTypes";
 import {
@@ -20,6 +21,7 @@ import {
   PROJECT_PRIORITY_OPTIONS,
   PROJECT_STATUS_GROUPED,
   PROJECT_STATUS_OPTIONS,
+  PROJECT_STATUS_TONES,
   TASK_STATUS_GROUPED,
   TASK_STATUS_OPTIONS,
   PROJECT_CATEGORY_ICONS,
@@ -70,7 +72,7 @@ interface TaskRow {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "category", "effort_level", "start_date", "end_date"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -93,6 +95,51 @@ function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" |
   if (daysLeft < 0) return { label: "Overdue", tone: "danger" };
   if (daysLeft <= 7) return { label: "Due soon", tone: "warning" };
   return { label: "On track", tone: "success" };
+}
+
+// Actual Progress: a weighted completion percentage across a project's own
+// (non-archived) tasks. Each task contributes its effort points (Light
+// 0.5 / Moderate 1 / Heavy 2) as a "weight", multiplied by a completion
+// factor based on its status (Not Started 0% / In Progress 50% / Done
+// 100%) -- so a project with a few big Done tasks and many small
+// Not-Started ones reads differently than raw task-count-complete would.
+// Tasks with no effort set contribute zero weight to both sides of the
+// ratio (in effect excluded, same as CapacIQ has no distinct "Cancelled"
+// task status to exclude -- see project_capaciq_actual_progress memory).
+// Returns null (not 0) when the project has no tasks, or none of them
+// have effort set, so callers can render a distinct "No tasks" state
+// instead of a misleading 0%.
+const TASK_COMPLETION_FACTOR: Record<string, number> = {
+  "Not Started": 0,
+  "In Progress": 0.5,
+  Done: 1,
+};
+
+function actualProgress(projectId: string, allTasks: TaskRow[]): number | null {
+  const projectTasks = allTasks.filter((t) => t.project_id === projectId);
+  if (projectTasks.length === 0) return null;
+  let numerator = 0;
+  let denominator = 0;
+  for (const t of projectTasks) {
+    const weight = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
+    if (weight === 0) continue;
+    const factor = TASK_COMPLETION_FACTOR[t.status ?? ""] ?? 0;
+    numerator += weight * factor;
+    denominator += weight;
+  }
+  if (denominator === 0) return null;
+  return Math.round((numerator / denominator) * 100);
+}
+
+// Same 5-band read as Health (worst/least-done first) -- "No tasks" sorts
+// alongside "Not started" since neither represents measurable progress.
+function progressBand(percent: number | null): { label: string; tone: string } {
+  if (percent === null) return { label: "No tasks", tone: "neutral" };
+  if (percent === 0) return { label: "Not started", tone: "neutral" };
+  if (percent < 40) return { label: "Early progress", tone: "danger" };
+  if (percent < 80) return { label: "In progress", tone: "warning" };
+  if (percent < 100) return { label: "Near completion", tone: "mint" };
+  return { label: "Completed", tone: "success" };
 }
 
 // Severity order for sorting by Health: worst first (Overdue), then Due
@@ -140,7 +187,7 @@ const PROJECT_BOARD_COLUMNS: BoardColumnDef[] = PROJECT_STATUS_GROUPED.flatMap((
     value,
     label: value,
     clusterLabel: group.label,
-    tone: statusTone(statusGroupOf(PROJECT_STATUS_GROUPED, value)),
+    tone: PROJECT_STATUS_TONES[value] ?? "neutral",
   }))
 );
 
@@ -559,6 +606,19 @@ export default function Projects() {
     setSelectedTaskIds((prev) => (keys.every((k) => prev.includes(k)) ? prev.filter((k) => !keys.includes(k)) : Array.from(new Set([...prev, ...keys]))));
   }
 
+  const projectViews = useTableViews("projects", me?.id, {
+    viewType: "table",
+    columnOrder: PROJECT_COLUMN_ORDER,
+    hiddenColumns: [],
+    columnWidths: {},
+    groupBy: null,
+    hiddenGroups: [],
+    color: "neutral",
+    showCount: false,
+    sorts: [],
+    progressDisplay: "bar",
+  });
+
   const projectColumns: ColumnDef<ProjectRow>[] = useMemo(
     () => [
       {
@@ -627,7 +687,7 @@ export default function Projects() {
             options={PROJECT_STATUS_GROUPED}
             renderReadOnly={() =>
               p.project_status ? (
-                <span className={`status-pill ${statusTone(statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status))}`}>{p.project_status}</span>
+                <span className={`status-pill ${PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}`}>{p.project_status}</span>
               ) : (
                 "—"
               )
@@ -644,6 +704,25 @@ export default function Projects() {
         render: (p) => {
           const h = healthOf(p);
           return <span className={`status-pill ${h.tone}`}>{h.label}</span>;
+        },
+      },
+      {
+        key: "actual_progress",
+        label: (
+          <span style={{ display: "inline-flex", alignItems: "center" }}>
+            Actual Progress
+            <ProgressDisplayToggle
+              value={projectViews.activeView.progressDisplay ?? "bar"}
+              onChange={(v) => projectViews.updateActiveView({ progressDisplay: v })}
+            />
+          </span>
+        ),
+        defaultWidth: 170,
+        minWidth: 120,
+        render: (p) => {
+          const percent = actualProgress(p.id, tasks);
+          const band = progressBand(percent);
+          return <ProgressCell percent={percent} tone={band.tone} display={projectViews.activeView.progressDisplay ?? "bar"} />;
         },
       },
       {
@@ -721,7 +800,7 @@ export default function Projects() {
         ),
       },
     ],
-    [people, projects, me]
+    [people, projects, me, tasks, projectViews.activeView.progressDisplay]
   );
 
   // Board-view card body: picks a handful of the same column render()
@@ -739,6 +818,7 @@ export default function Projects() {
           {!hidden.includes("owner") && find("owner")?.render(p)}
         </div>
         {!hidden.includes("end_date") && <div>{find("end_date")?.render(p)}</div>}
+        {!hidden.includes("actual_progress") && <div>{find("actual_progress")?.render(p)}</div>}
       </>
     );
   }
@@ -754,7 +834,7 @@ export default function Projects() {
       key: "project_status",
       label: "Status",
       getGroup: (p) => p.project_status ?? "No status",
-      getTone: (p) => statusTone(statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status)),
+      getTone: (p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral",
     },
     {
       key: "priority",
@@ -793,19 +873,8 @@ export default function Projects() {
     { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p).label) },
+    { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
   ];
-
-  const projectViews = useTableViews("projects", me?.id, {
-    viewType: "table",
-    columnOrder: PROJECT_COLUMN_ORDER,
-    hiddenColumns: [],
-    columnWidths: {},
-    groupBy: null,
-    hiddenGroups: [],
-    color: "neutral",
-    showCount: false,
-    sorts: [],
-  });
 
   async function createBlankProject() {
     const { error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() });

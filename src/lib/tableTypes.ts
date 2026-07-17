@@ -2,7 +2,11 @@ import type { ReactNode } from "react";
 
 export interface ColumnDef<T> {
   key: string;
-  label: string;
+  // Usually a plain string, but a column can supply richer header content
+  // (e.g. Actual Progress's inline bar/number/ring display-mode toggle) --
+  // DataTable and the Properties checklist both just render this as a
+  // child, so ReactNode works everywhere a string did.
+  label: ReactNode;
   minWidth?: number;
   defaultWidth?: number;
   // Caps how far this column can be dragged wider — sized per column's
@@ -33,6 +37,15 @@ export const TONE_STYLES: Record<string, { bg: string; text: string }> = {
   accent: { bg: "#eaf1fb", text: "var(--accent)" },
   purple: { bg: "#f3ecfa", text: "#7b4fb0" },
   pink: { bg: "#fdecf3", text: "#c1447e" },
+  // Gold: Project Status "Development" needs its own distinct hue from
+  // "warning" (used by Planning/Evaluation/Merged) to match Notion's
+  // status-color palette (see project_capaciq_status_colors memory).
+  gold: { bg: "#fdf6e3", text: "#a3790a" },
+  // Light green: "Near Completion" (80-99%) band of the new Actual
+  // Progress property -- a paler tint than "success" (used for both
+  // "Done" status and 100% Completed) so the two remain visually
+  // distinct at a glance.
+  mint: { bg: "#eef8f2", text: "#3f9d6e" },
 };
 
 export interface SortOption<T> {
@@ -85,6 +98,12 @@ export interface TableView {
   color: string;
   showCount: boolean;
   sorts: SortRule[];
+  // Per-view display mode for the Actual Progress property (bar with a
+  // numeric label, a plain number pill, or a ring) -- optional so it
+  // doesn't force a migration of every already-saved view; callers should
+  // fall back to "bar" when reading an older view that predates this
+  // field. See ProgressCell.tsx.
+  progressDisplay?: "bar" | "number" | "ring";
 }
 
 export type DefaultView = Omit<TableView, "id" | "name">;

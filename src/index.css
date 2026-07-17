@@ -660,6 +660,8 @@ tr:hover .add-subtask-btn { opacity: 1; }
 .status-pill.accent { background: #eaf1fb; color: var(--accent); }
 .status-pill.purple { background: #f3ecfa; color: #7b4fb0; }
 .status-pill.pink { background: #fdecf3; color: #c1447e; }
+.status-pill.gold { background: #fdf6e3; color: #a3790a; }
+.status-pill.mint { background: #eef8f2; color: #3f9d6e; }
 
 /* Inline select cells: no visible chevron/border until the cell is actively
    being edited, so a full table of data doesn't turn into a wall of dropdown
