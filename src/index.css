@@ -163,6 +163,13 @@ input, select { font-family: var(--font); }
 .data-table-dense .data-table-group-row:hover td {
   background: var(--hover-bg);
 }
+.sticky-toolbar-cluster {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--surface);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
 .table-toolbar {
   display: flex;
   align-items: center;
@@ -505,6 +512,24 @@ input, select { font-family: var(--font); }
   flex-direction: column;
   gap: 6px;
   font-size: 12px;
+}
+.board-card-property {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  min-width: 0;
+}
+.board-card-property-label {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.board-card-property-value {
+  color: var(--accent);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Inline, click-to-edit table cells (Notion-style): invisible chrome until

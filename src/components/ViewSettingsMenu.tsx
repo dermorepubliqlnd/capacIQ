@@ -17,6 +17,11 @@ interface ViewControlsProps<T> {
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
+  // True on Board views (v1): grouping is pinned to Status so dragging a
+  // card between columns always sets an unambiguous value. The "which
+  // field to group by" picker is disabled, but the per-value show/hide
+  // checklist below it still works (hiding a status column on the board).
+  groupByLocked?: boolean;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -97,6 +102,7 @@ export default function ViewSettingsMenu<T>({
   sortOptions,
   sorts,
   onSortsChange,
+  groupByLocked,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -211,7 +217,19 @@ export default function ViewSettingsMenu<T>({
             <select
               value={groupBy ?? ""}
               onChange={(e) => onGroupByChange(e.target.value || null)}
-              style={{ width: "100%", fontSize: 11.5, padding: "5px 6px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", marginBottom: activeOption ? 8 : 0 }}
+              disabled={groupByLocked}
+              title={groupByLocked ? "Board view groups by Status" : undefined}
+              style={{
+                width: "100%",
+                fontSize: 11.5,
+                padding: "5px 6px",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                marginBottom: activeOption ? 8 : 0,
+                background: groupByLocked ? "var(--hover-bg)" : undefined,
+                color: groupByLocked ? "var(--muted)" : undefined,
+                cursor: groupByLocked ? "not-allowed" : undefined,
+              }}
             >
               <option value="">No filter</option>
               {groupOptions.map((g) => (
@@ -285,6 +303,7 @@ export function ViewFilterPills<T>({
   sortOptions,
   sorts,
   onSortsChange,
+  groupByLocked,
 }: {
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
@@ -294,6 +313,7 @@ export function ViewFilterPills<T>({
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
+  groupByLocked?: boolean;
 }) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   if (!activeOption && sorts.length === 0) return null;
@@ -303,15 +323,17 @@ export function ViewFilterPills<T>({
       {activeOption && (
         <span className="filter-pill">
           Grouped by {activeOption.label}
-          <button
-            title="Clear grouping"
-            onClick={() => {
-              onGroupByChange(null);
-              onHiddenGroupsChange([]);
-            }}
-          >
-            <X size={10} />
-          </button>
+          {!groupByLocked && (
+            <button
+              title="Clear grouping"
+              onClick={() => {
+                onGroupByChange(null);
+                onHiddenGroupsChange([]);
+              }}
+            >
+              <X size={10} />
+            </button>
+          )}
         </span>
       )}
       {activeOption && hiddenGroups.length > 0 && (

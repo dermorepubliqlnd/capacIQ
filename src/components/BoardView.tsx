@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { GripVertical } from "lucide-react";
+import { TONE_STYLES } from "../lib/tableTypes";
 
 export interface BoardColumnDef {
   value: string;
@@ -87,10 +88,11 @@ export default function BoardView<T>({
       {visibleColumns.map((col, idx) => {
         const isClusterStart = col.clusterLabel && col.clusterLabel !== visibleColumns[idx - 1]?.clusterLabel;
         const colRows = rowsFor(col.value);
+        const tone = TONE_STYLES[col.tone ?? "neutral"] ?? TONE_STYLES.neutral;
         return (
-          <div key={col.value} className="board-column">
-            <div className="board-column-cluster">{isClusterStart ? col.clusterLabel : " "}</div>
-            <div className="board-column-header">
+          <div key={col.value} className="board-column" style={{ background: tone.bg }}>
+            <div className="board-column-cluster" style={{ color: tone.text }}>{isClusterStart ? col.clusterLabel : " "}</div>
+            <div className="board-column-header" style={{ color: tone.text }}>
               {col.label}
               <span className="board-column-count">{colRows.length}</span>
             </div>

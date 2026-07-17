@@ -28,6 +28,12 @@ interface DataTableProps<T> {
   // and for warning/clearing an active sort first.
   orderable?: boolean;
   onReorder?: (draggedKey: string, targetKey: string) => void;
+  // Pixel height of whatever sticky toolbar cluster (view tabs, Sort/
+  // Group/Properties icons, filter pills, bulk-action bar) sits above this
+  // table, measured by the caller via ResizeObserver. When set, the column
+  // header row sticks just below that cluster during vertical page scroll
+  // instead of scrolling out of view with the rows.
+  stickyHeaderOffset?: number;
 }
 
 // ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
@@ -59,6 +65,7 @@ export default function DataTable<T>({
   onToggleSelectAll,
   orderable,
   onReorder,
+  stickyHeaderOffset,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
@@ -191,7 +198,18 @@ export default function DataTable<T>({
     <thead>
       <tr className={activeGroupOption ? "is-grouped" : undefined}>
         {hasGutter && (
-          <th style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH, padding: 0 }}>
+          <th
+            style={{
+              width: GUTTER_WIDTH,
+              minWidth: GUTTER_WIDTH,
+              maxWidth: GUTTER_WIDTH,
+              padding: 0,
+              position: "sticky",
+              top: stickyHeaderOffset ?? 0,
+              zIndex: 6,
+              background: "var(--surface)",
+            }}
+          >
             {selectable && (
               // Matches the body row's gutter layout exactly (an invisible
               // spacer standing in for the grip handle's width + gap) so
@@ -226,7 +244,10 @@ export default function DataTable<T>({
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => handleDrop(c.key)}
             style={{
-              position: "relative",
+              position: "sticky",
+              top: stickyHeaderOffset ?? 0,
+              zIndex: 5,
+              background: "var(--surface)",
               width: displayWidth(c.key),
               maxWidth: displayWidth(c.key),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
@@ -369,7 +390,7 @@ export default function DataTable<T>({
   const footerContent = footerRow ? footerRow(colSpanTotal) : null;
 
   return (
-    <div style={{ width: "100%", overflowX: "auto" }}>
+    <div style={{ width: "100%", overflowX: "auto", overflowY: "visible" }}>
       <table className="data-table" style={{ tableLayout: "fixed", width: totalWidth }}>
         {header}
         {body}
