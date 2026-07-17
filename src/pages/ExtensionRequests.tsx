@@ -295,6 +295,29 @@ export default function ExtensionRequests() {
       return Object.values(map).sort((a, b) => b.total - a.total);
     }, [requests]);
 
+    // Per assignee: same shape as byRequester above, but grouped by who
+    // the *task* belongs to rather than who filed the request -- these
+    // diverge whenever a request was made "on behalf of" someone (see
+    // onBehalf tracking above), so this is the only view that shows each
+    // person's actual extension-request exposure on their own work.
+    // Requested by Sandra (2026-07-17) alongside the requester breakdown.
+    const byAssignee = useMemo(() => {
+      const map: Record<string, { name: string; total: number; approved: number; rejected: number; selfRequested: number; daysList: number[] }> = {};
+      requests.forEach((r) => {
+        if (!r.task) return;
+        const id = r.task.assignee_id ?? "unassigned";
+        if (!map[id]) map[id] = { name: assigneeName(r.task.assignee_id), total: 0, approved: 0, rejected: 0, selfRequested: 0, daysList: [] };
+        map[id].total += 1;
+        if (r.status === "Approved") {
+          map[id].approved += 1;
+          if (r.task.original_due_date) map[id].daysList.push(daysBetween(r.task.original_due_date, r.requested_new_due_date));
+        }
+        if (r.status === "Rejected") map[id].rejected += 1;
+        if (r.requester?.id === r.task.assignee_id) map[id].selfRequested += 1;
+      });
+      return Object.values(map).sort((a, b) => b.total - a.total);
+    }, [requests]);
+
     // Per task: request count + net days drifted (current vs original due
     // date on the task itself -- exact, no reconstruction needed).
     const byTask = useMemo(() => {
@@ -365,6 +388,37 @@ export default function ExtensionRequests() {
                   <td>{avg === null ? "—" : `${avg}d`}</td>
                   <td>{r.escalated}</td>
                   <td>{r.onBehalf}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        <h2 style={{ fontSize: 13, margin: "0 0 8px" }}>Per assignee -- extensions on their own tasks</h2>
+        <table className="data-table" style={{ width: "100%", marginBottom: 24 }}>
+          <thead>
+            <tr>
+              <th>Assignee</th>
+              <th>Total requests</th>
+              <th>Approval rate</th>
+              <th>Avg. days extended</th>
+              <th>Self-requested</th>
+              <th>Requested by others</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byAssignee.map((a) => {
+              const decidedCount = a.approved + a.rejected;
+              const rate = decidedCount > 0 ? Math.round((a.approved / decidedCount) * 100) : null;
+              const avg = a.daysList.length > 0 ? Math.round((a.daysList.reduce((x, y) => x + y, 0) / a.daysList.length) * 10) / 10 : null;
+              return (
+                <tr key={a.name}>
+                  <td style={{ fontWeight: 600 }}>{a.name}</td>
+                  <td>{a.total}</td>
+                  <td>{rate === null ? "—" : `${rate}%`}</td>
+                  <td>{avg === null ? "—" : `${avg}d`}</td>
+                  <td>{a.selfRequested}</td>
+                  <td>{a.total - a.selfRequested}</td>
                 </tr>
               );
             })}
