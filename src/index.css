@@ -76,14 +76,14 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 /* DataTable uses table-layout:fixed with an explicit pixel width per
    column (for drag-resize). A fixed-layout table with width:100% whose
    declared column widths sum to less than its container used to stretch
-   every column proportionally to fill the gap — silently making each <td>
+   every column proportionally to fill the gap -- silently making each <td>
    wider than the width its own inline style said (this is what made row
    content like the add-subtask button drift toward the next column's
    space, and made resizing feel unreliable). A trailing filler column was
    tried to fill the leftover width instead, but colspan'd rows (group
    headers) didn't reliably extend their background across it, which
    looked worse. Settled on width:auto plus more generous per-column
-   default/max widths (see columns in Projects.tsx) — the table is exactly
+   default/max widths (see columns in Projects.tsx) -- the table is exactly
    as wide as its columns say, and those are now sized to comfortably fill
    a normal window without relying on any stretch trick. */
 .data-table { width: auto; }
@@ -96,8 +96,11 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
   color: var(--muted);
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
-.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: var(--font-table); }
+.data-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); font-size: var(--font-table); }
+/* Light column-width guides, like Notion's own database grid lines. */
+.data-table th:last-child, .data-table td:last-child { border-right: none; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; }
 
@@ -147,7 +150,7 @@ input, select { font-family: var(--font); }
 .login-title { font-family: var(--font-heading); }
 .metric-value-lg { font-size: var(--font-metric-lg); }
 
-/* Dense Notion-style tables (Projects, Tasks) — tighter padding + row hover,
+/* Dense Notion-style tables (Projects, Tasks) -- tighter padding + row hover,
    used alongside DataTable's drag-to-reorder/resize columns. */
 .data-table-dense th, .data-table-dense td {
   padding: 4px 8px;
@@ -162,16 +165,80 @@ input, select { font-family: var(--font); }
 .table-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
+.toolbar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+.toolbar-icon-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.toolbar-icon-btn:hover { background: var(--hover-bg); }
+.toolbar-icon-btn.active { color: var(--accent); background: #eaf1fb; }
+.toolbar-icon-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1.5px solid var(--surface);
+}
+.toolbar-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(15,41,66,0.12);
+  padding: 10px;
+}
+
+/* Active sort/filter shown as dismissible pills under the view tabs,
+   matching Notion's own filter-pill row. */
+.view-filter-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; }
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--hover-bg);
+  border-radius: 999px;
+}
+.filter-pill button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.filter-pill button:hover { background: var(--border); color: var(--navy); }
 
 /* Notion-style view tabs above a data table: flat icon + label list, no
-   boxes/borders — active view is just bolder/darker text, like Notion's own
+   boxes/borders -- active view is just bolder/darker text, like Notion's own
    view-tab bar. */
-.view-tabs { display: flex; align-items: center; gap: 18px; padding: 8px 2px; flex-wrap: nowrap; overflow-x: auto; overflow-y: visible; }
+.view-tabs { display: flex; align-items: center; gap: 18px; padding: 4px 2px; flex-wrap: nowrap; overflow: visible; min-width: 0; }
 .view-tab {
   position: relative;
   display: flex;
@@ -260,7 +327,7 @@ select.inline-cell { cursor: pointer; }
 }
 .inline-cell.readonly:hover { border-color: transparent; background: transparent; }
 
-/* Task name cell: Notion-style sub-task affordances — a collapse/expand
+/* Task name cell: Notion-style sub-task affordances -- a collapse/expand
    chevron on parents that have a sub-task, and a bare "+" icon (hover-only)
    to add one, capped at parent + 1 sub-task level (no deeper nesting). */
 .task-name-cell { display: flex; align-items: center; gap: 4px; }
@@ -280,7 +347,7 @@ select.inline-cell { cursor: pointer; }
 }
 .task-collapse-toggle:hover { background: var(--hover-bg); color: var(--navy); }
 .task-collapse-spacer { display: inline-block; width: 16px; flex-shrink: 0; }
-/* Generic small row-hover icon action (e.g. archive) — stays subtle since
+/* Generic small row-hover icon action (e.g. archive) -- stays subtle since
    it's a less-frequent, semi-destructive action. */
 .row-icon-btn {
   opacity: 0;
@@ -301,7 +368,7 @@ tr:hover .row-icon-btn { opacity: 1; }
 
 /* Add-subtask "+" affordance: this is a primary, frequently-used action, so
    unlike .row-icon-btn it stays faintly visible at rest (a tinted circle)
-   instead of fully invisible until hover — it was easy to miss before. */
+   instead of fully invisible until hover -- it was easy to miss before. */
 .add-subtask-btn {
   opacity: 0.55;
   display: inline-flex;
