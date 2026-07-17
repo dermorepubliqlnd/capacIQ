@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2 } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -51,6 +51,7 @@ interface ProjectRow {
   is_archived: boolean;
   archived_at: string | null;
   sort_order: number | null;
+  timelines_locked: boolean;
 }
 
 interface TaskRow {
@@ -80,7 +81,7 @@ interface TaskRow {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -308,7 +309,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // enumerable set of Kanban columns); anything else (free text, dates,
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
-const PROJECT_BOARD_GROUPABLE_KEYS = ["project_status", "priority", "category", "effort_level", "owner"];
+const PROJECT_BOARD_GROUPABLE_KEYS = ["project_status", "priority", "category", "effort_level", "owner", "timelines_locked"];
 const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
@@ -534,6 +535,26 @@ export default function Projects() {
   const canEditTask = (t: TaskRow) => canManageTasksIn(t.project_id) || t.assignee_id === me?.id;
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
+  // Scoping-phase due-date editing: a project's timelines are freely
+  // editable (by owner/Full Access/assignee, same as canEditTask) until
+  // explicitly locked. Locking re-stamps original_due_date = current_due_date
+  // for every task in the project, then the DB trigger takes over exactly
+  // as before. See [[project_capaciq_extension_requests]].
+  const isProjectLocked = (projectId: string) => projects.find((p) => p.id === projectId)?.timelines_locked ?? false;
+
+  async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
+    const verb = locked ? "Lock" : "Unlock";
+    const detail = locked
+      ? "This freezes every task's current due date as the committed baseline. After this, due dates can only change via an approved Extension Request."
+      : "This re-opens every task's due date for free editing during planning, until locked again.";
+    if (!confirm(`${verb} timelines for "${p.name}"?\n\n${detail}`)) return;
+    const { error } = await supabase.rpc("set_project_timelines_locked", { p_project_id: p.id, p_locked: locked });
+    if (error) {
+      alert(`Couldn't ${verb.toLowerCase()} timelines: ${error.message}`);
+      return;
+    }
+    loadAll();
+  }
 
   async function updateProject(id: string, patch: Partial<ProjectRow>) {
     setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -944,6 +965,43 @@ export default function Projects() {
           />
         ),
       },
+      {
+        key: "timelines_locked",
+        label: "Timelines",
+        defaultWidth: 130,
+        maxWidth: 160,
+        render: (p) => (
+          <button
+            onClick={() => canEditProject(p) && lockProjectTimelines(p, !p.timelines_locked)}
+            disabled={!canEditProject(p)}
+            title={
+              canEditProject(p)
+                ? p.timelines_locked
+                  ? "Timelines locked -- click to unlock and allow free date edits again"
+                  : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
+                : p.timelines_locked
+                ? "Timelines locked"
+                : "Timelines unlocked (scoping)"
+            }
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 8px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: "var(--radius-sm)",
+              border: "1px solid var(--border)",
+              background: p.timelines_locked ? "var(--surface)" : "var(--surface-hover, var(--surface))",
+              color: p.timelines_locked ? "var(--text-secondary)" : "#9A6B00",
+              cursor: canEditProject(p) ? "pointer" : "default",
+            }}
+          >
+            {p.timelines_locked ? <Lock size={11} /> : <Unlock size={11} />}
+            {p.timelines_locked ? "Locked" : "Scoping"}
+          </button>
+        ),
+      },
     ],
     [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay]
   );
@@ -1006,6 +1064,12 @@ export default function Projects() {
       getGroup: (p) => healthOf(p, tasks, holidayDates).label,
       getTone: (p) => healthOf(p, tasks, holidayDates).tone,
     },
+    {
+      key: "timelines_locked",
+      label: "Timelines",
+      getGroup: (p) => (p.timelines_locked ? "Locked" : "Scoping"),
+      getTone: (p) => (p.timelines_locked ? "neutral" : "warning"),
+    },
   ];
 
   // Board's own Group-by list: every project property, in roughly column
@@ -1055,6 +1119,13 @@ export default function Projects() {
     },
     { key: "start_date", label: "Start", getGroup: () => "", boardGroupable: false },
     { key: "end_date", label: "Due", getGroup: () => "", boardGroupable: false },
+    {
+      key: "timelines_locked",
+      label: "Timelines",
+      getGroup: (p) => (p.timelines_locked ? "Locked" : "Scoping"),
+      getTone: (p) => (p.timelines_locked ? "neutral" : "warning"),
+      boardGroupable: true,
+    },
   ];
 
   // Computes Board's actual columns/getValue/drag-write-handler for
@@ -1063,12 +1134,18 @@ export default function Projects() {
   // Effort reuse their own enum option lists; Owner is built from the live
   // people list (value = person id, so drag-drop writes back an
   // unambiguous id rather than a display name).
+  const TIMELINES_BOARD_COLUMNS: BoardColumnDef[] = [
+    { value: "scoping", label: "Scoping", tone: "warning" },
+    { value: "locked", label: "Locked", tone: "neutral" },
+  ];
+
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: v, tone: priorityTone(v) }));
     if (groupBy === "category") return PROJECT_CATEGORY_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
     if (groupBy === "effort_level")
       return PROJECT_EFFORT_LEVEL_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_EFFORT_LEVEL_TONES[v] ?? "neutral" }));
     if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
+    if (groupBy === "timelines_locked") return TIMELINES_BOARD_COLUMNS;
     return PROJECT_BOARD_COLUMNS;
   }
 
@@ -1077,14 +1154,16 @@ export default function Projects() {
     if (groupBy === "category") return p.category;
     if (groupBy === "effort_level") return p.effort_level;
     if (groupBy === "owner") return p.owner_id;
+    if (groupBy === "timelines_locked") return p.timelines_locked ? "locked" : "scoping";
     return p.project_status;
   }
 
-  function getProjectBoardMoveHandler(groupBy: string): (p: ProjectRow, newValue: string) => void {
+  function getProjectBoardMoveHandler(groupBy: string): ((p: ProjectRow, newValue: string) => void) | undefined {
     if (groupBy === "priority") return (p, v) => updateProject(p.id, { priority: (v || null) as ProjectRow["priority"] });
     if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
     if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
     if (groupBy === "owner") return (p, v) => updateProject(p.id, { owner_id: v || null });
+    if (groupBy === "timelines_locked") return undefined; // drag-drop locking skips the confirm/reset ceremony -- use the Timelines column button instead
     return (p, v) => updateProject(p.id, { project_status: v || null });
   }
 
@@ -1099,6 +1178,7 @@ export default function Projects() {
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
+    { key: "timelines_locked", label: "Timelines", getValue: (p) => (p.timelines_locked ? 1 : 0) },
   ];
 
   async function createBlankProject() {
@@ -1306,6 +1386,20 @@ export default function Projects() {
         minWidth: 130,
         render: (t) => {
           const extended = t.current_due_date !== t.original_due_date;
+          const locked = isProjectLocked(t.project_id);
+          // While the project is still in scoping mode (unlocked), the due
+          // date is a normal editable field -- no extension ceremony needed.
+          // Once locked, it reverts to the read-only + Request Extension
+          // behavior enforced by the DB trigger. See [[project_capaciq_extension_requests]].
+          if (!locked) {
+            return (
+              <InlineDate
+                value={t.current_due_date}
+                editable={canEditTask(t)}
+                onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
+              />
+            );
+          }
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <InlineDate value={t.current_due_date} editable={false} onCommit={() => {}} />
@@ -1563,13 +1657,19 @@ export default function Projects() {
       alert("Create a project first before adding tasks.");
       return;
     }
+    // Default to the project's own due date rather than "today" -- a
+    // fresh task defaulting to today reads as immediately overdue and
+    // was the actual trigger for building the scoping-lock mechanism.
+    // Falls back to today only if the project has no end_date set yet.
     const today = new Date().toISOString().slice(0, 10);
+    const project = projects.find((p) => p.id === projectId);
+    const defaultDue = project?.end_date ?? today;
     const { error } = await supabase.from("tasks").insert({
       project_id: projectId,
       name: "Untitled task",
       status: "Not Started",
-      original_due_date: today,
-      current_due_date: today,
+      original_due_date: defaultDue,
+      current_due_date: defaultDue,
       sort_order: Date.now(),
     });
     if (error) {
