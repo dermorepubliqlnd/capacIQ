@@ -87,14 +87,93 @@ const TASK_EFFORT_ICON: Record<string, typeof Feather> = {
   Heavy: BicepsFlexed,
 };
 
-function healthOf(p: ProjectRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
+// A calendar day counts as a working day if it isn't a weekend and isn't
+// in the Holiday calendar (Legal PH Holiday / Local Holiday / Internal
+// Time Off -- all three block company-wide, per HolidayCalendar.tsx).
+// Note this table is company-wide non-working days, not individual PTO --
+// there's no per-person leave tracking in CapacIQ today, so an individual
+// out on personal leave still counts as a working day for this formula.
+function isWorkingDay(date: Date, holidayDates: Set<string>): boolean {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return false;
+  return !holidayDates.has(toDateKey(date));
+}
+
+function toDateKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+// Inclusive count of working days between two dates (start and end both
+// count if they themselves are working days). Returns 0 if end < start.
+function countWorkingDays(start: Date, end: Date, holidayDates: Set<string>): number {
+  if (end < start) return 0;
+  let count = 0;
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  while (cur <= last) {
+    if (isWorkingDay(cur, holidayDates)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+// Project Health compares actual weighted task progress against how far
+// along the project *should* be, given how much of its working-day
+// timeline has elapsed. Rules (in order -- first match wins):
+//   0. Manually marked Done/Canceled/Merged -- echo that status verbatim
+//      at neutral tone. A closed-out project never gets second-guessed by
+//      the formula below (confirmed with Sandra 2026-07-17: a project
+//      cancelled at 30% actual progress should read "Canceled", not
+//      "Off track").
+//   1. Actual progress is 100% -- Completed (green), regardless of dates.
+//   2. Missing start or due date -- Health Unavailable (gray): rules 3-6
+//      all need both dates to mean anything.
+//   3. Today is before the start date -- Not Started (gray).
+//   4. Due date has passed (and progress isn't 100%, already ruled out
+//      above) -- Overdue (red). Checked before the expected-vs-actual
+//      comparison since "expected" would otherwise just cap at 100% and
+//      double-count the same lateness as "Off track".
+//   5. No applicable tasks (actual progress is null, e.g. no task has
+//      effort set) -- Health Unavailable (gray): nothing to compare
+//      against expected progress.
+//   6. Compare actual vs. expected progress (expected = working days
+//      elapsed / total working days in the project's window, both
+//      excluding weekends and Holiday-calendar dates): within 10 points
+//      behind (or ahead) is On track (green), 11-20 points behind is At
+//      risk (yellow), more than 20 points behind is Off track (red).
+function healthOf(
+  p: ProjectRow,
+  allTasks: TaskRow[],
+  holidayDates: Set<string>
+): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status);
-  if (group === "complete") return { label: p.project_status ?? "Complete", tone: "neutral" };
-  if (!p.end_date) return { label: "On track", tone: "success" };
-  const daysLeft = (new Date(p.end_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-  if (daysLeft < 0) return { label: "Overdue", tone: "danger" };
-  if (daysLeft <= 7) return { label: "Due soon", tone: "warning" };
-  return { label: "On track", tone: "success" };
+  if (group === "complete") return { label: p.project_status ?? "Completed", tone: "neutral" };
+
+  const actual = actualProgress(p.id, allTasks);
+  if (actual === 100) return { label: "Completed", tone: "success" };
+
+  if (!p.start_date || !p.end_date) return { label: "Health unavailable", tone: "neutral" };
+
+  const today = new Date();
+  const start = parseLocalDate(p.start_date);
+  const due = parseLocalDate(p.end_date);
+
+  if (today < start) return { label: "Not started", tone: "neutral" };
+  if (today > due) return { label: "Overdue", tone: "danger" };
+  if (actual === null) return { label: "Health unavailable", tone: "neutral" };
+
+  const totalWorkingDays = countWorkingDays(start, due, holidayDates);
+  if (totalWorkingDays === 0) return { label: "Health unavailable", tone: "neutral" };
+  const elapsedWorkingDays = countWorkingDays(start, today < due ? today : due, holidayDates);
+  const expected = Math.min(100, Math.max(0, (elapsedWorkingDays / totalWorkingDays) * 100));
+
+  const pointsBehind = expected - actual;
+  if (pointsBehind <= 10) return { label: "On track", tone: "success" };
+  if (pointsBehind <= 20) return { label: "At risk", tone: "warning" };
+  return { label: "Off track", tone: "danger" };
 }
 
 // Actual Progress: a weighted completion percentage across a project's own
@@ -146,9 +225,13 @@ function progressBand(percent: number | null): { label: string; tone: string } {
 // soon, On track, and finally completed projects' own status label.
 function healthRank(label: string): number {
   if (label === "Overdue") return 0;
-  if (label === "Due soon") return 1;
-  if (label === "On track") return 2;
-  return 3;
+  if (label === "Off track") return 1;
+  if (label === "At risk") return 2;
+  if (label === "Not started") return 3;
+  if (label === "On track") return 4;
+  if (label === "Completed") return 5;
+  if (label === "Health unavailable") return 6;
+  return 7; // manually-echoed status labels (Canceled/Merged/etc.)
 }
 
 // Same worst-first idea as healthRank, for Tasks' analogous computed
@@ -360,6 +443,11 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
+  // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
+  // Off, from the Holiday calendar module) -- fed into Health's expected-
+  // progress calculation so "working days elapsed" excludes them the same
+  // way the Day Planner already does. Stored as "YYYY-MM-DD" strings.
+  const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
@@ -392,16 +480,18 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
+      supabase.from("holidays").select("date"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
     setProjects(nextProjects);
     setTasks(nextTasks);
     setPeople((peopleData as PersonOption[]) ?? []);
+    setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
     // Drop any selection for rows that no longer exist in the fresh load
     // (e.g. after a bulk delete) so the bulk-action bar doesn't linger.
     const projectIds = new Set(nextProjects.map((p) => p.id));
@@ -726,7 +816,7 @@ export default function Projects() {
         defaultWidth: 120,
         maxWidth: 150,
         render: (p) => {
-          const h = healthOf(p);
+          const h = healthOf(p, tasks, holidayDates);
           return <span className={`status-pill ${h.tone}`}>{h.label}</span>;
         },
       },
@@ -824,7 +914,7 @@ export default function Projects() {
         ),
       },
     ],
-    [people, projects, me, tasks, projectViews.activeView.progressDisplay]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay]
   );
 
   // Board-view card body: picks a handful of the same column render()
@@ -882,8 +972,8 @@ export default function Projects() {
     {
       key: "health",
       label: "Health",
-      getGroup: (p) => healthOf(p).label,
-      getTone: (p) => healthOf(p).tone,
+      getGroup: (p) => healthOf(p, tasks, holidayDates).label,
+      getTone: (p) => healthOf(p, tasks, holidayDates).tone,
     },
   ];
 
@@ -913,8 +1003,8 @@ export default function Projects() {
     {
       key: "health",
       label: "Health",
-      getGroup: (p) => healthOf(p).label,
-      getTone: (p) => healthOf(p).tone,
+      getGroup: (p) => healthOf(p, tasks, holidayDates).label,
+      getTone: (p) => healthOf(p, tasks, holidayDates).tone,
       boardGroupable: false,
     },
     { key: "actual_progress", label: "Actual Progress", getGroup: () => "", boardGroupable: false },
@@ -976,7 +1066,7 @@ export default function Projects() {
     { key: "effort_level", label: "Effort", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
     { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
-    { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p).label) },
+    { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
   ];
 
