@@ -722,6 +722,7 @@ export default function Projects() {
   ];
 
   const projectViews = useTableViews("projects", me?.id, {
+    viewType: "table",
     columnOrder: PROJECT_COLUMN_ORDER,
     hiddenColumns: [],
     columnWidths: {},
@@ -996,6 +997,7 @@ export default function Projects() {
   ];
 
   const taskViews = useTableViews("tasks", me?.id, {
+    viewType: "table",
     columnOrder: TASK_COLUMN_ORDER,
     hiddenColumns: [],
     columnWidths: {},

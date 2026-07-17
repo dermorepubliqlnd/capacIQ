@@ -67,9 +67,16 @@ export function sortRows<T>(rows: T[], sorts: SortRule[], sortOptions: SortOptio
   });
 }
 
+export type ViewType = "table" | "board" | "calendar" | "timeline";
+
 export interface TableView {
   id: string;
   name: string;
+  // Which layout this view renders as. Only "table" is actually built right
+  // now -- Board/Calendar/Timeline exist as a forward-compatible field plus
+  // placeholder tiles in the "Add view" picker (see ViewTabs.tsx) so people
+  // can see what's coming without it being selectable yet.
+  viewType: ViewType;
   columnOrder: string[];
   hiddenColumns: string[];
   columnWidths: Record<string, number>;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, MoreHorizontal, Pencil, SlidersHorizontal, Copy, Trash2, Table2 } from "lucide-react";
-import type { GroupOption, TableView } from "../lib/tableTypes";
+import { Plus, MoreHorizontal, Pencil, SlidersHorizontal, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
+import type { GroupOption, TableView, ViewType } from "../lib/tableTypes";
 
 interface ViewTabsProps<T> {
   views: TableView[];
@@ -8,7 +8,7 @@ interface ViewTabsProps<T> {
   rows: T[];
   groupOptions: GroupOption<T>[];
   onSelect: (id: string) => void;
-  onCreate: (name: string) => void;
+  onCreate: (name: string, viewType?: ViewType) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
@@ -28,6 +28,27 @@ export const TAB_COLORS: Record<string, string> = {
   purple: "#7b4fb0",
   pink: "#c1447e",
 };
+
+// One icon per view type -- only "table" is a real, selectable layout right
+// now, but views already carry a viewType so tabs are ready the moment
+// Board/Calendar/Timeline become real (see VIEW_TYPE_TILES below).
+const VIEW_TYPE_ICONS: Record<ViewType, typeof Table2> = {
+  table: Table2,
+  board: Kanban,
+  calendar: Calendar,
+  timeline: GanttChart,
+};
+
+// "Start from scratch" tiles shown in the Add-view picker, Notion-style.
+// Only "table" is wired up to actually create a view -- board/calendar/
+// timeline render as visible, disabled placeholders so people can see
+// what's coming without being able to pick a layout that doesn't exist yet.
+const VIEW_TYPE_TILES: { type: ViewType; label: string; enabled: boolean }[] = [
+  { type: "table", label: "Table", enabled: true },
+  { type: "board", label: "Board", enabled: false },
+  { type: "timeline", label: "Timeline", enabled: false },
+  { type: "calendar", label: "Calendar", enabled: false },
+];
 
 // Count of rows still visible under a given view's own grouping settings
 // (its groupBy + hiddenGroups), independent of whichever view is active —
@@ -62,6 +83,8 @@ export default function ViewTabs<T>({
   const [editValue, setEditValue] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSearch, setAddSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -69,6 +92,7 @@ export default function ViewTabs<T>({
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setMenuOpenId(null);
         setOverflowOpen(false);
+        setAddOpen(false);
       }
     }
     document.addEventListener("mousedown", onDocClick);
@@ -86,18 +110,26 @@ export default function ViewTabs<T>({
     setEditingId(null);
   }
 
-  function handleCreate() {
-    const name = window.prompt("Name this view:", "New view");
-    if (name && name.trim()) onCreate(name.trim());
+  // Notion-style zero-friction create: no naming prompt, just add a new
+  // view immediately with an auto-generated name the person can rename
+  // later via the tab's own "⋯" menu.
+  function handleCreateTable() {
+    const existingUntitled = views.filter((v) => /^New view( \d+)?$/.test(v.name)).length;
+    const name = existingUntitled === 0 ? "New view" : `New view ${existingUntitled + 1}`;
+    onCreate(name, "table");
+    setAddOpen(false);
+    setAddSearch("");
   }
 
   const activeIdx = views.findIndex((v) => v.id === activeViewId);
   const visible = activeIdx >= MAX_VISIBLE ? [...views.slice(0, MAX_VISIBLE - 1), views[activeIdx]] : views.slice(0, MAX_VISIBLE);
   const overflow = views.filter((v) => !visible.includes(v));
+  const filteredViews = views.filter((v) => v.name.toLowerCase().includes(addSearch.trim().toLowerCase()));
 
   function renderTab(v: TableView) {
     const active = v.id === activeViewId;
     const color = TAB_COLORS[v.color] ?? TAB_COLORS.neutral;
+    const Icon = VIEW_TYPE_ICONS[v.viewType] ?? Table2;
     return (
       <div
         key={v.id}
@@ -120,7 +152,7 @@ export default function ViewTabs<T>({
           />
         ) : (
           <>
-            <Table2 size={12} className="view-tab-icon" style={{ color }} />
+            <Icon size={12} className="view-tab-icon" style={{ color }} />
             {v.name}
             {v.showCount && <span className="view-tab-count">{visibleCountFor(v, rows, groupOptions)}</span>}
             <button
@@ -211,25 +243,83 @@ export default function ViewTabs<T>({
           {overflow.length} more
           {overflowOpen && (
             <div className="view-tab-dropdown" style={{ width: 160 }} onClick={(e) => e.stopPropagation()}>
-              {overflow.map((v) => (
-                <button
-                  key={v.id}
-                  onClick={() => {
-                    onSelect(v.id);
-                    setOverflowOpen(false);
-                  }}
-                >
-                  <Table2 size={12} />
-                  {v.name}
-                </button>
-              ))}
+              {overflow.map((v) => {
+                const Icon = VIEW_TYPE_ICONS[v.viewType] ?? Table2;
+                return (
+                  <button
+                    key={v.id}
+                    onClick={() => {
+                      onSelect(v.id);
+                      setOverflowOpen(false);
+                    }}
+                  >
+                    <Icon size={12} />
+                    {v.name}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
       )}
-      <div className="view-tab" onClick={handleCreate} style={{ color: "var(--muted)" }}>
-        <Plus size={12} />
-        Add view
+      <div className="view-tab" style={{ position: "relative" }} onClick={() => setAddOpen((v) => !v)}>
+        <Plus size={12} style={{ color: "var(--muted)" }} />
+        <span style={{ color: "var(--muted)" }}>Add view</span>
+        {addOpen && (
+          <div className="add-view-popover" onClick={(e) => e.stopPropagation()}>
+            <div className="add-view-search">
+              <Search size={13} />
+              <input
+                autoFocus
+                placeholder="Search for a view..."
+                value={addSearch}
+                onChange={(e) => setAddSearch(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            </div>
+            {filteredViews.length > 0 && (
+              <div className="add-view-existing">
+                {filteredViews.map((v) => {
+                  const Icon = VIEW_TYPE_ICONS[v.viewType] ?? Table2;
+                  return (
+                    <button
+                      key={v.id}
+                      className="add-view-existing-item"
+                      onClick={() => {
+                        onSelect(v.id);
+                        setAddOpen(false);
+                        setAddSearch("");
+                      }}
+                    >
+                      <Icon size={13} />
+                      {v.name}
+                      {v.id === activeViewId && <span className="add-view-current">Current</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="add-view-scratch-label">Start from scratch</div>
+            <div className="add-view-tiles">
+              {VIEW_TYPE_TILES.map((tile) => {
+                const Icon = VIEW_TYPE_ICONS[tile.type];
+                return (
+                  <button
+                    key={tile.type}
+                    className={`add-view-tile${tile.enabled ? "" : " disabled"}`}
+                    disabled={!tile.enabled}
+                    title={tile.enabled ? `New ${tile.label.toLowerCase()} view` : "Coming soon"}
+                    onClick={tile.enabled ? handleCreateTable : undefined}
+                  >
+                    <Icon size={18} />
+                    <span>{tile.label}</span>
+                    {!tile.enabled && <span className="add-view-soon">Soon</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

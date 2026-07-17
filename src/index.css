@@ -304,6 +304,121 @@ input, select { font-family: var(--font); }
 .view-tab-dropdown button:hover { background: var(--hover-bg); }
 .view-tab-dropdown button.danger { color: var(--danger-text); }
 
+/* Notion-style "Add view" popover: search box, existing-views list, and a
+   "Start from scratch" tile grid. Only the Table tile is functional right
+   now -- Board/Timeline/Calendar render as visible, disabled placeholders
+   (see VIEW_TYPE_TILES in ViewTabs.tsx) so people can see what's coming. */
+.add-view-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(15,41,66,0.14);
+  padding: 8px;
+  width: 220px;
+  cursor: default;
+}
+.add-view-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.add-view-search input {
+  border: none;
+  outline: none;
+  background: none;
+  font-size: 12px;
+  color: var(--text);
+  width: 100%;
+}
+.add-view-existing {
+  display: flex;
+  flex-direction: column;
+  max-height: 120px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+.add-view-existing-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+.add-view-existing-item:hover { background: var(--hover-bg); }
+.add-view-current {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.add-view-scratch-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 4px 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.add-view-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.add-view-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--hover-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.add-view-tile:hover:not(.disabled) { border-color: var(--accent); color: var(--accent); }
+.add-view-tile.disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  opacity: 0.55;
+}
+.add-view-soon {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
 /* Inline, click-to-edit table cells (Notion-style): invisible chrome until
    hover/focus so the dense table doesn't look like a form. */
 .inline-cell {

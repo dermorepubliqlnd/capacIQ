@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { TableView, DefaultView } from "./tableTypes";
+import type { TableView, DefaultView, ViewType } from "./tableTypes";
 
 const STORAGE_PREFIX = "capaciq_views";
 
@@ -13,7 +13,8 @@ function load(storageKey: string, defaultView: DefaultView): TableView[] {
     if (raw) {
       const parsed = JSON.parse(raw) as TableView[];
       // Backfill any fields added after a view was first saved (e.g.
-      // hiddenGroups) so older localStorage data doesn't crash newer code.
+      // hiddenGroups, viewType) so older localStorage data doesn't crash
+      // newer code.
       if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((v) => ({ ...defaultView, ...v }));
     }
   } catch {
@@ -47,9 +48,9 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     setViews((vs) => vs.map((v) => (v.id === activeView.id ? { ...v, ...patch } : v)));
   }
 
-  function createView(name: string) {
+  function createView(name: string, viewType: ViewType = "table") {
     const id = `view_${Date.now()}`;
-    setViews((vs) => [...vs, { ...makeDefault(defaultView), id, name }]);
+    setViews((vs) => [...vs, { ...makeDefault(defaultView), id, name, viewType }]);
     setActiveViewId(id);
   }
 
