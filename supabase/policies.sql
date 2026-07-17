@@ -139,3 +139,161 @@ create policy tasks_delete on tasks for delete
     my_access_level() = 'full'
     or exists (select 1 from projects where id = project_id and owner_id = my_person_id())
   );
+-- Extension Requests: approval authority + due-date lock (2026-07-17)
+-- Approval model: the project owner decides by default; if the owner is
+-- the one requesting (their own task), it escalates to the owner's
+-- manager (people.reports_to) instead, so nobody approves their own
+-- request. Full Access can always decide, as an override.
+
+create or replace function can_decide_extension(p_request_id uuid) returns boolean
+language sql stable security definer as $$
+  select
+    my_access_level() = 'full'
+    or exists (
+      select 1
+      from extension_requests er
+      join tasks t on t.id = er.task_id
+      join projects pr on pr.id = t.project_id
+      left join people owner on owner.id = pr.owner_id
+      where er.id = p_request_id
+        and (
+          (pr.owner_id = my_person_id() and er.requested_by <> pr.owner_id)
+          or (er.requested_by = pr.owner_id and owner.reports_to = my_person_id())
+        )
+    )
+$$;
+
+grant execute on function can_decide_extension(uuid) to authenticated;
+
+-- Project owners need to see requests for their project's tasks even
+-- when they're neither the requester, the assignee, nor the requester's
+-- manager -- the original brief's select policy missed this case.
+drop policy if exists extension_requests_select on extension_requests;
+create policy extension_requests_select on extension_requests for select
+  using (
+    my_access_level() = 'full'
+    or requested_by = my_person_id()
+    or exists (select 1 from tasks where id = task_id and assignee_id = my_person_id())
+    or exists (select 1 from people where id = requested_by and reports_to = my_person_id())
+    or exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = task_id and pr.owner_id = my_person_id()
+    )
+  );
+
+drop policy if exists extension_requests_update on extension_requests;
+create policy extension_requests_update on extension_requests for update
+  using (can_decide_extension(id))
+  with check (can_decide_extension(id));
+
+-- Due-date lock: current_due_date can only change via decide_extension_request
+-- or request_and_approve_extension below (both flip a transaction-local flag
+-- before writing). Any other path -- inline edits, direct SQL, a stray API
+-- call -- gets rejected, so the extension trail can't be silently bypassed.
+create or replace function enforce_due_date_lock() returns trigger
+language plpgsql as $$
+begin
+  if NEW.current_due_date is distinct from OLD.current_due_date then
+    if coalesce(current_setting('app.bypass_due_date_lock', true), '') <> 'on' then
+      raise exception 'current_due_date can only be changed via an approved extension request';
+    end if;
+  end if;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists tasks_due_date_lock on tasks;
+create trigger tasks_due_date_lock
+  before update on tasks
+  for each row execute function enforce_due_date_lock();
+
+-- Approve/reject a pending request. On approval, writes the task's
+-- current_due_date in the same transaction as the decision.
+create or replace function decide_extension_request(
+  p_request_id uuid,
+  p_status text,
+  p_decision_notes text default null
+) returns void
+language plpgsql security definer as $$
+declare
+  v_task_id uuid;
+  v_new_due_date date;
+  v_current_status text;
+begin
+  if p_status not in ('Approved','Rejected') then
+    raise exception 'invalid status: %', p_status;
+  end if;
+
+  if not can_decide_extension(p_request_id) then
+    raise exception 'not authorized to decide this extension request';
+  end if;
+
+  select task_id, requested_new_due_date, status
+    into v_task_id, v_new_due_date, v_current_status
+    from extension_requests where id = p_request_id;
+
+  if v_task_id is null then
+    raise exception 'extension request not found';
+  end if;
+  if v_current_status <> 'Pending' then
+    raise exception 'this request has already been decided';
+  end if;
+
+  update extension_requests
+    set status = p_status,
+        decided_by = my_person_id(),
+        decided_at = now(),
+        decision_notes = p_decision_notes
+    where id = p_request_id;
+
+  if p_status = 'Approved' then
+    perform set_config('app.bypass_due_date_lock', 'on', true);
+    update tasks set current_due_date = v_new_due_date where id = v_task_id;
+  end if;
+end;
+$$;
+
+grant execute on function decide_extension_request(uuid, text, text) to authenticated;
+
+-- Convenience for a project owner (or Full Access) making a quick,
+-- already-decided correction -- still goes through extension_requests
+-- (is_manager_initiated = true, auto-Approved) so there's still a full
+-- audit trail; there is no raw bypass of the lock anywhere in the system.
+create or replace function request_and_approve_extension(
+  p_task_id uuid,
+  p_new_due_date date,
+  p_reason_category text,
+  p_reason_notes text
+) returns uuid
+language plpgsql security definer as $$
+declare
+  v_request_id uuid;
+  v_can boolean;
+begin
+  select
+    my_access_level() = 'full'
+    or exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = p_task_id and pr.owner_id = my_person_id()
+    )
+  into v_can;
+
+  if not v_can then
+    raise exception 'not authorized to directly set this task''s due date';
+  end if;
+
+  insert into extension_requests
+    (task_id, requested_by, requested_new_due_date, reason_category, reason_notes, status, is_manager_initiated, decided_by, decided_at)
+  values
+    (p_task_id, my_person_id(), p_new_due_date, p_reason_category, p_reason_notes, 'Approved', true, my_person_id(), now())
+  returning id into v_request_id;
+
+  perform set_config('app.bypass_due_date_lock', 'on', true);
+  update tasks set current_due_date = p_new_due_date where id = p_task_id;
+
+  return v_request_id;
+end;
+$$;
+
+grant execute on function request_and_approve_extension(uuid, date, text, text) to authenticated;
+

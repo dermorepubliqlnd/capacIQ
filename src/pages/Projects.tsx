@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -8,6 +8,7 @@ import BoardView, { type BoardColumnDef } from "../components/BoardView";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
+import RequestExtensionModal from "../components/RequestExtensionModal";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
@@ -60,10 +61,17 @@ interface TaskRow {
   status: string | null;
   assignee_id: string | null;
   start_date: string | null;
+  original_due_date: string;
   current_due_date: string;
   estimated_hours: number | null;
   time_spent_hours: number | null;
+  // Self-reported by the assignee the moment status flips to Done --
+  // distinct from validated_completion_date below, which is the owner/
+  // manager's independent confirmation. See [[project_capaciq_extension_requests]].
+  submitted_on: string | null;
+  submitted_by: string | null;
   validated_completion_date: string | null;
+  validated_by: string | null;
   effort: string | null;
   is_archived: boolean;
   archived_at: string | null;
@@ -73,7 +81,7 @@ interface TaskRow {
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -453,6 +461,7 @@ export default function Projects() {
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
   const { confirm, alert, dialog: confirmDialog } = useConfirm();
 
+  const [extensionTask, setExtensionTask] = useState<TaskWithDepth | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<TaskRow[]>([]);
@@ -542,6 +551,28 @@ export default function Projects() {
       alert(`Couldn't save: ${error.message}`);
       loadAll();
     }
+  }
+
+  // current_due_date is DB-locked (see the tasks_due_date_lock trigger) --
+  // this is the only path that ever changes it, going through
+  // extension_requests so there's always an approval trail. Submitting
+  // just creates a Pending row; the date itself doesn't move until the
+  // project owner (or their manager, if the owner is the requester) or
+  // Full Access approves it on the Extension Requests page.
+  async function submitExtensionRequest(task: TaskWithDepth, newDueDate: string, reasonCategory: string, reasonNotes: string) {
+    const { error } = await supabase.from("extension_requests").insert({
+      task_id: task.id,
+      requested_by: me?.id,
+      requested_new_due_date: newDueDate,
+      reason_category: reasonCategory,
+      reason_notes: reasonNotes,
+    });
+    if (error) {
+      await alert(`Couldn't submit extension request: ${error.message}`);
+      return;
+    }
+    setExtensionTask(null);
+    await alert("Extension request submitted -- you'll see it reflected once it's decided.");
   }
 
   async function restoreProject(id: string) {
@@ -1194,7 +1225,19 @@ export default function Projects() {
             renderReadOnly={() =>
               t.status ? <span className={`status-pill ${statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}`}>{t.status}</span> : "—"
             }
-            onCommit={(v) => updateTask(t.id, { status: v || null })}
+            onCommit={(v) => {
+              // Flipping to Done stamps the assignee's own self-reported
+              // completion moment -- separate from validated_completion_date,
+              // which is the project owner/manager's independent check (see
+              // the Validated column below). Moving *off* Done clears the
+              // stamp so a task that's reopened doesn't keep a stale
+              // "submitted" record.
+              if (v === "Done") {
+                updateTask(t.id, { status: v, submitted_on: new Date().toISOString(), submitted_by: me?.id ?? null });
+              } else {
+                updateTask(t.id, { status: v || null, submitted_on: null, submitted_by: null });
+              }
+            }}
           />
         ),
       },
@@ -1259,22 +1302,78 @@ export default function Projects() {
       {
         key: "current_due_date",
         label: "Due",
-        defaultWidth: 110,
-        maxWidth: 140,
-        render: (t) => (
-          <InlineDate
-            value={t.current_due_date}
-            editable={canEditTask(t)}
-            onCommit={(v) => {
-              if (!v) return;
-              if (t.start_date && v < t.start_date) {
-                alert("Due date can't be before the start date.");
-                return;
-              }
-              updateTask(t.id, { current_due_date: v });
-            }}
-          />
-        ),
+        defaultWidth: 150,
+        minWidth: 130,
+        render: (t) => {
+          const extended = t.current_due_date !== t.original_due_date;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <InlineDate value={t.current_due_date} editable={false} onCommit={() => {}} />
+              {extended && (
+                <span
+                  className="status-pill warning"
+                  style={{ fontSize: 9.5, padding: "1px 5px" }}
+                  title={`Originally due ${t.original_due_date}`}
+                >
+                  Extended
+                </span>
+              )}
+              {canEditTask(t) && (
+                <button
+                  onClick={() => setExtensionTask(t)}
+                  title="Request extension"
+                  style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 2, flexShrink: 0 }}
+                >
+                  <CalendarClock size={12} />
+                </button>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        key: "validated_completion_date",
+        label: "Validated",
+        defaultWidth: 160,
+        minWidth: 140,
+        // Independent completion check, distinct from the assignee's own
+        // submitted_on stamp (set automatically when Status flips to Done
+        // above) -- only the project owner or Full Access can validate or
+        // correct this date, never the assignee themselves.
+        render: (t) => {
+          const canValidate = canManageTasksIn(t.project_id);
+          if (t.status !== "Done") {
+            return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>—</span>;
+          }
+          if (!t.validated_completion_date) {
+            if (!canValidate) return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>Pending validation</span>;
+            return (
+              <button
+                onClick={() => updateTask(t.id, { validated_completion_date: new Date().toISOString(), validated_by: me?.id ?? null })}
+                style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
+              >
+                <CheckCircle2 size={13} />
+                Validate
+              </button>
+            );
+          }
+          const dateOnly = t.validated_completion_date.slice(0, 10);
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <InlineDate
+                value={dateOnly}
+                editable={canValidate}
+                onCommit={(v) => {
+                  if (!v) return;
+                  updateTask(t.id, { validated_completion_date: new Date(v).toISOString(), validated_by: me?.id ?? null });
+                }}
+              />
+              <span style={{ fontSize: 10, color: "var(--muted)" }} title="Validated by">
+                {ownerName(t.validated_by)}
+              </span>
+            </div>
+          );
+        },
       },
       {
         key: "estimated_hours",
@@ -1890,6 +1989,17 @@ export default function Projects() {
             </>
           )}
         </Modal>
+      )}
+
+      {extensionTask && (
+        <RequestExtensionModal
+          taskName={extensionTask.name}
+          currentDueDate={extensionTask.current_due_date}
+          onClose={() => setExtensionTask(null)}
+          onSubmit={(newDueDate, reasonCategory, reasonNotes) =>
+            submitExtensionRequest(extensionTask, newDueDate, reasonCategory, reasonNotes)
+          }
+        />
       )}
     </div>
   );
