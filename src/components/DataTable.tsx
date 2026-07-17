@@ -1,7 +1,14 @@
-import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
 import { sortRows, TONE_STYLES } from "../lib/tableTypes";
+
+export interface RowMenuAction {
+  label: string;
+  icon?: ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}
 
 interface DataTableProps<T> {
   columns: ColumnDef<T>[];
@@ -15,11 +22,29 @@ interface DataTableProps<T> {
   emptyLabel?: string;
   footerRow?: (colSpan: number) => ReactNode;
   groupFooterRow?: (colSpan: number, group: { key: string; rows: T[] }) => ReactNode;
+  // Row-selection (checkbox) + bulk-action support. When selectable is set,
+  // a hover-revealed checkbox appears in a leading gutter column; selected
+  // rows keep it visible even without hover so selection stays legible.
+  selectable?: boolean;
+  selectedKeys?: string[];
+  onToggleSelect?: (key: string) => void;
+  onToggleSelectAll?: (visibleKeys: string[]) => void;
+  // Drag-to-reorder via a grip handle in the same gutter column. Dropping a
+  // dragged row onto another inserts it immediately before the target --
+  // the caller (Projects.tsx) is responsible for persisting the new order
+  // and for warning/clearing an active sort first.
+  orderable?: boolean;
+  onReorder?: (draggedKey: string, targetKey: string) => void;
+  // Per-row "..." menu (e.g. Delete), also rendered in the gutter column.
+  rowMenuActions?: (row: T) => RowMenuAction[];
 }
 
 // ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
 // readable floor for text columns when a max width no longer applies.
 const MIN_COL_WIDTH = 38;
+// Fixed width of the leading checkbox/grip/menu gutter column -- not
+// resizable or draggable like the real data columns.
+const GUTTER_WIDTH = 54;
 
 // Dense, Notion-style data table: drag column headers to reorder, drag the
 // right edge to resize, use the Columns menu to hide/show or group, and
@@ -37,12 +62,33 @@ export default function DataTable<T>({
   emptyLabel = "Nothing here yet.",
   footerRow,
   groupFooterRow,
+  selectable,
+  selectedKeys,
+  onToggleSelect,
+  onToggleSelectAll,
+  orderable,
+  onReorder,
+  rowMenuActions,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
+  const [dragRowKey, setDragRowKey] = useState<string | null>(null);
+  const [rowMenuOpenKey, setRowMenuOpenKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const isResizingRef = useRef(false);
+  const rowMenuRef = useRef<HTMLDivElement | null>(null);
   const [, forceRerender] = useState(0);
+
+  const hasGutter = Boolean(selectable || orderable || rowMenuActions);
+
+  useEffect(() => {
+    if (!rowMenuOpenKey) return;
+    function onDocClick(e: MouseEvent) {
+      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) setRowMenuOpenKey(null);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [rowMenuOpenKey]);
 
   const orderedKeys = useMemo(() => {
     const known = columns.map((c) => c.key);
@@ -97,9 +143,9 @@ export default function DataTable<T>({
   // columns is what makes the wrapping div's overflow-x:auto (below) able
   // to kick in.
   const totalWidth = useMemo(
-    () => visibleColumns.reduce((sum, c) => sum + displayWidth(c.key), 0),
+    () => visibleColumns.reduce((sum, c) => sum + displayWidth(c.key), 0) + (hasGutter ? GUTTER_WIDTH : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleColumns, baseWidths]
+    [visibleColumns, baseWidths, hasGutter]
   );
 
   function handleDrop(targetKey: string) {
@@ -157,9 +203,29 @@ export default function DataTable<T>({
     [rows, sortOptions, view.sorts]
   );
 
+  const colSpanTotal = (visibleColumns.length || 1) + (hasGutter ? 1 : 0);
+  const allVisibleKeys = sortedRows.map(rowKey);
+  const allSelected = Boolean(hasGutter && selectable && allVisibleKeys.length > 0 && allVisibleKeys.every((k) => selectedKeys?.includes(k)));
+  const someSelected = Boolean(hasGutter && selectable && allVisibleKeys.some((k) => selectedKeys?.includes(k)));
+
   const header = (
     <thead>
       <tr className={activeGroupOption ? "is-grouped" : undefined}>
+        {hasGutter && (
+          <th style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH }}>
+            {selectable && (
+              <input
+                type="checkbox"
+                className="row-checkbox"
+                checked={allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = !allSelected && someSelected;
+                }}
+                onChange={() => onToggleSelectAll?.(allVisibleKeys)}
+              />
+            )}
+          </th>
+        )}
         {visibleColumns.map((c) => (
           <th
             key={c.key}
@@ -198,8 +264,73 @@ export default function DataTable<T>({
   );
 
   function renderRow(row: T) {
+    const key = rowKey(row);
+    const isSelected = Boolean(selectable && selectedKeys?.includes(key));
+    const actions = rowMenuActions?.(row) ?? [];
     return (
-      <tr key={rowKey(row)} onClick={() => onRowClick?.(row)} style={{ cursor: onRowClick ? "pointer" : "default" }}>
+      <tr
+        key={key}
+        onClick={() => onRowClick?.(row)}
+        className={isSelected ? "row-selected" : undefined}
+        style={{ cursor: onRowClick ? "pointer" : "default" }}
+        onDragOver={orderable ? (e) => e.preventDefault() : undefined}
+        onDrop={
+          orderable
+            ? () => {
+                if (dragRowKey && dragRowKey !== key) onReorder?.(dragRowKey, key);
+                setDragRowKey(null);
+              }
+            : undefined
+        }
+      >
+        {hasGutter && (
+          <td className="row-gutter-cell" style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH }} onClick={(e) => e.stopPropagation()}>
+            <div className="row-gutter-inner">
+              {orderable && (
+                <span
+                  className="row-grip-btn"
+                  draggable
+                  onDragStart={() => setDragRowKey(key)}
+                  onDragEnd={() => setDragRowKey(null)}
+                  title="Drag to reorder"
+                >
+                  <GripVertical size={13} />
+                </span>
+              )}
+              {selectable && (
+                <input type="checkbox" className="row-checkbox" checked={isSelected} onChange={() => onToggleSelect?.(key)} />
+              )}
+              {rowMenuActions && actions.length > 0 && (
+                <div style={{ position: "relative" }} ref={rowMenuOpenKey === key ? rowMenuRef : undefined}>
+                  <button
+                    className="row-icon-btn"
+                    onClick={() => setRowMenuOpenKey((k) => (k === key ? null : key))}
+                    title="More"
+                  >
+                    <MoreHorizontal size={13} />
+                  </button>
+                  {rowMenuOpenKey === key && (
+                    <div className="view-tab-dropdown" style={{ left: "auto", right: 0, top: "calc(100% + 4px)" }}>
+                      {actions.map((a, i) => (
+                        <button
+                          key={i}
+                          className={a.danger ? "danger" : undefined}
+                          onClick={() => {
+                            a.onClick();
+                            setRowMenuOpenKey(null);
+                          }}
+                        >
+                          {a.icon}
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </td>
+        )}
         {visibleColumns.map((c) => (
           <td
             key={c.key}
@@ -225,7 +356,7 @@ export default function DataTable<T>({
     body = (
       <tbody>
         <tr>
-          <td colSpan={visibleColumns.length || 1} style={{ color: "var(--muted)" }}>
+          <td colSpan={colSpanTotal} style={{ color: "var(--muted)" }}>
             {emptyLabel}
           </td>
         </tr>
@@ -250,7 +381,7 @@ export default function DataTable<T>({
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>
                 <td
-                  colSpan={visibleColumns.length || 1}
+                  colSpan={colSpanTotal}
                   style={{
                     fontWeight: 600,
                     color: groupTone ? TONE_STYLES[groupTone]?.text ?? "var(--navy)" : "var(--navy)",
@@ -267,7 +398,7 @@ export default function DataTable<T>({
               </tr>
               {!collapsed && groupRows.map((row) => renderRow(row))}
               {!collapsed && groupFooterRow && (
-                <tr>{groupFooterRow(visibleColumns.length || 1, { key: groupName, rows: groupRows })}</tr>
+                <tr>{groupFooterRow(colSpanTotal, { key: groupName, rows: groupRows })}</tr>
               )}
             </Fragment>
           );
@@ -278,7 +409,7 @@ export default function DataTable<T>({
     body = <tbody>{sortedRows.map((row) => renderRow(row))}</tbody>;
   }
 
-  const footerContent = footerRow ? footerRow(visibleColumns.length || 1) : null;
+  const footerContent = footerRow ? footerRow(colSpanTotal) : null;
 
   return (
     <div style={{ width: "100%", overflowX: "auto" }}>
@@ -294,4 +425,3 @@ export default function DataTable<T>({
     </div>
   );
 }
-

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Feather, Weight, BicepsFlexed } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -17,7 +17,9 @@ import {
   PROJECT_EFFORT_LEVEL_TONES,
   PROJECT_PRIORITY_OPTIONS,
   PROJECT_STATUS_GROUPED,
+  PROJECT_STATUS_OPTIONS,
   TASK_STATUS_GROUPED,
+  TASK_STATUS_OPTIONS,
   PROJECT_CATEGORY_ICONS,
   DEFAULT_PROJECT_ICON,
   TASK_EFFORT_OPTIONS,
@@ -43,6 +45,7 @@ interface ProjectRow {
   end_date: string | null;
   is_archived: boolean;
   archived_at: string | null;
+  sort_order: number | null;
 }
 
 interface TaskRow {
@@ -60,6 +63,7 @@ interface TaskRow {
   effort: string | null;
   is_archived: boolean;
   archived_at: string | null;
+  sort_order: number | null;
 }
 
 type TaskWithDepth = TaskRow & { _depth: number };
@@ -161,6 +165,63 @@ function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
   return result;
 }
 
+// Small anchored dropdown for the bulk-action bar's field pickers (e.g.
+// "Priority" -> Low/Medium/High). Deliberately minimal -- reuses the same
+// .view-tab-dropdown look as other menus in this file rather than
+// introducing a new visual style.
+function FieldPickerButton({ label, options, onPick }: { label: string; options: string[]; onPick: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button className="bulk-bar-field-btn" onClick={() => setOpen((v) => !v)}>
+        {label}
+      </button>
+      {open && (
+        <div className="view-tab-dropdown" style={{ width: 170 }}>
+          {options.map((o) => (
+            <button
+              key={o}
+              onClick={() => {
+                onPick(o);
+                setOpen(false);
+              }}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Notion-style fractional positioning: given the full ordered list (with
+// each row's current sort_order) and a drag from `draggedId` onto
+// `targetId`, returns the sort_order value that places the dragged row
+// immediately before the target -- the midpoint between the target's
+// previous neighbor and the target itself, so no other row needs to be
+// renumbered.
+function reorderedSortValue(list: { id: string; sort_order: number | null }[], draggedId: string, targetId: string): number | null {
+  const filtered = list.filter((r) => r.id !== draggedId);
+  const idx = filtered.findIndex((r) => r.id === targetId);
+  if (idx === -1) return null;
+  const target = filtered[idx];
+  const before = filtered[idx - 1];
+  const afterVal = target.sort_order ?? (idx + 1) * 1000;
+  const beforeVal = before ? before.sort_order ?? 0 : afterVal - 1000;
+  return (beforeVal + afterVal) / 2;
+}
+
 export default function Projects() {
   const { person: me } = useSession();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -175,6 +236,9 @@ export default function Projects() {
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<TaskRow[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
+
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   const isFullAccess = me?.access_level === "full";
   const ARCHIVE_RETENTION_DAYS = 30;
@@ -193,13 +257,21 @@ export default function Projects() {
     setLoading(true);
     purgeExpiredArchives();
     const [{ data: projectData }, { data: taskData }, { data: peopleData }] = await Promise.all([
-      supabase.from("projects").select("*").eq("is_archived", false).order("name"),
-      supabase.from("tasks").select("*").eq("is_archived", false).order("current_due_date"),
+      supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
+      supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
     ]);
-    setProjects((projectData as ProjectRow[]) ?? []);
-    setTasks((taskData as TaskRow[]) ?? []);
+    const nextProjects = (projectData as ProjectRow[]) ?? [];
+    const nextTasks = (taskData as TaskRow[]) ?? [];
+    setProjects(nextProjects);
+    setTasks(nextTasks);
     setPeople((peopleData as PersonOption[]) ?? []);
+    // Drop any selection for rows that no longer exist in the fresh load
+    // (e.g. after a bulk delete) so the bulk-action bar doesn't linger.
+    const projectIds = new Set(nextProjects.map((p) => p.id));
+    const taskIds = new Set(nextTasks.map((t) => t.id));
+    setSelectedProjectIds((prev) => prev.filter((id) => projectIds.has(id)));
+    setSelectedTaskIds((prev) => prev.filter((id) => taskIds.has(id)));
     setLoading(false);
   }
 
@@ -247,15 +319,15 @@ export default function Projects() {
 
   async function archiveProject(p: ProjectRow) {
     const ok = await confirm({
-      title: "Archive project",
-      message: `Archive "${p.name}"? It'll be hidden from this table and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
-      confirmLabel: "Archive",
+      title: "Delete project",
+      message: `Delete "${p.name}"? It'll be archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
+      confirmLabel: "Delete",
       danger: true,
     });
     if (!ok) return;
     const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: new Date().toISOString() }).eq("id", p.id);
     if (error) {
-      window.alert(`Couldn't archive: ${error.message}`);
+      window.alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadAll();
@@ -271,20 +343,90 @@ export default function Projects() {
     loadAll();
   }
 
+  async function deleteProjectPermanently(p: ProjectRow) {
+    const ok = await confirm({
+      title: "Delete permanently",
+      message: `Permanently delete "${p.name}"? This can't be undone.`,
+      confirmLabel: "Delete permanently",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("projects").delete().eq("id", p.id);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadArchived();
+  }
+
+  async function bulkUpdateProjects(patch: Partial<ProjectRow>) {
+    const ids = selectedProjectIds;
+    if (ids.length === 0) return;
+    setProjects((prev) => prev.map((p) => (ids.includes(p.id) ? { ...p, ...patch } : p)));
+    const { error } = await supabase.from("projects").update(patch).in("id", ids);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  async function bulkDeleteProjects() {
+    const ids = selectedProjectIds;
+    if (ids.length === 0) return;
+    const ok = await confirm({
+      title: "Delete projects",
+      message: `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? They'll be archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored first.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: new Date().toISOString() }).in("id", ids);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    setSelectedProjectIds([]);
+    loadAll();
+  }
+
+  async function reorderProjects(draggedId: string, targetId: string) {
+    if (projectViews.activeView.sorts.length > 0) {
+      const ok = await confirm({
+        title: "Clear sort to reorder",
+        message: "This view is currently sorted. Dragging to reorder will clear that sort so your manual order can show. Continue?",
+        confirmLabel: "Clear sort & reorder",
+      });
+      if (!ok) return;
+      projectViews.updateActiveView({ sorts: [] });
+    }
+    const newVal = reorderedSortValue(projects.map((p) => ({ id: p.id, sort_order: p.sort_order })), draggedId, targetId);
+    if (newVal == null) return;
+    setProjects((prev) => prev.map((p) => (p.id === draggedId ? { ...p, sort_order: newVal } : p)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)));
+    const { error } = await supabase.from("projects").update({ sort_order: newVal }).eq("id", draggedId);
+    if (error) {
+      window.alert(`Couldn't reorder: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  function toggleProjectSelectAll(keys: string[]) {
+    setSelectedProjectIds((prev) => (keys.every((k) => prev.includes(k)) ? prev.filter((k) => !keys.includes(k)) : Array.from(new Set([...prev, ...keys]))));
+  }
+
   async function archiveTask(t: TaskRow) {
     const childIds = tasks.filter((x) => x.parent_task_id === t.id).map((x) => x.id);
     const warning =
       childIds.length > 0
-        ? `Archive "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? Hidden from this table, permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`
-        : `Archive "${t.name}"? Hidden from this table, permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`;
-    const ok = await confirm({ title: "Archive task", message: warning, confirmLabel: "Archive", danger: true });
+        ? `Delete "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`
+        : `Delete "${t.name}"? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`;
+    const ok = await confirm({ title: "Delete task", message: warning, confirmLabel: "Delete", danger: true });
     if (!ok) return;
     const { error } = await supabase
       .from("tasks")
       .update({ is_archived: true, archived_at: new Date().toISOString() })
       .in("id", [t.id, ...childIds]);
     if (error) {
-      window.alert(`Couldn't archive: ${error.message}`);
+      window.alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadAll();
@@ -298,6 +440,78 @@ export default function Projects() {
     }
     loadArchived();
     loadAll();
+  }
+
+  async function deleteTaskPermanently(t: TaskRow) {
+    const ok = await confirm({
+      title: "Delete permanently",
+      message: `Permanently delete "${t.name}"? This can't be undone.`,
+      confirmLabel: "Delete permanently",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("tasks").delete().eq("id", t.id);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadArchived();
+  }
+
+  async function bulkUpdateTasks(patch: Partial<TaskRow>) {
+    const ids = selectedTaskIds;
+    if (ids.length === 0) return;
+    setTasks((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, ...patch } : t)));
+    const { error } = await supabase.from("tasks").update(patch).in("id", ids);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  async function bulkDeleteTasks() {
+    const ids = selectedTaskIds;
+    if (ids.length === 0) return;
+    const childIds = tasks.filter((t) => t.parent_task_id && ids.includes(t.parent_task_id)).map((t) => t.id);
+    const allIds = Array.from(new Set([...ids, ...childIds]));
+    const ok = await confirm({
+      title: "Delete tasks",
+      message: `Delete ${ids.length} task${ids.length > 1 ? "s" : ""}${childIds.length ? ` (and ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""})` : ""}? Archived and permanently deleted after ${ARCHIVE_RETENTION_DAYS} days unless restored.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from("tasks").update({ is_archived: true, archived_at: new Date().toISOString() }).in("id", allIds);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    setSelectedTaskIds([]);
+    loadAll();
+  }
+
+  async function reorderTasks(draggedId: string, targetId: string) {
+    if (taskViews.activeView.sorts.length > 0) {
+      const ok = await confirm({
+        title: "Clear sort to reorder",
+        message: "This view is currently sorted. Dragging to reorder will clear that sort so your manual order can show. Continue?",
+        confirmLabel: "Clear sort & reorder",
+      });
+      if (!ok) return;
+      taskViews.updateActiveView({ sorts: [] });
+    }
+    const newVal = reorderedSortValue(tasks.map((t) => ({ id: t.id, sort_order: t.sort_order })), draggedId, targetId);
+    if (newVal == null) return;
+    setTasks((prev) => prev.map((t) => (t.id === draggedId ? { ...t, sort_order: newVal } : t)).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)));
+    const { error } = await supabase.from("tasks").update({ sort_order: newVal }).eq("id", draggedId);
+    if (error) {
+      window.alert(`Couldn't reorder: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  function toggleTaskSelectAll(keys: string[]) {
+    setSelectedTaskIds((prev) => (keys.every((k) => prev.includes(k)) ? prev.filter((k) => !keys.includes(k)) : Array.from(new Set([...prev, ...keys]))));
   }
 
   const projectColumns: ColumnDef<ProjectRow>[] = useMemo(
@@ -515,7 +729,7 @@ export default function Projects() {
   });
 
   async function createBlankProject() {
-    const { error } = await supabase.from("projects").insert({ name: "Untitled" });
+    const { error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() });
     if (error) {
       window.alert(`Couldn't create project: ${error.message}`);
       return;
@@ -541,6 +755,7 @@ export default function Projects() {
       status: "Not Started",
       original_due_date: parent.current_due_date,
       current_due_date: parent.current_due_date,
+      sort_order: Date.now(),
     });
     if (error) {
       window.alert(`Couldn't add subtask: ${error.message}`);
@@ -793,6 +1008,7 @@ export default function Projects() {
       status: "Not Started",
       original_due_date: today,
       current_due_date: today,
+      sort_order: Date.now(),
     });
     if (error) {
       window.alert(`Couldn't create task: ${error.message}`);
@@ -875,27 +1091,36 @@ export default function Projects() {
           sorts={projectViews.activeView.sorts}
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
         />
+        {selectedProjectIds.length > 0 && (
+          <div className="bulk-bar">
+            <span className="bulk-bar-count">{selectedProjectIds.length} selected</span>
+            <button className="bulk-bar-clear" onClick={() => setSelectedProjectIds([])}>
+              Clear
+            </button>
+            <div className="bulk-bar-actions">
+              <FieldPickerButton label="Priority" options={PROJECT_PRIORITY_OPTIONS} onPick={(v) => bulkUpdateProjects({ priority: v as ProjectRow["priority"] })} />
+              <FieldPickerButton
+                label="Owner"
+                options={people.map((x) => x.name)}
+                onPick={(v) => {
+                  const person = people.find((x) => x.name === v);
+                  bulkUpdateProjects({ owner_id: person?.id ?? null });
+                }}
+              />
+              <FieldPickerButton label="Status" options={PROJECT_STATUS_OPTIONS} onPick={(v) => bulkUpdateProjects({ project_status: v || null })} />
+              <button className="bulk-bar-delete" onClick={bulkDeleteProjects}>
+                <Trash2 size={12} />
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
           <div className="data-table-dense">
             <DataTable
-              columns={[
-                ...projectColumns,
-                {
-                  key: "__archive",
-                  label: "",
-                  defaultWidth: 40,
-                  minWidth: 36,
-                  maxWidth: 48,
-                  render: (p) =>
-                    canEditProject(p) ? (
-                      <button className="row-icon-btn" onClick={() => archiveProject(p)} title="Archive project">
-                        <Archive size={12} />
-                      </button>
-                    ) : null,
-                },
-              ]}
+              columns={projectColumns}
               rows={projects}
               rowKey={(p) => p.id}
               view={projectViews.activeView}
@@ -903,6 +1128,13 @@ export default function Projects() {
               groupOptions={projectGroupOptions}
               sortOptions={projectSortOptions}
               emptyLabel="No projects yet. Add one below."
+              selectable
+              selectedKeys={selectedProjectIds}
+              onToggleSelect={(key) => setSelectedProjectIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
+              onToggleSelectAll={toggleProjectSelectAll}
+              orderable
+              onReorder={reorderProjects}
+              rowMenuActions={(p) => (canEditProject(p) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => archiveProject(p) }] : [])}
               footerRow={
                 canCreateProject
                   ? (colSpan) => (
@@ -973,27 +1205,35 @@ export default function Projects() {
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
         />
+        {selectedTaskIds.length > 0 && (
+          <div className="bulk-bar">
+            <span className="bulk-bar-count">{selectedTaskIds.length} selected</span>
+            <button className="bulk-bar-clear" onClick={() => setSelectedTaskIds([])}>
+              Clear
+            </button>
+            <div className="bulk-bar-actions">
+              <FieldPickerButton label="Status" options={TASK_STATUS_OPTIONS} onPick={(v) => bulkUpdateTasks({ status: v || null })} />
+              <FieldPickerButton
+                label="Assignee"
+                options={people.map((x) => x.name)}
+                onPick={(v) => {
+                  const person = people.find((x) => x.name === v);
+                  bulkUpdateTasks({ assignee_id: person?.id ?? null });
+                }}
+              />
+              <button className="bulk-bar-delete" onClick={bulkDeleteTasks}>
+                <Trash2 size={12} />
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
           <div className="data-table-dense">
             <DataTable
-              columns={[
-                ...taskColumns,
-                {
-                  key: "__archive",
-                  label: "",
-                  defaultWidth: 40,
-                  minWidth: 36,
-                  maxWidth: 48,
-                  render: (t) =>
-                    canManageTasksIn(t.project_id) ? (
-                      <button className="row-icon-btn" onClick={() => archiveTask(t)} title="Archive task">
-                        <Archive size={12} />
-                      </button>
-                    ) : null,
-                },
-              ]}
+              columns={taskColumns}
               rows={visibleTasks}
               rowKey={(t) => t.id}
               view={taskViews.activeView}
@@ -1001,6 +1241,13 @@ export default function Projects() {
               groupOptions={taskGroupOptions}
               sortOptions={taskSortOptions}
               emptyLabel="No tasks yet. Add one below."
+              selectable
+              selectedKeys={selectedTaskIds}
+              onToggleSelect={(key) => setSelectedTaskIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
+              onToggleSelectAll={toggleTaskSelectAll}
+              orderable
+              onReorder={reorderTasks}
+              rowMenuActions={(t) => (canManageTasksIn(t.project_id) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => archiveTask(t) }] : [])}
               footerRow={
                 canCreateTask && taskViews.activeView.groupBy !== "project"
                   ? (colSpan) => (
@@ -1060,13 +1307,22 @@ export default function Projects() {
                           <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>{p.name}</div>
                           <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{daysLeft > 0 ? `${daysLeft} days left` : "Deleting soon"}</div>
                         </div>
-                        <button
-                          onClick={() => restoreProject(p.id)}
-                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
-                        >
-                          <ArchiveRestore size={13} />
-                          Restore
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <button
+                            onClick={() => restoreProject(p.id)}
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <ArchiveRestore size={13} />
+                            Restore
+                          </button>
+                          <button
+                            onClick={() => deleteProjectPermanently(p)}
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--danger-text)", background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <Trash2 size={13} />
+                            Delete permanently
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -1087,13 +1343,22 @@ export default function Projects() {
                           <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>{t.name}</div>
                           <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{daysLeft > 0 ? `${daysLeft} days left` : "Deleting soon"}</div>
                         </div>
-                        <button
-                          onClick={() => restoreTask(t.id)}
-                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
-                        >
-                          <ArchiveRestore size={13} />
-                          Restore
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <button
+                            onClick={() => restoreTask(t.id)}
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <ArchiveRestore size={13} />
+                            Restore
+                          </button>
+                          <button
+                            onClick={() => deleteTaskPermanently(t)}
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--danger-text)", background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <Trash2 size={13} />
+                            Delete permanently
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
