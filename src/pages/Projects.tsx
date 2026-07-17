@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
+import BoardView, { type BoardColumnDef } from "../components/BoardView";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
@@ -125,6 +126,31 @@ function statusTone(group: "to_do" | "in_progress" | "complete" | null): "succes
   if (group === "in_progress") return "warning";
   return "neutral";
 }
+
+// Board view (v1) always groups by Status specifically -- it doesn't yet
+// generalize to grouping by any field the way Table view's "Group by" does.
+// Every exact status value gets its own column (not just the 3 To-do/In
+// Progress/Complete buckets), matching Table view's Status pill exactly so
+// dropping a card into a column sets an unambiguous, real status value.
+// clusterLabel groups adjacent columns under one small section label so an
+// 11-wide Projects board still reads with some structure.
+const PROJECT_BOARD_COLUMNS: BoardColumnDef[] = PROJECT_STATUS_GROUPED.flatMap((group) =>
+  group.options.map((value) => ({
+    value,
+    label: value,
+    clusterLabel: group.label,
+    tone: statusTone(statusGroupOf(PROJECT_STATUS_GROUPED, value)),
+  }))
+);
+
+const TASK_BOARD_COLUMNS: BoardColumnDef[] = TASK_STATUS_GROUPED.flatMap((group) =>
+  group.options.map((value) => ({
+    value,
+    label: value,
+    clusterLabel: group.label,
+    tone: statusTone(statusGroupOf(TASK_STATUS_GROUPED, value)),
+  }))
+);
 
 // Supabase date columns come back as plain "YYYY-MM-DD" strings. Passing
 // that straight to `new Date(...)` parses it as UTC midnight, which in any
@@ -669,6 +695,24 @@ export default function Projects() {
     [people, projects, me]
   );
 
+  // Board-view card body: picks a handful of the same column render()
+  // functions Table view already uses (bold name, owner picker, priority
+  // pill, due date) so a card is editable exactly like a row is -- no
+  // separate card-editing UI to build or keep in sync.
+  function renderProjectCard(p: ProjectRow) {
+    const find = (key: string) => projectColumns.find((c) => c.key === key);
+    return (
+      <>
+        <div>{find("name")?.render(p)}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          {find("priority")?.render(p)}
+          {find("owner")?.render(p)}
+        </div>
+        <div>{find("end_date")?.render(p)}</div>
+      </>
+    );
+  }
+
   // Labels here are kept identical to each column's own header text
   // (e.g. "Project" not "Name", "Start"/"Due" not "Start date"/"Due date")
   // so the Sort/Group-by pickers read as the same fields people see in the
@@ -957,6 +1001,20 @@ export default function Projects() {
     [people, projects, me]
   );
 
+  function renderTaskCard(t: TaskWithDepth) {
+    const find = (key: string) => taskColumns.find((c) => c.key === key);
+    return (
+      <>
+        <div>{find("name")?.render(t)}</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          {find("project")?.render(t)}
+          {find("assignee")?.render(t)}
+        </div>
+        <div>{find("current_due_date")?.render(t)}</div>
+      </>
+    );
+  }
+
   const taskGroupOptions: GroupOption<TaskWithDepth>[] = [
     { key: "project", label: "Project", getGroup: (t) => projectName(t.project_id) },
     {
@@ -1069,45 +1127,48 @@ export default function Projects() {
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
             onDuplicate={projectViews.duplicateView}
-            onEditView={projectViews.setActiveViewId}
             confirm={confirm}
           />
-          <div className="toolbar-actions">
-            <ViewSettingsMenu
-              rows={projects}
-              columns={projectColumns}
-              hiddenColumns={projectViews.activeView.hiddenColumns}
-              onToggleColumn={(key) =>
-                projectViews.updateActiveView({
-                  hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
-                    ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
-                    : [...projectViews.activeView.hiddenColumns, key],
-                })
-              }
-              groupOptions={projectGroupOptions}
-              groupBy={projectViews.activeView.groupBy}
-              hiddenGroups={projectViews.activeView.hiddenGroups}
-              onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-              onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
-              showCount={projectViews.activeView.showCount}
-              onShowCountChange={(showCount) => projectViews.updateActiveView({ showCount })}
-              sortOptions={projectSortOptions}
-              sorts={projectViews.activeView.sorts}
-              onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-            />
-          </div>
+          {projectViews.activeView.viewType !== "board" && (
+            <div className="toolbar-actions">
+              <ViewSettingsMenu
+                rows={projects}
+                columns={projectColumns}
+                hiddenColumns={projectViews.activeView.hiddenColumns}
+                onToggleColumn={(key) =>
+                  projectViews.updateActiveView({
+                    hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
+                      ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
+                      : [...projectViews.activeView.hiddenColumns, key],
+                  })
+                }
+                groupOptions={projectGroupOptions}
+                groupBy={projectViews.activeView.groupBy}
+                hiddenGroups={projectViews.activeView.hiddenGroups}
+                onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+                onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
+                showCount={projectViews.activeView.showCount}
+                onShowCountChange={(showCount) => projectViews.updateActiveView({ showCount })}
+                sortOptions={projectSortOptions}
+                sorts={projectViews.activeView.sorts}
+                onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
+              />
+            </div>
+          )}
         </div>
-        <ViewFilterPills
-          groupOptions={projectGroupOptions}
-          groupBy={projectViews.activeView.groupBy}
-          hiddenGroups={projectViews.activeView.hiddenGroups}
-          onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-          onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
-          sortOptions={projectSortOptions}
-          sorts={projectViews.activeView.sorts}
-          onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-        />
-        {selectedProjectIds.length > 0 && (
+        {projectViews.activeView.viewType !== "board" && (
+          <ViewFilterPills
+            groupOptions={projectGroupOptions}
+            groupBy={projectViews.activeView.groupBy}
+            hiddenGroups={projectViews.activeView.hiddenGroups}
+            onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+            onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
+            sortOptions={projectSortOptions}
+            sorts={projectViews.activeView.sorts}
+            onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
+          />
+        )}
+        {projectViews.activeView.viewType !== "board" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
             <span className="bulk-bar-count">{selectedProjectIds.length} selected</span>
             <button className="bulk-bar-clear" onClick={() => setSelectedProjectIds([])}>
@@ -1133,6 +1194,25 @@ export default function Projects() {
         )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
+        ) : projectViews.activeView.viewType === "board" ? (
+          <>
+            <BoardView
+              rows={projects}
+              rowKey={(p) => p.id}
+              columns={PROJECT_BOARD_COLUMNS}
+              getValue={(p) => p.project_status}
+              hiddenColumns={[]}
+              renderCard={renderProjectCard}
+              onMoveCard={(p, newValue) => updateProject(p.id, { project_status: newValue || null })}
+              onReorderCard={reorderProjects}
+            />
+            {canCreateProject && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
+                <Plus size={12} />
+                New project
+              </div>
+            )}
+          </>
         ) : (
           <div className="data-table-dense">
             <DataTable
@@ -1182,45 +1262,48 @@ export default function Projects() {
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
             onDuplicate={taskViews.duplicateView}
-            onEditView={taskViews.setActiveViewId}
             confirm={confirm}
           />
-          <div className="toolbar-actions">
-            <ViewSettingsMenu
-              rows={visibleTasks}
-              columns={taskColumns}
-              hiddenColumns={taskViews.activeView.hiddenColumns}
-              onToggleColumn={(key) =>
-                taskViews.updateActiveView({
-                  hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
-                    ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
-                    : [...taskViews.activeView.hiddenColumns, key],
-                })
-              }
-              groupOptions={taskGroupOptions}
-              groupBy={taskViews.activeView.groupBy}
-              hiddenGroups={taskViews.activeView.hiddenGroups}
-              onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-              onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
-              showCount={taskViews.activeView.showCount}
-              onShowCountChange={(showCount) => taskViews.updateActiveView({ showCount })}
-              sortOptions={taskSortOptions}
-              sorts={taskViews.activeView.sorts}
-              onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-            />
-          </div>
+          {taskViews.activeView.viewType !== "board" && (
+            <div className="toolbar-actions">
+              <ViewSettingsMenu
+                rows={visibleTasks}
+                columns={taskColumns}
+                hiddenColumns={taskViews.activeView.hiddenColumns}
+                onToggleColumn={(key) =>
+                  taskViews.updateActiveView({
+                    hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
+                      ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
+                      : [...taskViews.activeView.hiddenColumns, key],
+                  })
+                }
+                groupOptions={taskGroupOptions}
+                groupBy={taskViews.activeView.groupBy}
+                hiddenGroups={taskViews.activeView.hiddenGroups}
+                onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+                onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
+                showCount={taskViews.activeView.showCount}
+                onShowCountChange={(showCount) => taskViews.updateActiveView({ showCount })}
+                sortOptions={taskSortOptions}
+                sorts={taskViews.activeView.sorts}
+                onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
+              />
+            </div>
+          )}
         </div>
-        <ViewFilterPills
-          groupOptions={taskGroupOptions}
-          groupBy={taskViews.activeView.groupBy}
-          hiddenGroups={taskViews.activeView.hiddenGroups}
-          onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
-          onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
-          sortOptions={taskSortOptions}
-          sorts={taskViews.activeView.sorts}
-          onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-        />
-        {selectedTaskIds.length > 0 && (
+        {taskViews.activeView.viewType !== "board" && (
+          <ViewFilterPills
+            groupOptions={taskGroupOptions}
+            groupBy={taskViews.activeView.groupBy}
+            hiddenGroups={taskViews.activeView.hiddenGroups}
+            onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
+            onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
+            sortOptions={taskSortOptions}
+            sorts={taskViews.activeView.sorts}
+            onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
+          />
+        )}
+        {taskViews.activeView.viewType !== "board" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
             <span className="bulk-bar-count">{selectedTaskIds.length} selected</span>
             <button className="bulk-bar-clear" onClick={() => setSelectedTaskIds([])}>
@@ -1245,6 +1328,25 @@ export default function Projects() {
         )}
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
+        ) : taskViews.activeView.viewType === "board" ? (
+          <>
+            <BoardView
+              rows={visibleTasks}
+              rowKey={(t) => t.id}
+              columns={TASK_BOARD_COLUMNS}
+              getValue={(t) => t.status}
+              hiddenColumns={[]}
+              renderCard={renderTaskCard}
+              onMoveCard={(t, newValue) => updateTask(t.id, { status: newValue || null })}
+              onReorderCard={reorderTasks}
+            />
+            {canCreateTask && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
+                <Plus size={12} />
+                New task
+              </div>
+            )}
+          </>
         ) : (
           <div className="data-table-dense">
             <DataTable

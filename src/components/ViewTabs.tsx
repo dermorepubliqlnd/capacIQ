@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, MoreHorizontal, Pencil, SlidersHorizontal, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
+import { Plus, MoreHorizontal, Pencil, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
 import type { GroupOption, TableView, ViewType } from "../lib/tableTypes";
 
 interface ViewTabsProps<T> {
@@ -12,7 +12,6 @@ interface ViewTabsProps<T> {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
-  onEditView: (id: string) => void;
   onDuplicate: (id: string) => void;
   confirm: (options: { title?: string; message: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
 }
@@ -45,7 +44,7 @@ const VIEW_TYPE_ICONS: Record<ViewType, typeof Table2> = {
 // what's coming without being able to pick a layout that doesn't exist yet.
 const VIEW_TYPE_TILES: { type: ViewType; label: string; enabled: boolean }[] = [
   { type: "table", label: "Table", enabled: true },
-  { type: "board", label: "Board", enabled: false },
+  { type: "board", label: "Board", enabled: true },
   { type: "timeline", label: "Timeline", enabled: false },
   { type: "calendar", label: "Calendar", enabled: false },
 ];
@@ -75,7 +74,6 @@ export default function ViewTabs<T>({
   onRename,
   onDelete,
   onColorChange,
-  onEditView,
   onDuplicate,
   confirm,
 }: ViewTabsProps<T>) {
@@ -113,10 +111,11 @@ export default function ViewTabs<T>({
   // Notion-style zero-friction create: no naming prompt, just add a new
   // view immediately with an auto-generated name the person can rename
   // later via the tab's own "⋯" menu.
-  function handleCreateTable() {
-    const existingUntitled = views.filter((v) => /^New view( \d+)?$/.test(v.name)).length;
-    const name = existingUntitled === 0 ? "New view" : `New view ${existingUntitled + 1}`;
-    onCreate(name, "table");
+  function handleCreateView(viewType: ViewType) {
+    const base = viewType === "board" ? "New board" : "New view";
+    const existingUntitled = views.filter((v) => new RegExp(`^${base}( \\d+)?$`).test(v.name)).length;
+    const name = existingUntitled === 0 ? base : `${base} ${existingUntitled + 1}`;
+    onCreate(name, viewType);
     setAddOpen(false);
     setAddSearch("");
   }
@@ -170,15 +169,6 @@ export default function ViewTabs<T>({
                 <button onClick={() => startRename(v)}>
                   <Pencil size={12} />
                   Rename
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpenId(null);
-                    onEditView(v.id);
-                  }}
-                >
-                  <SlidersHorizontal size={12} />
-                  Edit view
                 </button>
                 <button
                   onClick={() => {
@@ -309,7 +299,7 @@ export default function ViewTabs<T>({
                     className={`add-view-tile${tile.enabled ? "" : " disabled"}`}
                     disabled={!tile.enabled}
                     title={tile.enabled ? `New ${tile.label.toLowerCase()} view` : "Coming soon"}
-                    onClick={tile.enabled ? handleCreateTable : undefined}
+                    onClick={tile.enabled ? () => handleCreateView(tile.type) : undefined}
                   >
                     <Icon size={18} />
                     <span>{tile.label}</span>
