@@ -328,34 +328,6 @@ export default function Projects() {
     }
   }
 
-  async function archiveProject(p: ProjectRow) {
-    const childTaskCount = tasks.filter((t) => t.project_id === p.id).length;
-    const ok = await confirm({
-      title: "Delete project",
-      message:
-        childTaskCount > 0
-          ? `Delete "${p.name}"? This will also archive its ${childTaskCount} task${childTaskCount > 1 ? "s" : ""}. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
-          : `Delete "${p.name}"? It'll be archived and can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
-      confirmLabel: "Delete",
-      danger: true,
-    });
-    if (!ok) return;
-    const now = new Date().toISOString();
-    const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: now }).eq("id", p.id);
-    if (error) {
-      alert(`Couldn't delete: ${error.message}`);
-      return;
-    }
-    // Projects are the only thing that gets a 30-day archive/restore -- but
-    // a project's tasks shouldn't keep showing on the main Tasks table once
-    // their parent project is gone, so they're cascade-archived alongside
-    // it (and cascade-restored in restoreProject below) even though a task
-    // can't be archived any other way (see deleteTask/bulkDeleteTasks,
-    // which hard-delete instead).
-    await supabase.from("tasks").update({ is_archived: true, archived_at: now }).eq("project_id", p.id);
-    loadAll();
-  }
-
   async function restoreProject(id: string) {
     const { error } = await supabase.from("projects").update({ is_archived: false, archived_at: null }).eq("id", id);
     if (error) {
@@ -446,28 +418,10 @@ export default function Projects() {
 
   // Tasks are never archived on their own -- only projects get the 30-day
   // archive/restore treatment (a task can still end up briefly archived as
-  // a side effect of its parent project being deleted, see archiveProject
-  // above). Deleting a task directly is a plain, immediate, hard delete
-  // behind a simple "are you sure" confirmation.
-  async function deleteTask(t: TaskRow) {
-    const childIds = tasks.filter((x) => x.parent_task_id === t.id).map((x) => x.id);
-    const warning =
-      childIds.length > 0
-        ? `Delete "${t.name}" and its ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""}? This can't be undone.`
-        : `Delete "${t.name}"? This can't be undone.`;
-    const ok = await confirm({ title: "Delete task", message: warning, confirmLabel: "Delete", danger: true });
-    if (!ok) return;
-    const { error } = await supabase
-      .from("tasks")
-      .delete()
-      .in("id", [t.id, ...childIds]);
-    if (error) {
-      alert(`Couldn't delete: ${error.message}`);
-      return;
-    }
-    loadAll();
-  }
-
+  // a side effect of its parent project being deleted, see bulkDeleteProjects
+  // above). Deleting a task is always via checkbox selection + the bulk
+  // Delete button (bulkDeleteTasks below) -- there's no separate per-row
+  // delete affordance since selecting one row already surfaces Delete.
   async function restoreTask(id: string) {
     const { error } = await supabase.from("tasks").update({ is_archived: false, archived_at: null }).eq("id", id);
     if (error) {
@@ -1194,7 +1148,6 @@ export default function Projects() {
               onToggleSelectAll={toggleProjectSelectAll}
               orderable
               onReorder={reorderProjects}
-              rowMenuActions={(p) => (canEditProject(p) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => archiveProject(p) }] : [])}
               footerRow={
                 canCreateProject
                   ? (colSpan) => (
@@ -1307,7 +1260,6 @@ export default function Projects() {
               onToggleSelectAll={toggleTaskSelectAll}
               orderable
               onReorder={reorderTasks}
-              rowMenuActions={(t) => (canManageTasksIn(t.project_id) ? [{ label: "Delete", icon: <Trash2 size={12} />, danger: true, onClick: () => deleteTask(t) }] : [])}
               footerRow={
                 canCreateTask && taskViews.activeView.groupBy !== "project"
                   ? (colSpan) => (

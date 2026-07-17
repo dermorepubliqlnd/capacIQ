@@ -460,7 +460,7 @@ input.inline-cell[type="date"] {
   flex: 0 0 auto;
 }
 input.inline-cell[type="date"]::-webkit-calendar-picker-indicator {
-  margin-left: -4px;
+  margin-left: -6px;
   padding: 0;
 }
 
