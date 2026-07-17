@@ -79,10 +79,26 @@ interface TaskRow {
   sort_order: number | null;
 }
 
+// Lightweight projection of extension_requests, fetched alongside
+// projects/tasks so the Due Date Ext. column can show live status
+// without a second round-trip. Ordered by created_at desc when fetched,
+// so the first match per task_id is always the most recent request.
+interface ExtensionRequestLite {
+  id: string;
+  task_id: string;
+  status: "Pending" | "Approved" | "Rejected";
+  requested_new_due_date: string;
+  reason_category: string;
+  reason_notes: string;
+  decided_at: string | null;
+  decision_notes: string | null;
+  created_at: string;
+}
+
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "validated_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -310,7 +326,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
 const PROJECT_BOARD_GROUPABLE_KEYS = ["project_status", "priority", "category", "effort_level", "owner", "timelines_locked"];
-const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing"];
+const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing", "due_date_ext"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
   return groupBy && groupableKeys.includes(groupBy) ? groupBy : fallback;
@@ -457,12 +473,14 @@ export default function Projects() {
   // progress calculation so "working days elapsed" excludes them the same
   // way the Day Planner already does. Stored as "YYYY-MM-DD" strings.
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
+  const [extensionRequests, setExtensionRequests] = useState<ExtensionRequestLite[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
   const { confirm, alert, dialog: confirmDialog } = useConfirm();
 
   const [extensionTask, setExtensionTask] = useState<TaskWithDepth | null>(null);
+  const [extDetailTask, setExtDetailTask] = useState<TaskWithDepth | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<TaskRow[]>([]);
@@ -490,11 +508,15 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
       supabase.from("holidays").select("date"),
+      supabase
+        .from("extension_requests")
+        .select("id,task_id,status,requested_new_due_date,reason_category,reason_notes,decided_at,decision_notes,created_at")
+        .order("created_at", { ascending: false }),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -502,6 +524,7 @@ export default function Projects() {
     setTasks(nextTasks);
     setPeople((peopleData as PersonOption[]) ?? []);
     setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
+    setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
     // Drop any selection for rows that no longer exist in the fresh load
     // (e.g. after a bulk delete) so the bulk-action bar doesn't linger.
     const projectIds = new Set(nextProjects.map((p) => p.id));
@@ -541,6 +564,24 @@ export default function Projects() {
   // for every task in the project, then the DB trigger takes over exactly
   // as before. See [[project_capaciq_extension_requests]].
   const isProjectLocked = (projectId: string) => projects.find((p) => p.id === projectId)?.timelines_locked ?? false;
+
+  // Due Date Ext. property: reflects the most recent extension_requests
+  // row for a task, but only while its project is locked -- while a
+  // project is still in Scoping, dates are freely editable and extension
+  // tracking doesn't apply yet, so the pill always reads "No Extension"
+  // there even if an older request exists from a previous locked period.
+  // Sandra confirmed this behavior explicitly (2026-07-17).
+  const taskExtensionRequests = (taskId: string) => extensionRequests.filter((r) => r.task_id === taskId);
+  const latestExtensionRequest = (taskId: string) => taskExtensionRequests(taskId)[0] ?? null; // already ordered created_at desc
+
+  function dueDateExtStatus(t: TaskRow): { label: string; tone: string } {
+    if (!isProjectLocked(t.project_id)) return { label: "No Extension", tone: "neutral" };
+    const latest = latestExtensionRequest(t.id);
+    if (!latest) return { label: "No Extension", tone: "neutral" };
+    if (latest.status === "Pending") return { label: "Requested", tone: "purple" };
+    if (latest.status === "Rejected") return { label: "Rejected", tone: "danger" };
+    return { label: "Extended", tone: "gold" };
+  }
 
   async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
     const verb = locked ? "Lock" : "Unlock";
@@ -1382,46 +1423,41 @@ export default function Projects() {
       {
         key: "current_due_date",
         label: "Due",
-        defaultWidth: 150,
-        minWidth: 130,
+        defaultWidth: 130,
+        minWidth: 110,
         render: (t) => {
-          const extended = t.current_due_date !== t.original_due_date;
           const locked = isProjectLocked(t.project_id);
           // While the project is still in scoping mode (unlocked), the due
           // date is a normal editable field -- no extension ceremony needed.
-          // Once locked, it reverts to the read-only + Request Extension
-          // behavior enforced by the DB trigger. See [[project_capaciq_extension_requests]].
-          if (!locked) {
-            return (
-              <InlineDate
-                value={t.current_due_date}
-                editable={canEditTask(t)}
-                onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
-              />
-            );
-          }
+          // Once locked, the DB trigger enforces read-only; the extension
+          // status/history/request action all live in the Due Date Ext.
+          // column now instead of being split across two places.
+          // See [[project_capaciq_extension_requests]].
           return (
-            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <InlineDate value={t.current_due_date} editable={false} onCommit={() => {}} />
-              {extended && (
-                <span
-                  className="status-pill warning"
-                  style={{ fontSize: 9.5, padding: "1px 5px" }}
-                  title={`Originally due ${t.original_due_date}`}
-                >
-                  Extended
-                </span>
-              )}
-              {canEditTask(t) && (
-                <button
-                  onClick={() => setExtensionTask(t)}
-                  title="Request extension"
-                  style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 2, flexShrink: 0 }}
-                >
-                  <CalendarClock size={12} />
-                </button>
-              )}
-            </div>
+            <InlineDate
+              value={t.current_due_date}
+              editable={!locked && canEditTask(t)}
+              onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
+            />
+          );
+        },
+      },
+      {
+        key: "due_date_ext",
+        label: "Due Date Ext.",
+        defaultWidth: 140,
+        minWidth: 120,
+        render: (t) => {
+          const status = dueDateExtStatus(t);
+          return (
+            <button
+              onClick={() => setExtDetailTask(t)}
+              className={`status-pill ${status.tone}`}
+              style={{ border: "none", cursor: "pointer", fontFamily: "inherit" }}
+              title="Click to see extension request details"
+            >
+              {status.label}
+            </button>
           );
         },
       },
@@ -1539,6 +1575,12 @@ export default function Projects() {
       getGroup: (t) => timingOf(t).label,
       getTone: (t) => timingOf(t).tone,
     },
+    {
+      key: "due_date_ext",
+      label: "Due Date Ext.",
+      getGroup: (t) => dueDateExtStatus(t).label,
+      getTone: (t) => dueDateExtStatus(t).tone,
+    },
   ];
 
   // Board's own Group-by list for Tasks -- same rationale as
@@ -1572,6 +1614,13 @@ export default function Projects() {
     { key: "start_date", label: "Start", getGroup: () => "", boardGroupable: false },
     { key: "current_due_date", label: "Due", getGroup: () => "", boardGroupable: false },
     {
+      key: "due_date_ext",
+      label: "Due Date Ext.",
+      getGroup: (t) => dueDateExtStatus(t).label,
+      getTone: (t) => dueDateExtStatus(t).tone,
+      boardGroupable: true,
+    },
+    {
       key: "estimated_hours",
       label: "Est. hrs",
       getGroup: () => "",
@@ -1597,11 +1646,19 @@ export default function Projects() {
   // onMoveCard) -- reassigning a task's project has knock-on effects on
   // its sub-tasks that aren't worth the drag-and-drop risk yet, and Timing
   // is fully computed so there's nothing to write back.
+  const DUE_DATE_EXT_BOARD_COLUMNS: BoardColumnDef[] = [
+    { value: "No Extension", label: "No Extension", tone: "neutral" },
+    { value: "Requested", label: "Requested", tone: "purple" },
+    { value: "Rejected", label: "Rejected", tone: "danger" },
+    { value: "Extended", label: "Extended", tone: "gold" },
+  ];
+
   function getTaskBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "assignee") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
     if (groupBy === "effort") return TASK_EFFORT_OPTIONS.map((v) => ({ value: v, label: v, tone: TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral" }));
     if (groupBy === "project") return projects.map((p) => ({ value: p.id, label: p.name ?? "Untitled", tone: "neutral" }));
     if (groupBy === "timing") return TASK_TIMING_BOARD_COLUMNS;
+    if (groupBy === "due_date_ext") return DUE_DATE_EXT_BOARD_COLUMNS;
     return TASK_BOARD_COLUMNS;
   }
 
@@ -1610,6 +1667,7 @@ export default function Projects() {
     if (groupBy === "effort") return t.effort;
     if (groupBy === "project") return t.project_id;
     if (groupBy === "timing") return timingOf(t).label;
+    if (groupBy === "due_date_ext") return dueDateExtStatus(t).label;
     return t.status;
   }
 
@@ -1617,7 +1675,7 @@ export default function Projects() {
     if (groupBy === "assignee") return (t, v) => updateTask(t.id, { assignee_id: v || null });
     if (groupBy === "effort") return (t, v) => updateTask(t.id, { effort: v || null });
     if (groupBy === "status") return (t, v) => updateTask(t.id, { status: v || null });
-    return undefined; // project, timing: read-only board
+    return undefined; // project, timing, due_date_ext: read-only board
   }
 
   // Labels here match each column's own header text exactly (e.g. "Task"
@@ -1634,6 +1692,11 @@ export default function Projects() {
     { key: "current_due_date", label: "Due", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
     { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => t.time_spent_hours ?? null },
+    {
+      key: "due_date_ext",
+      label: "Due Date Ext.",
+      getValue: (t) => ["No Extension", "Requested", "Rejected", "Extended"].indexOf(dueDateExtStatus(t).label),
+    },
   ];
 
   const taskViews = useTableViews("tasks", me?.id, {
@@ -2100,6 +2163,48 @@ export default function Projects() {
             submitExtensionRequest(extensionTask, newDueDate, reasonCategory, reasonNotes)
           }
         />
+      )}
+
+      {extDetailTask && (
+        <Modal title={`Extension history -- ${extDetailTask.name}`} onClose={() => setExtDetailTask(null)}>
+          {taskExtensionRequests(extDetailTask.id).length === 0 ? (
+            <p style={{ fontSize: 12, color: "var(--muted)" }}>No extension requests have been made for this task yet.</p>
+          ) : (
+            taskExtensionRequests(extDetailTask.id).map((r) => (
+              <div key={r.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span className={`status-pill ${r.status === "Approved" ? "success" : r.status === "Rejected" ? "danger" : "warning"}`}>{r.status}</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                    {extDetailTask.current_due_date} {"\u2192"} {r.requested_new_due_date}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11.5, marginBottom: 4 }}>
+                  <span className="status-pill neutral" style={{ fontSize: 9.5 }}>
+                    {r.reason_category}
+                  </span>
+                  <span style={{ marginLeft: 6 }}>{r.reason_notes}</span>
+                </div>
+                <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                  Requested {r.created_at.slice(0, 10)}
+                  {r.status !== "Pending" && r.decided_at && <> · {r.status} on {r.decided_at.slice(0, 10)}</>}
+                  {r.decision_notes && <> -- "{r.decision_notes}"</>}
+                </div>
+              </div>
+            ))
+          )}
+          {isProjectLocked(extDetailTask.project_id) && canEditTask(extDetailTask) && (
+            <button
+              onClick={() => {
+                setExtDetailTask(null);
+                setExtensionTask(extDetailTask);
+              }}
+              style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", padding: "5px 10px", cursor: "pointer" }}
+            >
+              <CalendarClock size={13} />
+              Request another extension
+            </button>
+          )}
+        </Modal>
       )}
     </div>
   );
