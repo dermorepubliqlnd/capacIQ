@@ -250,10 +250,14 @@ function FieldPickerButton({ label, options, onPick }: { label: string; options:
 // previous neighbor and the target itself, so no other row needs to be
 // renumbered.
 // Measures the rendered height of a sticky "toolbar cluster" (view tabs +
-// Sort/Group/Properties icons + filter pills + bulk-action bar) via
-// ResizeObserver, so the table's column header row can stick just below
-// it (see stickyHeaderOffset on DataTable) instead of the two overlapping
-// when both are pinned during a long vertical scroll.
+// Sort/Group/Properties icons + filter pills + bulk-action bar). Currently
+// only used to size the ref for the sticky cluster wrapper itself -- a
+// true sticky column-header row (on top of the cluster) was attempted and
+// reverted (see feedback_capaciq_sticky_header_attempt memory) because the
+// table's own horizontal-scroll wrapper div silently becomes a vertical
+// scroll container too (overflow-x/-y axis coupling), which broke
+// position:sticky on the <thead> -- it stuck at the wrong offset and
+// overlapped body rows instead of tracking real page scroll.
 function useStickyOffset<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   const [height, setHeight] = useState(0);
@@ -1273,7 +1277,6 @@ export default function Projects() {
               onToggleSelectAll={toggleProjectSelectAll}
               orderable
               onReorder={reorderProjects}
-              stickyHeaderOffset={projectClusterHeight}
               footerRow={
                 canCreateProject
                   ? (colSpan) => (
@@ -1408,7 +1411,6 @@ export default function Projects() {
               onToggleSelectAll={toggleTaskSelectAll}
               orderable
               onReorder={reorderTasks}
-              stickyHeaderOffset={taskClusterHeight}
               footerRow={
                 canCreateTask && taskViews.activeView.groupBy !== "project"
                   ? (colSpan) => (
