@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
 import { sortRows, TONE_STYLES } from "../lib/tableTypes";
@@ -8,6 +9,66 @@ export interface RowMenuAction {
   icon?: ReactNode;
   onClick: () => void;
   danger?: boolean;
+}
+
+// Renders the row "..." menu via a portal to document.body, positioned with
+// fixed coordinates computed from the trigger button's own rect. A plain
+// CSS-absolute popover nested inside a <td> gets silently painted UNDER
+// later table rows in some browsers (a table-specific stacking/paint-order
+// quirk, distinct from -- but the same family of bug as -- the view-tab
+// dropdown-behind-table issue found earlier), so this sidesteps table
+// stacking entirely rather than fighting z-index.
+function RowActionMenu({ actions }: { actions: RowMenuAction[] }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target) || btnRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  function toggle() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, left: Math.max(4, r.right - 140) });
+    }
+    setOpen((v) => !v);
+  }
+
+  return (
+    <>
+      <button ref={btnRef} className="row-icon-btn" onClick={toggle} title="More">
+        <MoreHorizontal size={13} />
+      </button>
+      {open &&
+        createPortal(
+          <div ref={menuRef} className="view-tab-dropdown" style={{ position: "fixed", top: pos.top, left: pos.left, width: 140 }}>
+            {actions.map((a, i) => (
+              <button
+                key={i}
+                className={a.danger ? "danger" : undefined}
+                onClick={() => {
+                  a.onClick();
+                  setOpen(false);
+                }}
+              >
+                {a.icon}
+                {a.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </>
+  );
 }
 
 interface DataTableProps<T> {
@@ -72,23 +133,12 @@ export default function DataTable<T>({
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
-  const [rowMenuOpenKey, setRowMenuOpenKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const isResizingRef = useRef(false);
-  const rowMenuRef = useRef<HTMLDivElement | null>(null);
   const [, forceRerender] = useState(0);
 
   const hasGutter = Boolean(selectable || orderable || rowMenuActions);
-
-  useEffect(() => {
-    if (!rowMenuOpenKey) return;
-    function onDocClick(e: MouseEvent) {
-      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) setRowMenuOpenKey(null);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [rowMenuOpenKey]);
 
   const orderedKeys = useMemo(() => {
     const known = columns.map((c) => c.key);
@@ -300,34 +350,7 @@ export default function DataTable<T>({
               {selectable && (
                 <input type="checkbox" className="row-checkbox" checked={isSelected} onChange={() => onToggleSelect?.(key)} />
               )}
-              {rowMenuActions && actions.length > 0 && (
-                <div style={{ position: "relative" }} ref={rowMenuOpenKey === key ? rowMenuRef : undefined}>
-                  <button
-                    className="row-icon-btn"
-                    onClick={() => setRowMenuOpenKey((k) => (k === key ? null : key))}
-                    title="More"
-                  >
-                    <MoreHorizontal size={13} />
-                  </button>
-                  {rowMenuOpenKey === key && (
-                    <div className="view-tab-dropdown" style={{ left: "auto", right: 0, top: "calc(100% + 4px)" }}>
-                      {actions.map((a, i) => (
-                        <button
-                          key={i}
-                          className={a.danger ? "danger" : undefined}
-                          onClick={() => {
-                            a.onClick();
-                            setRowMenuOpenKey(null);
-                          }}
-                        >
-                          {a.icon}
-                          {a.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+              {rowMenuActions && actions.length > 0 && <RowActionMenu actions={actions} />}
             </div>
           </td>
         )}
