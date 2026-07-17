@@ -25,6 +25,15 @@ export interface GroupOption<T> {
   // group's header row so it visually matches the pill color it's grouped
   // by (e.g. grouping by Status colors each header like its status pill).
   getTone?: (row: T) => string;
+  // False for properties that can't sensibly become Kanban columns (free
+  // text, dates, computed percentages) -- shown in the Group-by dropdown
+  // but disabled/greyed rather than omitted, so users can see *why* a
+  // property isn't offered instead of wondering where it went. Only
+  // consulted when the dropdown is rendered in "board" mode; Table's own
+  // grouped-accordion view ignores this and treats every listed option as
+  // usable, since accordion sections don't have Board's fixed-column
+  // constraint.
+  boardGroupable?: boolean;
 }
 
 // Shared with the .status-pill classes in index.css so group headers and

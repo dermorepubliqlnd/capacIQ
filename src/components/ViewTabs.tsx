@@ -8,7 +8,12 @@ interface ViewTabsProps<T> {
   rows: T[];
   groupOptions: GroupOption<T>[];
   onSelect: (id: string) => void;
-  onCreate: (name: string, viewType?: ViewType) => void;
+  onCreate: (name: string, viewType?: ViewType, initialGroupBy?: string) => void;
+  // Field a new Board view should group by out of the box (e.g.
+  // "project_status" / "status") -- Board can't render without some
+  // grouping, so this seeds a sensible default the user is then free to
+  // change via the Group-by picker.
+  boardDefaultGroupBy?: string;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
@@ -71,6 +76,7 @@ export default function ViewTabs<T>({
   groupOptions,
   onSelect,
   onCreate,
+  boardDefaultGroupBy,
   onRename,
   onDelete,
   onColorChange,
@@ -115,7 +121,7 @@ export default function ViewTabs<T>({
     const base = viewType === "board" ? "New board" : "New view";
     const existingUntitled = views.filter((v) => new RegExp(`^${base}( \\d+)?$`).test(v.name)).length;
     const name = existingUntitled === 0 ? base : `${base} ${existingUntitled + 1}`;
-    onCreate(name, viewType);
+    onCreate(name, viewType, viewType === "board" ? boardDefaultGroupBy : undefined);
     setAddOpen(false);
     setAddSearch("");
   }

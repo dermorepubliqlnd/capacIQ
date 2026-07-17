@@ -17,11 +17,11 @@ interface ViewControlsProps<T> {
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
-  // True on Board views (v1): grouping is pinned to Status so dragging a
-  // card between columns always sets an unambiguous value. The "which
-  // field to group by" picker is disabled, but the per-value show/hide
-  // checklist below it still works (hiding a status column on the board).
-  groupByLocked?: boolean;
+  // True on Board views: a Kanban board can't render without columns, so
+  // "No filter" (ungrouped) is disabled here even though grouping is
+  // otherwise free to be any boardGroupable field -- unlike the old v1
+  // behavior, the field itself is no longer locked to Status.
+  isBoard?: boolean;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -102,7 +102,7 @@ export default function ViewSettingsMenu<T>({
   sortOptions,
   sorts,
   onSortsChange,
-  groupByLocked,
+  isBoard,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -217,8 +217,6 @@ export default function ViewSettingsMenu<T>({
             <select
               value={groupBy ?? ""}
               onChange={(e) => onGroupByChange(e.target.value || null)}
-              disabled={groupByLocked}
-              title={groupByLocked ? "Board view groups by Status" : undefined}
               style={{
                 width: "100%",
                 fontSize: 11.5,
@@ -226,17 +224,20 @@ export default function ViewSettingsMenu<T>({
                 border: "1px solid var(--border)",
                 borderRadius: "var(--radius-sm)",
                 marginBottom: activeOption ? 8 : 0,
-                background: groupByLocked ? "var(--hover-bg)" : undefined,
-                color: groupByLocked ? "var(--muted)" : undefined,
-                cursor: groupByLocked ? "not-allowed" : undefined,
               }}
             >
-              <option value="">No filter</option>
-              {groupOptions.map((g) => (
-                <option key={g.key} value={g.key}>
-                  {g.label}
-                </option>
-              ))}
+              <option value="" disabled={isBoard} title={isBoard ? "A board needs a property to group into columns" : undefined}>
+                No filter
+              </option>
+              {groupOptions.map((g) => {
+                const disabled = isBoard && g.boardGroupable === false;
+                return (
+                  <option key={g.key} value={g.key} disabled={disabled} title={disabled ? "Not available for Board -- values aren't a fixed set of columns" : undefined}>
+                    {g.label}
+                    {disabled ? " (not available on Board)" : ""}
+                  </option>
+                );
+              })}
             </select>
 
             {activeOption && groupValues.length > 0 && (
@@ -303,7 +304,7 @@ export function ViewFilterPills<T>({
   sortOptions,
   sorts,
   onSortsChange,
-  groupByLocked,
+  isBoard,
 }: {
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
@@ -313,7 +314,7 @@ export function ViewFilterPills<T>({
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
-  groupByLocked?: boolean;
+  isBoard?: boolean;
 }) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   if (!activeOption && sorts.length === 0) return null;
@@ -323,7 +324,7 @@ export function ViewFilterPills<T>({
       {activeOption && (
         <span className="filter-pill">
           Grouped by {activeOption.label}
-          {!groupByLocked && (
+          {!isBoard && (
             <button
               title="Clear grouping"
               onClick={() => {

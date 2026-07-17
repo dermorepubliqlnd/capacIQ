@@ -29,8 +29,8 @@ export default function ProgressCell({ percent, tone, display }: ProgressCellPro
   }
 
   if (display === "ring") {
-    const size = 26;
-    const stroke = 3;
+    const size = 20;
+    const stroke = 2;
     const radius = (size - stroke) / 2;
     const circumference = 2 * Math.PI * radius;
     const offset = circumference * (1 - value / 100);
@@ -59,8 +59,8 @@ export default function ProgressCell({ percent, tone, display }: ProgressCellPro
 
   // bar (default)
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", minWidth: 90 }}>
-      <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", minWidth: 60 }}>
+      <div style={{ width: 45, flexShrink: 0, height: 6, borderRadius: 3, background: "var(--border)", overflow: "hidden" }}>
         {percent !== null && <div style={{ width: `${value}%`, height: "100%", background: toneStyle.text, borderRadius: 3 }} />}
       </div>
       <span style={{ fontSize: 11, fontWeight: 600, color: toneStyle.text, flexShrink: 0, width: 30, textAlign: "right" }}>{label}</span>

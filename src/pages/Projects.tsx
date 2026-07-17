@@ -200,6 +200,30 @@ const TASK_BOARD_COLUMNS: BoardColumnDef[] = TASK_STATUS_GROUPED.flatMap((group)
   }))
 );
 
+// Task's computed "Timing" property is a small closed set (unlike the old
+// Health formula, which could echo an open-ended literal status string) --
+// so unlike Health, Timing is a reasonable Board grouping. Read-only: it's
+// fully derived from dates/status, nothing to write back when a card is
+// dragged.
+const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
+  { value: "Overdue", label: "Overdue", tone: "danger" },
+  { value: "Due soon", label: "Due soon", tone: "warning" },
+  { value: "On track", label: "On track", tone: "success" },
+  { value: "Late", label: "Late", tone: "danger" },
+  { value: "On time", label: "On time", tone: "success" },
+];
+
+// Board can group by any of these fields (their values form a fixed,
+// enumerable set of Kanban columns); anything else (free text, dates,
+// computed percentages) is marked boardGroupable: false on the relevant
+// GroupOption instead and falls back to this list's first/default entry.
+const PROJECT_BOARD_GROUPABLE_KEYS = ["project_status", "priority", "category", "effort_level", "owner"];
+const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing"];
+
+function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
+  return groupBy && groupableKeys.includes(groupBy) ? groupBy : fallback;
+}
+
 // Supabase date columns come back as plain "YYYY-MM-DD" strings. Passing
 // that straight to `new Date(...)` parses it as UTC midnight, which in any
 // timezone behind UTC silently rolls it back a calendar day (a task due
@@ -863,6 +887,86 @@ export default function Projects() {
     },
   ];
 
+  // Board's own Group-by list: every project property, in roughly column
+  // order, so people can see the full set of properties and understand
+  // *why* some are greyed out (Name/dates/Actual Progress aren't a fixed
+  // set of values a Kanban column can represent) rather than wondering why
+  // they're missing. Kept separate from projectGroupOptions above so
+  // Table view's own Group-by dropdown is completely unaffected.
+  const projectBoardGroupOptions: GroupOption<ProjectRow>[] = [
+    { key: "name", label: "Project", getGroup: () => "", boardGroupable: false },
+    { key: "owner", label: "Owner", getGroup: (p) => ownerName(p.owner_id), boardGroupable: true },
+    {
+      key: "priority",
+      label: "Priority",
+      getGroup: (p) => p.priority ?? "No priority",
+      getTone: (p) => priorityTone(p.priority),
+      boardGroupable: true,
+    },
+    {
+      key: "project_status",
+      label: "Status",
+      getGroup: (p) => p.project_status ?? "No status",
+      getTone: (p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral",
+      boardGroupable: true,
+    },
+    {
+      key: "health",
+      label: "Health",
+      getGroup: (p) => healthOf(p).label,
+      getTone: (p) => healthOf(p).tone,
+      boardGroupable: false,
+    },
+    { key: "actual_progress", label: "Actual Progress", getGroup: () => "", boardGroupable: false },
+    {
+      key: "category",
+      label: "Category",
+      getGroup: (p) => p.category ?? "Uncategorized",
+      getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
+      boardGroupable: true,
+    },
+    {
+      key: "effort_level",
+      label: "Effort",
+      getGroup: (p) => p.effort_level ?? "No effort set",
+      getTone: (p) => PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral",
+      boardGroupable: true,
+    },
+    { key: "start_date", label: "Start", getGroup: () => "", boardGroupable: false },
+    { key: "end_date", label: "Due", getGroup: () => "", boardGroupable: false },
+  ];
+
+  // Computes Board's actual columns/getValue/drag-write-handler for
+  // whichever field is currently grouped by. Status keeps the existing
+  // 11-exact-value, clustered PROJECT_BOARD_COLUMNS; Priority/Category/
+  // Effort reuse their own enum option lists; Owner is built from the live
+  // people list (value = person id, so drag-drop writes back an
+  // unambiguous id rather than a display name).
+  function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
+    if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: v, tone: priorityTone(v) }));
+    if (groupBy === "category") return PROJECT_CATEGORY_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
+    if (groupBy === "effort_level")
+      return PROJECT_EFFORT_LEVEL_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_EFFORT_LEVEL_TONES[v] ?? "neutral" }));
+    if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
+    return PROJECT_BOARD_COLUMNS;
+  }
+
+  function getProjectBoardValue(p: ProjectRow, groupBy: string): string | null {
+    if (groupBy === "priority") return p.priority;
+    if (groupBy === "category") return p.category;
+    if (groupBy === "effort_level") return p.effort_level;
+    if (groupBy === "owner") return p.owner_id;
+    return p.project_status;
+  }
+
+  function getProjectBoardMoveHandler(groupBy: string): (p: ProjectRow, newValue: string) => void {
+    if (groupBy === "priority") return (p, v) => updateProject(p.id, { priority: (v || null) as ProjectRow["priority"] });
+    if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
+    if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
+    if (groupBy === "owner") return (p, v) => updateProject(p.id, { owner_id: v || null });
+    return (p, v) => updateProject(p.id, { project_status: v || null });
+  }
+
   const projectSortOptions: SortOption<ProjectRow>[] = [
     { key: "name", label: "Project", getValue: (p) => p.name ?? "" },
     { key: "owner", label: "Owner", getValue: (p) => ownerName(p.owner_id) },
@@ -1154,6 +1258,85 @@ export default function Projects() {
     },
   ];
 
+  // Board's own Group-by list for Tasks -- same rationale as
+  // projectBoardGroupOptions above. Project/Status/Assignee/Effort/Timing
+  // all have a fixed, enumerable set of values so they're all Board-
+  // groupable; Task/Start/Due/Est. hrs/Spent hrs are free text, dates, or
+  // continuous numbers and are listed disabled instead of omitted.
+  const taskBoardGroupOptions: GroupOption<TaskWithDepth>[] = [
+    { key: "name", label: "Task", getGroup: () => "", boardGroupable: false },
+    { key: "project", label: "Project", getGroup: (t) => projectName(t.project_id), boardGroupable: true },
+    {
+      key: "assignee",
+      label: "Assignee",
+      getGroup: (t) => ownerName(t.assignee_id),
+      boardGroupable: true,
+    },
+    {
+      key: "status",
+      label: "Status",
+      getGroup: (t) => t.status ?? "No status",
+      getTone: (t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status)),
+      boardGroupable: true,
+    },
+    {
+      key: "timing",
+      label: "Timing",
+      getGroup: (t) => timingOf(t).label,
+      getTone: (t) => timingOf(t).tone,
+      boardGroupable: true,
+    },
+    { key: "start_date", label: "Start", getGroup: () => "", boardGroupable: false },
+    { key: "current_due_date", label: "Due", getGroup: () => "", boardGroupable: false },
+    {
+      key: "estimated_hours",
+      label: "Est. hrs",
+      getGroup: () => "",
+      boardGroupable: false,
+    },
+    {
+      key: "time_spent_hours",
+      label: "Spent hrs",
+      getGroup: () => "",
+      boardGroupable: false,
+    },
+    {
+      key: "effort",
+      label: "Effort",
+      getGroup: (t) => t.effort ?? "No effort set",
+      getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
+      boardGroupable: true,
+    },
+  ];
+
+  // Same idea as getProjectBoardColumns/Value/MoveHandler above, for Tasks.
+  // Project and Timing are shown as read-only board groupings (no
+  // onMoveCard) -- reassigning a task's project has knock-on effects on
+  // its sub-tasks that aren't worth the drag-and-drop risk yet, and Timing
+  // is fully computed so there's nothing to write back.
+  function getTaskBoardColumns(groupBy: string): BoardColumnDef[] {
+    if (groupBy === "assignee") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
+    if (groupBy === "effort") return TASK_EFFORT_OPTIONS.map((v) => ({ value: v, label: v, tone: TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral" }));
+    if (groupBy === "project") return projects.map((p) => ({ value: p.id, label: p.name ?? "Untitled", tone: "neutral" }));
+    if (groupBy === "timing") return TASK_TIMING_BOARD_COLUMNS;
+    return TASK_BOARD_COLUMNS;
+  }
+
+  function getTaskBoardValue(t: TaskWithDepth, groupBy: string): string | null {
+    if (groupBy === "assignee") return t.assignee_id;
+    if (groupBy === "effort") return t.effort;
+    if (groupBy === "project") return t.project_id;
+    if (groupBy === "timing") return timingOf(t).label;
+    return t.status;
+  }
+
+  function getTaskBoardMoveHandler(groupBy: string): ((t: TaskWithDepth, newValue: string) => void) | undefined {
+    if (groupBy === "assignee") return (t, v) => updateTask(t.id, { assignee_id: v || null });
+    if (groupBy === "effort") return (t, v) => updateTask(t.id, { effort: v || null });
+    if (groupBy === "status") return (t, v) => updateTask(t.id, { status: v || null });
+    return undefined; // project, timing: read-only board
+  }
+
   // Labels here match each column's own header text exactly (e.g. "Task"
   // not "Name", "Start"/"Due" not "Start date"/"Due date"), and every
   // sortable column is listed -- "Timing" was previously missing entirely.
@@ -1240,6 +1423,7 @@ export default function Projects() {
             groupOptions={projectGroupOptions}
             onSelect={projectViews.setActiveViewId}
             onCreate={projectViews.createView}
+            boardDefaultGroupBy="project_status"
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
@@ -1258,8 +1442,12 @@ export default function Projects() {
                     : [...projectViews.activeView.hiddenColumns, key],
                 })
               }
-              groupOptions={projectGroupOptions}
-              groupBy={projectViews.activeView.viewType === "board" ? "project_status" : projectViews.activeView.groupBy}
+              groupOptions={projectViews.activeView.viewType === "board" ? projectBoardGroupOptions : projectGroupOptions}
+              groupBy={
+                projectViews.activeView.viewType === "board"
+                  ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
+                  : projectViews.activeView.groupBy
+              }
               hiddenGroups={projectViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
@@ -1268,20 +1456,24 @@ export default function Projects() {
               sortOptions={projectSortOptions}
               sorts={projectViews.activeView.sorts}
               onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-              groupByLocked={projectViews.activeView.viewType === "board"}
+              isBoard={projectViews.activeView.viewType === "board"}
             />
           </div>
         </div>
         <ViewFilterPills
-          groupOptions={projectGroupOptions}
-          groupBy={projectViews.activeView.viewType === "board" ? "project_status" : projectViews.activeView.groupBy}
+          groupOptions={projectViews.activeView.viewType === "board" ? projectBoardGroupOptions : projectGroupOptions}
+          groupBy={
+            projectViews.activeView.viewType === "board"
+              ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
+              : projectViews.activeView.groupBy
+          }
           hiddenGroups={projectViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
           sortOptions={projectSortOptions}
           sorts={projectViews.activeView.sorts}
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-          groupByLocked={projectViews.activeView.viewType === "board"}
+          isBoard={projectViews.activeView.viewType === "board"}
         />
         {projectViews.activeView.viewType !== "board" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
@@ -1315,11 +1507,11 @@ export default function Projects() {
             <BoardView
               rows={sortRows(projects, projectViews.activeView.sorts, projectSortOptions)}
               rowKey={(p) => p.id}
-              columns={PROJECT_BOARD_COLUMNS}
-              getValue={(p) => p.project_status}
+              columns={getProjectBoardColumns(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
+              getValue={(p) => getProjectBoardValue(p, resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
               hiddenColumns={projectViews.activeView.hiddenGroups}
               renderCard={renderProjectCard}
-              onMoveCard={(p, newValue) => updateProject(p.id, { project_status: newValue || null })}
+              onMoveCard={getProjectBoardMoveHandler(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
               onReorderCard={reorderProjects}
             />
             {canCreateProject && (
@@ -1375,6 +1567,7 @@ export default function Projects() {
             groupOptions={taskGroupOptions}
             onSelect={taskViews.setActiveViewId}
             onCreate={taskViews.createView}
+            boardDefaultGroupBy="status"
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
@@ -1393,8 +1586,12 @@ export default function Projects() {
                     : [...taskViews.activeView.hiddenColumns, key],
                 })
               }
-              groupOptions={taskGroupOptions}
-              groupBy={taskViews.activeView.viewType === "board" ? "status" : taskViews.activeView.groupBy}
+              groupOptions={taskViews.activeView.viewType === "board" ? taskBoardGroupOptions : taskGroupOptions}
+              groupBy={
+                taskViews.activeView.viewType === "board"
+                  ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
+                  : taskViews.activeView.groupBy
+              }
               hiddenGroups={taskViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
@@ -1403,20 +1600,24 @@ export default function Projects() {
               sortOptions={taskSortOptions}
               sorts={taskViews.activeView.sorts}
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-              groupByLocked={taskViews.activeView.viewType === "board"}
+              isBoard={taskViews.activeView.viewType === "board"}
             />
           </div>
         </div>
         <ViewFilterPills
-          groupOptions={taskGroupOptions}
-          groupBy={taskViews.activeView.viewType === "board" ? "status" : taskViews.activeView.groupBy}
+          groupOptions={taskViews.activeView.viewType === "board" ? taskBoardGroupOptions : taskGroupOptions}
+          groupBy={
+            taskViews.activeView.viewType === "board"
+              ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
+              : taskViews.activeView.groupBy
+          }
           hiddenGroups={taskViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
           sortOptions={taskSortOptions}
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-          groupByLocked={taskViews.activeView.viewType === "board"}
+          isBoard={taskViews.activeView.viewType === "board"}
         />
         {taskViews.activeView.viewType !== "board" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
@@ -1449,11 +1650,11 @@ export default function Projects() {
             <BoardView
               rows={sortRows(visibleTasks, taskViews.activeView.sorts, taskSortOptions)}
               rowKey={(t) => t.id}
-              columns={TASK_BOARD_COLUMNS}
-              getValue={(t) => t.status}
+              columns={getTaskBoardColumns(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
+              getValue={(t) => getTaskBoardValue(t, resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
               hiddenColumns={taskViews.activeView.hiddenGroups}
               renderCard={renderTaskCard}
-              onMoveCard={(t, newValue) => updateTask(t.id, { status: newValue || null })}
+              onMoveCard={getTaskBoardMoveHandler(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
               onReorderCard={reorderTasks}
             />
             {canCreateTask && (
