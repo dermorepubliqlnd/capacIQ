@@ -88,7 +88,10 @@ export default function DataTable<T>({
   }, [columns, view.columnOrder]);
 
   const visibleColumns = orderedKeys
-    .filter((k) => !view.hiddenColumns.includes(k))
+    .filter((k) => {
+      const col = columns.find((c) => c.key === k);
+      return col?.alwaysVisible || !view.hiddenColumns.includes(k);
+    })
     .map((k) => columns.find((c) => c.key === k)!)
     .filter(Boolean);
 

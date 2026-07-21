@@ -2,11 +2,13 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { LogOut } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
+import TimeTrackerBar from "./TimeTrackerBar";
 
 const mainItems = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/projects", label: "Projects & Tasks" },
   { to: "/extension-requests", label: "Extension Requests" },
+  { to: "/time-tracking", label: "Time Tracking" },
 ];
 
 const resourcePlanningItems = [
@@ -121,6 +123,7 @@ export default function AppLayout() {
       <main style={{ flex: 1, minWidth: 0, padding: 20 }}>
         <Outlet />
       </main>
+      <TimeTrackerBar />
     </div>
   );
 }

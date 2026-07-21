@@ -15,6 +15,13 @@ export interface ColumnDef<T> {
   // unreasonable width.
   maxWidth?: number;
   render: (row: T) => ReactNode;
+  // True for a column that must never be hidden via the Properties toggle
+  // (e.g. Spent Hrs, once it became a computed rollup rather than a free-
+  // typed number -- hiding it would make it look editable/removable when
+  // it's really just a read-only derived total). The Properties popover
+  // still lists it, checked and disabled, so it's clear it's intentional
+  // rather than missing.
+  alwaysVisible?: boolean;
 }
 
 export interface GroupOption<T> {
@@ -131,5 +138,10 @@ export function visibleOrderedColumns<T>(columns: ColumnDef<T>[], view: TableVie
   const known = columns.map((c) => c.key);
   const ordered = view.columnOrder.filter((k) => known.includes(k));
   const missing = known.filter((k) => !ordered.includes(k));
-  return [...ordered, ...missing].filter((k) => !view.hiddenColumns.includes(k)).map((k) => columns.find((c) => c.key === k)!);
+  return [...ordered, ...missing]
+    .filter((k) => {
+      const col = columns.find((c) => c.key === k);
+      return col?.alwaysVisible || !view.hiddenColumns.includes(k);
+    })
+    .map((k) => columns.find((c) => c.key === k)!);
 }

@@ -970,3 +970,18 @@ join projects pr on pr.id = t.project_id
 where coalesce(t.time_spent_hours, 0) > 0
   and coalesce(t.assignee_id, pr.owner_id) is not null
   and not exists (select 1 from time_entries te where te.task_id = t.id and te.source = 'legacy');
+
+-- Broaden time_entries visibility to match tasks visibility: Spent Hrs is
+-- a rollup of time_entries now, and it used to be a plain unrestricted
+-- tasks column everyone who could see the task could read. Without this,
+-- a Standard user viewing a teammate's task in a shared project would see
+-- Spent Hrs silently show 0 (RLS hid the rows) instead of the real total.
+drop policy if exists time_entries_select on time_entries;
+create policy time_entries_select on time_entries for select
+  using (
+    my_access_level() = 'full'
+    or person_id = my_person_id()
+    or requested_by = my_person_id()
+    or exists (select 1 from tasks t where t.id = time_entries.task_id and can_see_project(t.project_id))
+    or exists (select 1 from people where id = person_id and reports_to = my_person_id())
+  );

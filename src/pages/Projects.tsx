@@ -15,6 +15,9 @@ import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell"
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
+import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
+import { useTimeTracking } from "../lib/TimeTrackingContext";
+import { Play, Square } from "lucide-react";
 import {
   PROJECT_CATEGORY_OPTIONS,
   PROJECT_CATEGORY_TONES,
@@ -496,6 +499,8 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
+  const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
+  const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer } = useTimeTracking();
   // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
   // Off, from the Holiday calendar module) -- fed into Health's expected-
   // progress calculation so "working days elapsed" excludes them the same
@@ -575,7 +580,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -584,6 +589,10 @@ export default function Projects() {
         .from("extension_requests")
         .select("id,task_id,status,requested_new_due_date,reason_category,reason_notes,decided_at,decision_notes,created_at")
         .order("created_at", { ascending: false }),
+      // Only confirmed/approved/legacy entries actually count toward Spent
+      // Hrs (see rollupHoursFor) -- fetching just those keeps this list
+      // small instead of pulling every running/pending/rejected row too.
+      supabase.from("time_entries").select("*").in("status", ["confirmed", "approved"]),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -592,6 +601,7 @@ export default function Projects() {
     setPeople((peopleData as PersonOption[]) ?? []);
     setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
     setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
+    setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
     // Drop any selection for rows that no longer exist in the fresh load
     // (e.g. after a bulk delete) so the bulk-action bar doesn't linger.
     const projectIds = new Set(nextProjects.map((p) => p.id));
@@ -690,6 +700,17 @@ export default function Projects() {
   // computed from its sub-tasks' dates the same way a project's are
   // computed from its tasks. A task with no sub-tasks is unaffected
   // (behaves as a normal leaf task).
+  // Spent Hrs stopped being a free-typed number the moment Time Tracking
+  // shipped -- it's now a pure rollup of confirmed/approved/legacy
+  // time_entries, same "own + every descendant's total" shape as the
+  // date rollups below but summed instead of min/maxed. No write-back
+  // needed (nothing else in the app reads tasks.time_spent_hours), so
+  // this is display-only -- unlike the date rollups, there's no matching
+  // useEffect syncing it into a DB column.
+  function spentHoursFor(taskId: string): number {
+    return rollupHoursFor(taskId, timeEntries, (id) => tasks.filter((t) => t.parent_task_id === id).map((t) => t.id));
+  }
+
   function taskDatesFromSubtasks(parentId: string): { start: string | null; end: string | null } | null {
     const children = tasks.filter((t) => t.parent_task_id === parentId && !t.is_archived);
     if (children.length === 0) return null;
@@ -1832,12 +1853,47 @@ export default function Projects() {
       {
         key: "time_spent_hours",
         label: "Spent hrs",
-        defaultWidth: 95,
-        maxWidth: 120,
-        render: (t) => <InlineNumber value={t.time_spent_hours ?? 0} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { time_spent_hours: v ?? 0 })} />,
+        defaultWidth: 110,
+        maxWidth: 140,
+        alwaysVisible: true,
+        render: (t) => {
+          const hours = spentHoursFor(t.id);
+          const isMine = t.assignee_id === me?.id;
+          const isRunningHere = running?.task_id === t.id;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(hours)}</span>
+              {isMine && !t.is_archived && (
+                <button
+                  onClick={async () => {
+                    if (isRunningHere) {
+                      const res = await stopRunningTimer();
+                      if (res.error) alert(`Couldn't stop timer: ${res.error}`);
+                    } else {
+                      const res = await startTaskTimer({ id: t.id, name: t.name });
+                      if (res.error) alert(`Couldn't start timer: ${res.error}`);
+                    }
+                  }}
+                  disabled={timerBusy || (Boolean(running) && !isRunningHere)}
+                  title={
+                    isRunningHere
+                      ? "Stop timer"
+                      : running
+                      ? `Stop the timer running on "${running.task_name}" first`
+                      : "Start timer"
+                  }
+                  className="row-icon-btn"
+                  style={{ opacity: isRunningHere ? 1 : undefined, color: isRunningHere ? "var(--danger-text)" : "var(--accent)" }}
+                >
+                  {isRunningHere ? <Square size={12} fill="currentColor" /> : <Play size={12} />}
+                </button>
+              )}
+            </div>
+          );
+        },
       },
     ],
-    [people, projects, me]
+    [people, projects, me, timeEntries, tasks, running, timerBusy]
   );
 
   // Board cards get their own name renderer rather than reusing the table

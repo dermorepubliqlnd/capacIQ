@@ -281,8 +281,25 @@ export default function ViewSettingsMenu<T>({
           <>
             <PopoverHeader label="Properties" onClose={close} />
             {columns.map((c) => (
-              <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer" }}>
-                <input type="checkbox" checked={!hiddenColumns.includes(c.key)} onChange={() => onToggleColumn(c.key)} />
+              <label
+                key={c.key}
+                title={c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  padding: "3px 2px",
+                  cursor: c.alwaysVisible ? "default" : "pointer",
+                  color: c.alwaysVisible ? "var(--muted)" : undefined,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={c.alwaysVisible ? true : !hiddenColumns.includes(c.key)}
+                  disabled={c.alwaysVisible}
+                  onChange={() => !c.alwaysVisible && onToggleColumn(c.key)}
+                />
                 {c.label}
               </label>
             ))}
