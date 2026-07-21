@@ -52,6 +52,8 @@ interface ProjectRow {
   archived_at: string | null;
   sort_order: number | null;
   timelines_locked: boolean;
+  original_start_date: string | null;
+  original_due_date: string | null;
 }
 
 interface TaskRow {
@@ -642,6 +644,81 @@ export default function Projects() {
   // as before. See [[project_capaciq_extension_requests]].
   const isProjectLocked = (projectId: string) => projects.find((p) => p.id === projectId)?.timelines_locked ?? false;
 
+  // Project start/due are computed from their own tasks while a project
+  // is still in Scoping -- earliest task start, latest task due -- rather
+  // than a manually-typed guess. This mirrors the parent/sub-task rollup
+  // below at one level up: project contains tasks the same way a parent
+  // task contains sub-tasks, so the same "min start, max due" rule applies
+  // at both levels. Once Locked, this stops mattering: start_date/end_date
+  // become the frozen envelope, only movable via an approved Project
+  // Extension Request (see decide_project_extension_request).
+  function projectDatesFromTasks(projectId: string): { start: string | null; end: string | null } | null {
+    const relevant = tasks.filter((t) => t.project_id === projectId && !t.is_archived && (t.start_date || t.current_due_date));
+    if (relevant.length === 0) return null;
+    const starts = relevant.map((t) => t.start_date).filter((d): d is string => !!d);
+    const ends = relevant.map((t) => t.current_due_date).filter((d): d is string => !!d);
+    return {
+      start: starts.length ? starts.reduce((a, b) => (a < b ? a : b)) : null,
+      end: ends.length ? ends.reduce((a, b) => (a > b ? a : b)) : null,
+    };
+  }
+
+  // Keeps a Scoping-phase project's start_date/end_date in sync with its
+  // own tasks live, so opening the project shows an accurate plan instead
+  // of a stale manual guess. Stops entirely once Locked -- the DB's own
+  // projects_date_lock trigger would reject the write anyway, but this
+  // effect just doesn't attempt it in the first place.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    projects.forEach((p) => {
+      if (p.timelines_locked) return;
+      const computed = projectDatesFromTasks(p.id);
+      if (!computed) return;
+      const patch: Partial<ProjectRow> = {};
+      if (computed.start && computed.start !== p.start_date) patch.start_date = computed.start;
+      if (computed.end && computed.end !== p.end_date) patch.end_date = computed.end;
+      if (Object.keys(patch).length > 0) updateProject(p.id, patch);
+    });
+  }, [tasks]);
+
+  // Same rollup, one level down: a parent task's own start/due are
+  // computed from its sub-tasks' dates the same way a project's are
+  // computed from its tasks. A task with no sub-tasks is unaffected
+  // (behaves as a normal leaf task).
+  function taskDatesFromSubtasks(parentId: string): { start: string | null; end: string | null } | null {
+    const children = tasks.filter((t) => t.parent_task_id === parentId && !t.is_archived);
+    if (children.length === 0) return null;
+    const starts = children.map((t) => t.start_date).filter((d): d is string => !!d);
+    const ends = children.map((t) => t.current_due_date).filter((d): d is string => !!d);
+    return {
+      start: starts.length ? starts.reduce((a, b) => (a < b ? a : b)) : null,
+      end: ends.length ? ends.reduce((a, b) => (a > b ? a : b)) : null,
+    };
+  }
+
+  // Mirrors the project-level sync effect above, one level down: while
+  // the project is unlocked, a parent task's own start/due stay synced to
+  // its sub-tasks' dates. Skips tasks with no sub-tasks entirely (leaf
+  // tasks are unaffected) and stops once the project locks (the due-date
+  // lock trigger would reject the write anyway).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    tasks
+      .filter((t) => t.parent_task_id === null)
+      .forEach((parent) => {
+        if (isProjectLocked(parent.project_id)) return;
+        const computed = taskDatesFromSubtasks(parent.id);
+        if (!computed) return;
+        const patch: Partial<TaskRow> = {};
+        if (computed.start && computed.start !== parent.start_date) patch.start_date = computed.start;
+        if (computed.end && computed.end !== parent.current_due_date) {
+          patch.current_due_date = computed.end;
+          patch.original_due_date = computed.end;
+        }
+        if (Object.keys(patch).length > 0) updateTask(parent.id, patch);
+      });
+  }, [tasks]);
+
   // Due Date Ext. property: reflects the most recent extension_requests
   // row for a task, but only while its project is locked -- while a
   // project is still in Scoping, dates are freely editable and extension
@@ -660,8 +737,59 @@ export default function Projects() {
     return { label: "Extended", tone: "gold" };
   }
 
+  // Pre-lock completeness gate: locking freezes whatever's in the plan as
+  // the committed baseline, so a task missing effort/dates/assignee at
+  // that moment stays invisible to Actual Progress/Health forever (or
+  // until someone notices and fixes it well after the fact). Blocking the
+  // lock action itself catches this at the one moment it's cheap to fix.
+  // Full Access can still override, since there are legitimate edge cases
+  // (e.g. a genuinely zero-effort placeholder task), but it's not the
+  // default path.
+  function incompleteTasksFor(projectId: string): { task: TaskRow; missing: string[] }[] {
+    return tasks
+      .filter((t) => t.project_id === projectId && !t.is_archived)
+      .map((t) => {
+        const missing: string[] = [];
+        if (!t.effort) missing.push("Effort");
+        if (!t.start_date) missing.push("Start date");
+        if (!t.current_due_date) missing.push("Due date");
+        if (!t.assignee_id) missing.push("Assignee");
+        return { task: t, missing };
+      })
+      .filter((x) => x.missing.length > 0);
+  }
+
   async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
     const verb = locked ? "Lock" : "Unlock";
+
+    if (locked) {
+      const incomplete = incompleteTasksFor(p.id);
+      if (incomplete.length > 0) {
+        const summary = incomplete
+          .slice(0, 8)
+          .map((x) => `- ${x.task.name || "Untitled task"}: missing ${x.missing.join(", ")}`)
+          .join("\n");
+        const more = incomplete.length > 8 ? `\n...and ${incomplete.length - 8} more.` : "";
+        if (!isFullAccess) {
+          alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}${more}`);
+          return;
+        }
+        if (!confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}${more}\n\nFull Access override: lock anyway?`)) return;
+      }
+    }
+
+    if (!locked && !isFullAccess) {
+      // Owner self-service unlock only applies to a project still in
+      // Scoping. Once truly Locked, the DB itself now refuses a direct
+      // owner-initiated unlock (see the projects_date_lock/
+      // set_project_timelines_locked governance added 2026-07-21) -- the
+      // only path from here is an approved Project Extension Request.
+      alert(
+        'This project\'s timelines are locked. Ask your manager or Full Access to unlock it, or file a "Request timeline change" once that\'s available from the Extension Requests page.'
+      );
+      return;
+    }
+
     const detail = locked
       ? "This freezes every task's current due date as the committed baseline. After this, due dates can only change via an approved Extension Request."
       : "This re-opens every task's due date for free editing during planning, until locked again.";
@@ -1084,38 +1212,50 @@ export default function Projects() {
         label: "Start",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (p) => (
-          <InlineDate
-            value={p.start_date}
-            editable={canEditProject(p)}
-            onCommit={(v) => {
-              if (v && p.end_date && v > p.end_date) {
-                alert("Start date can't be after the due date.");
-                return;
-              }
-              updateProject(p.id, { start_date: v || null });
-            }}
-          />
-        ),
+        render: (p) => {
+          const computed = projectDatesFromTasks(p.id);
+          const editable = canEditProject(p) && !p.timelines_locked && !computed;
+          return (
+            <span title={computed ? "Computed from this project's own tasks (earliest task start)" : undefined}>
+              <InlineDate
+                value={p.start_date}
+                editable={editable}
+                onCommit={(v) => {
+                  if (v && p.end_date && v > p.end_date) {
+                    alert("Start date can't be after the due date.");
+                    return;
+                  }
+                  updateProject(p.id, { start_date: v || null });
+                }}
+              />
+            </span>
+          );
+        },
       },
       {
         key: "end_date",
         label: "Due",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (p) => (
-          <InlineDate
-            value={p.end_date}
-            editable={canEditProject(p)}
-            onCommit={(v) => {
-              if (v && p.start_date && v < p.start_date) {
-                alert("Due date can't be before the start date.");
-                return;
-              }
-              updateProject(p.id, { end_date: v || null });
-            }}
-          />
-        ),
+        render: (p) => {
+          const computed = projectDatesFromTasks(p.id);
+          const editable = canEditProject(p) && !p.timelines_locked && !computed;
+          return (
+            <span title={computed ? "Computed from this project's own tasks (latest task due date)" : undefined}>
+              <InlineDate
+                value={p.end_date}
+                editable={editable}
+                onCommit={(v) => {
+                  if (v && p.start_date && v < p.start_date) {
+                    alert("Due date can't be before the start date.");
+                    return;
+                  }
+                  updateProject(p.id, { end_date: v || null });
+                }}
+              />
+            </span>
+          );
+        },
       },
       {
         key: "timelines_locked",
@@ -1129,7 +1269,9 @@ export default function Projects() {
             title={
               canEditProject(p)
                 ? p.timelines_locked
-                  ? "Timelines locked -- click to unlock and allow free date edits again"
+                  ? isFullAccess
+                    ? "Timelines locked -- click to unlock (Full Access override)"
+                    : "Timelines locked -- unlocking now requires Full Access or an approved timeline extension request"
                   : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
                 : p.timelines_locked
                 ? "Timelines locked"
@@ -1153,6 +1295,23 @@ export default function Projects() {
             {p.timelines_locked ? "Locked" : "Scoping"}
           </button>
         ),
+      },
+      {
+        key: "days_extended",
+        label: "Days Extended",
+        defaultWidth: 120,
+        maxWidth: 150,
+        // Cumulative drift from the baseline stamped at Lock time -- only
+        // ever moves via an approved Project Extension Request afterward
+        // (decide_project_extension_request), same shape as tasks' own
+        // Due Date Ext. drift. Blank until the project has actually been
+        // locked at least once (no baseline yet to compare against).
+        render: (p) => {
+          if (!p.original_due_date || !p.end_date) return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>—</span>;
+          const days = Math.round((new Date(p.end_date).getTime() - new Date(p.original_due_date).getTime()) / 86400000);
+          if (days <= 0) return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>0 days</span>;
+          return <span className="status-pill gold">+{days} day{days === 1 ? "" : "s"}</span>;
+        },
       },
     ],
     [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay]
@@ -1510,19 +1669,25 @@ export default function Projects() {
         label: "Start",
         defaultWidth: 110,
         maxWidth: 140,
-        render: (t) => (
-          <InlineDate
-            value={t.start_date}
-            editable={canEditTask(t)}
-            onCommit={(v) => {
-              if (v && t.current_due_date && v > t.current_due_date) {
-                alert("Start date can't be after the due date.");
-                return;
-              }
-              updateTask(t.id, { start_date: v || null });
-            }}
-          />
-        ),
+        render: (t) => {
+          const isParent = t._depth === 0 && hasChildren(t.id);
+          const computed = isParent ? taskDatesFromSubtasks(t.id) : null;
+          return (
+            <span title={computed ? "Computed from this task's own sub-tasks (earliest sub-task start)" : undefined}>
+              <InlineDate
+                value={t.start_date}
+                editable={!isParent && canEditTask(t)}
+                onCommit={(v) => {
+                  if (v && t.current_due_date && v > t.current_due_date) {
+                    alert("Start date can't be after the due date.");
+                    return;
+                  }
+                  updateTask(t.id, { start_date: v || null });
+                }}
+              />
+            </span>
+          );
+        },
       },
       {
         key: "timing",
@@ -1547,12 +1712,16 @@ export default function Projects() {
           // status/history/request action all live in the Due Date Ext.
           // column now instead of being split across two places.
           // See [[project_capaciq_extension_requests]].
+          const isParent = t._depth === 0 && hasChildren(t.id);
+          const computed = isParent ? taskDatesFromSubtasks(t.id) : null;
           return (
-            <InlineDate
-              value={t.current_due_date}
-              editable={!locked && canEditTask(t)}
-              onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
-            />
+            <span title={computed ? "Computed from this task's own sub-tasks (latest sub-task due date)" : undefined}>
+              <InlineDate
+                value={t.current_due_date}
+                editable={!isParent && !locked && canEditTask(t)}
+                onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
+              />
+            </span>
           );
         },
       },
