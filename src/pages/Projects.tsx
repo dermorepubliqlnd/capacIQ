@@ -980,31 +980,24 @@ export default function Projects() {
               onCommit={(v) => updateProject(p.id, { project_status: v || null })}
             />
             {shouldSuggestDone(p) && canEditProject(p) && (
-              <span
-                title="Actual progress hit 100% -- mark this project Done?"
-                style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 }}
-              >
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     updateProject(p.id, { project_status: "Done" });
                   }}
+                  title="Mark as Done"
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 3,
-                    fontSize: 10.5,
-                    fontWeight: 600,
                     color: "var(--success-text)",
                     background: "none",
                     border: "none",
                     cursor: "pointer",
                     padding: 0,
-                    whiteSpace: "nowrap",
                   }}
                 >
-                  <CheckCircle2 size={12} />
-                  Mark Done?
+                  <CheckCircle2 size={14} />
                 </button>
                 <button
                   onClick={(e) => {
