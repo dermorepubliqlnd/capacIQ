@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -143,6 +143,31 @@ function countWorkingDays(start: Date, end: Date, holidayDates: Set<string>): nu
     cur.setDate(cur.getDate() + 1);
   }
   return count;
+}
+
+// "Mark as Done?" suggestion dismissals (see healthOf's rule 1 below and
+// project_capaciq_view_types memory): when actual progress hits 100% we
+// SUGGEST closing the project out rather than auto-flipping project_status,
+// so a PM/owner keeps control of exactly when a project is formally done.
+// Dismissals are per-person, stored in localStorage (same convention as
+// useTableViews.ts) -- not persisted server-side since this is just a UI
+// nudge, not data. A dismissal is intentionally NOT permanent: if progress
+// later drops below 100% (e.g. a new task is added) and climbs back to
+// 100%, the suggestion re-earns the right to show again (see the
+// pruning effect near the dismissedDoneSuggestions state below).
+const DISMISSED_DONE_SUGGESTIONS_PREFIX = "capaciq_dismissed_done_suggestions";
+
+function loadDismissedDoneSuggestions(storageKey: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (raw) {
+      const parsed = JSON.parse(raw) as string[];
+      if (Array.isArray(parsed)) return new Set(parsed);
+    }
+  } catch {
+    // ignore corrupt storage, fall through to empty
+  }
+  return new Set();
 }
 
 // Project Health compares actual weighted task progress against how far
@@ -473,6 +498,42 @@ export default function Projects() {
   // progress calculation so "working days elapsed" excludes them the same
   // way the Day Planner already does. Stored as "YYYY-MM-DD" strings.
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
+
+  const dismissedDoneSuggestionsKey = `${DISMISSED_DONE_SUGGESTIONS_PREFIX}_${me?.id ?? "anon"}`;
+  const [dismissedDoneSuggestions, setDismissedDoneSuggestions] = useState<Set<string>>(() =>
+    loadDismissedDoneSuggestions(dismissedDoneSuggestionsKey)
+  );
+
+  // Re-load from localStorage if the signed-in person changes (mirrors
+  // useTableViews.ts's storageKey-keyed reload pattern).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setDismissedDoneSuggestions(loadDismissedDoneSuggestions(dismissedDoneSuggestionsKey));
+  }, [dismissedDoneSuggestionsKey]);
+
+  useEffect(() => {
+    localStorage.setItem(dismissedDoneSuggestionsKey, JSON.stringify(Array.from(dismissedDoneSuggestions)));
+  }, [dismissedDoneSuggestions, dismissedDoneSuggestionsKey]);
+
+  // A dismissal only "sticks" while progress stays at 100. If a project's
+  // actual progress drops back below 100 (e.g. a new task got added) the
+  // dismissal is cleared, so the suggestion can surface again next time it
+  // genuinely re-hits 100%.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setDismissedDoneSuggestions((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of prev) {
+        if (actualProgress(id, tasks) !== 100) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tasks]);
   const [extensionRequests, setExtensionRequests] = useState<ExtensionRequestLite[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -554,6 +615,22 @@ export default function Projects() {
   const taskName = (id: string | null) => tasks.find((t) => t.id === id)?.name ?? "—";
   const isProjectOwner = (projectId: string) => projects.find((p) => p.id === projectId)?.owner_id === me?.id;
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
+
+  // Should we show the "Mark as Done?" suggestion chip for this project?
+  // Deliberately a suggestion, not an auto-set of project_status -- see the
+  // dismissal-helper comment above for why.
+  function shouldSuggestDone(p: ProjectRow): boolean {
+    if (statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status) === "complete") return false;
+    if (dismissedDoneSuggestions.has(p.id)) return false;
+    return actualProgress(p.id, tasks) === 100;
+  }
+
+  function dismissDoneSuggestion(projectId: string) {
+    setDismissedDoneSuggestions((prev) => {
+      if (prev.has(projectId)) return prev;
+      return new Set(prev).add(projectId);
+    });
+  }
   const canManageTasksIn = (projectId: string) => isFullAccess || isProjectOwner(projectId);
   const canEditTask = (t: TaskRow) => canManageTasksIn(t.project_id) || t.assignee_id === me?.id;
   const canCreateProject = isFullAccess;
@@ -887,20 +964,61 @@ export default function Projects() {
         defaultWidth: 140,
         maxWidth: 200,
         render: (p) => (
-          <InlineSelect
-            value={p.project_status ?? ""}
-            editable={canEditProject(p)}
-            allowEmpty
-            options={PROJECT_STATUS_GROUPED}
-            renderReadOnly={() =>
-              p.project_status ? (
-                <span className={`status-pill ${PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}`}>{p.project_status}</span>
-              ) : (
-                "—"
-              )
-            }
-            onCommit={(v) => updateProject(p.id, { project_status: v || null })}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+            <InlineSelect
+              value={p.project_status ?? ""}
+              editable={canEditProject(p)}
+              allowEmpty
+              options={PROJECT_STATUS_GROUPED}
+              renderReadOnly={() =>
+                p.project_status ? (
+                  <span className={`status-pill ${PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}`}>{p.project_status}</span>
+                ) : (
+                  "—"
+                )
+              }
+              onCommit={(v) => updateProject(p.id, { project_status: v || null })}
+            />
+            {shouldSuggestDone(p) && canEditProject(p) && (
+              <span
+                title="Actual progress hit 100% -- mark this project Done?"
+                style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 }}
+              >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    updateProject(p.id, { project_status: "Done" });
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 3,
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    color: "var(--success-text)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <CheckCircle2 size={12} />
+                  Mark Done?
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dismissDoneSuggestion(p.id);
+                  }}
+                  title="Dismiss"
+                  style={{ display: "flex", alignItems: "center", color: "var(--muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            )}
+          </div>
         ),
       },
       {
