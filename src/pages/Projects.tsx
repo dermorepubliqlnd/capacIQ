@@ -1892,10 +1892,26 @@ export default function Projects() {
                       ? `Stop the timer running on "${running.task_name}" first`
                       : "Start timer"
                   }
-                  className="row-icon-btn"
-                  style={{ opacity: isRunningHere ? 1 : undefined, color: isRunningHere ? "var(--danger-text)" : "var(--accent)" }}
+                  // Always visible (not hover-gated like .row-icon-btn) --
+                  // this is a primary action people need to spot at a
+                  // glance, not a secondary one like archive. Green =
+                  // start, red = stop, so the state reads instantly.
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 20,
+                    height: 20,
+                    flexShrink: 0,
+                    background: "none",
+                    border: "none",
+                    cursor: timerBusy || (Boolean(running) && !isRunningHere) ? "default" : "pointer",
+                    borderRadius: "var(--radius-sm)",
+                    opacity: Boolean(running) && !isRunningHere ? 0.35 : 1,
+                    color: isRunningHere ? "var(--danger-text)" : "var(--success-text)",
+                  }}
                 >
-                  {isRunningHere ? <Square size={12} fill="currentColor" /> : <Play size={12} />}
+                  {isRunningHere ? <Square size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
                 </button>
               )}
             </div>
@@ -1903,7 +1919,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, timeEntries, tasks, running, timerBusy]
+    [people, projects, me, timeEntries, tasks, running, timerBusy, collapsedParents]
   );
 
   // Board cards get their own name renderer rather than reusing the table

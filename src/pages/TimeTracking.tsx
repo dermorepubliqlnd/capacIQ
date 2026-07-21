@@ -4,7 +4,7 @@ import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { formatDate } from "../lib/formatDate";
-import { formatDuration, submitManualTimeEntry, decideTimeEntry, correctTimeEntry } from "../lib/timeTracking";
+import { formatDuration, submitManualTimeEntry, decideTimeEntry, correctTimeEntry, TIME_ENTRY_REASON_OPTIONS } from "../lib/timeTracking";
 
 interface PersonLite {
   id: string;
@@ -30,6 +30,7 @@ interface EntryRow {
   source: "timer" | "manual" | "legacy";
   status: "running" | "pending_confirm" | "confirmed" | "pending_approval" | "approved" | "rejected";
   requested_by: string | null;
+  reason_category: string | null;
   reason_notes: string | null;
   auto_stopped: boolean;
   decided_by: string | null;
@@ -64,9 +65,17 @@ const STATUS_TONE: Record<string, string> = {
 
 const SOURCE_LABEL: Record<string, string> = { timer: "Timer", manual: "Manual", legacy: "Legacy" };
 
-function toLocalInputValue(d = new Date()): string {
+// Separate date + time fields rather than <input type="datetime-local">:
+// that control's displayed time format is rendered per the OS locale,
+// which on some systems shows a period instead of a colon between hours
+// and minutes. Plain <input type="time"> is consistently colon-separated.
+function toDateInputValue(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function toTimeInputValue(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export default function TimeTracking() {
@@ -84,8 +93,11 @@ export default function TimeTracking() {
 
   const [showLogForm, setShowLogForm] = useState(false);
   const [logTaskId, setLogTaskId] = useState("");
-  const [logStart, setLogStart] = useState(toLocalInputValue());
-  const [logEnd, setLogEnd] = useState(toLocalInputValue());
+  const [logStartDate, setLogStartDate] = useState(toDateInputValue());
+  const [logStartTime, setLogStartTime] = useState(toTimeInputValue());
+  const [logEndDate, setLogEndDate] = useState(toDateInputValue());
+  const [logEndTime, setLogEndTime] = useState(toTimeInputValue());
+  const [logReasonCategory, setLogReasonCategory] = useState(TIME_ENTRY_REASON_OPTIONS[0]);
   const [logNotes, setLogNotes] = useState("");
   const [logError, setLogError] = useState<string | null>(null);
   const [logSaving, setLogSaving] = useState(false);
@@ -96,7 +108,7 @@ export default function TimeTracking() {
       supabase
         .from("time_entries")
         .select(
-          `id, task_id, person_id, started_at, ended_at, duration_minutes, source, status, requested_by, reason_notes, auto_stopped,
+          `id, task_id, person_id, started_at, ended_at, duration_minutes, source, status, requested_by, reason_category, reason_notes, auto_stopped,
            decided_by, decided_at, decision_notes, corrected_by, corrected_at, original_duration_minutes, correction_notes, created_at,
            task:tasks ( id, name, assignee_id, project_id, project:projects ( id, name, owner_id ) ),
            person:people!time_entries_person_id_fkey ( id, name )`
@@ -176,14 +188,18 @@ export default function TimeTracking() {
       setLogError("Choose a task.");
       return;
     }
-    const start = new Date(logStart);
-    const end = new Date(logEnd);
+    if (logReasonCategory === "Other" && !logNotes.trim()) {
+      setLogError('Please specify a reason when "Other" is selected.');
+      return;
+    }
+    const start = new Date(`${logStartDate}T${logStartTime}`);
+    const end = new Date(`${logEndDate}T${logEndTime}`);
     if (end <= start) {
       setLogError("End time must be after start time.");
       return;
     }
     setLogSaving(true);
-    const res = await submitManualTimeEntry(logTaskId, start.toISOString(), end.toISOString(), logNotes.trim() || "Manually logged");
+    const res = await submitManualTimeEntry(logTaskId, start.toISOString(), end.toISOString(), logReasonCategory, logNotes.trim() || logReasonCategory);
     setLogSaving(false);
     if (res.error) {
       setLogError(res.error);
@@ -192,6 +208,7 @@ export default function TimeTracking() {
     setShowLogForm(false);
     setLogTaskId("");
     setLogNotes("");
+    setLogReasonCategory(TIME_ENTRY_REASON_OPTIONS[0]);
     await alert("Time entry submitted -- it goes to your project owner (or their manager, if you own the project) for approval.");
     loadAll();
   }
@@ -252,6 +269,13 @@ export default function TimeTracking() {
                   <tr>
                     <td></td>
                     <td colSpan={7} style={{ background: "var(--bg)", padding: "10px 14px" }}>
+                      {row.reason_category && (
+                        <div style={{ fontSize: 11.5, marginBottom: 4 }}>
+                          <span className="status-pill neutral" style={{ fontSize: 10 }}>
+                            {row.reason_category}
+                          </span>
+                        </div>
+                      )}
                       {row.reason_notes && (
                         <div style={{ fontSize: 11.5, marginBottom: 6 }}>
                           <span style={{ color: "var(--muted)" }}>Notes:</span> {row.reason_notes}
@@ -406,34 +430,81 @@ export default function TimeTracking() {
             </label>
             <div style={{ display: "flex", gap: 8 }}>
               <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
-                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start</span>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start date</span>
                 <input
-                  type="datetime-local"
-                  value={logStart}
-                  onChange={(e) => setLogStart(e.target.value)}
+                  type="date"
+                  value={logStartDate}
+                  onChange={(e) => setLogStartDate(e.target.value)}
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
-              <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
-                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End</span>
+              <label style={{ display: "block", marginBottom: 8, width: 100 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start time</span>
                 <input
-                  type="datetime-local"
-                  value={logEnd}
-                  onChange={(e) => setLogEnd(e.target.value)}
+                  type="time"
+                  value={logStartTime}
+                  onChange={(e) => setLogStartTime(e.target.value)}
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
             </div>
-            <label style={{ display: "block", marginBottom: 10 }}>
-              <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Why you're logging this after the fact</span>
-              <input
-                type="text"
-                value={logNotes}
-                onChange={(e) => setLogNotes(e.target.value)}
-                placeholder="e.g. forgot to start the timer"
-                style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
-              />
+            <div style={{ display: "flex", gap: 8 }}>
+              <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End date</span>
+                <input
+                  type="date"
+                  value={logEndDate}
+                  onChange={(e) => setLogEndDate(e.target.value)}
+                  style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
+                />
+              </label>
+              <label style={{ display: "block", marginBottom: 8, width: 100 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End time</span>
+                <input
+                  type="time"
+                  value={logEndTime}
+                  onChange={(e) => setLogEndTime(e.target.value)}
+                  style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
+                />
+              </label>
+            </div>
+            <label style={{ display: "block", marginBottom: 8 }}>
+              <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Reason</span>
+              <select
+                value={logReasonCategory}
+                onChange={(e) => setLogReasonCategory(e.target.value)}
+                style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+              >
+                {TIME_ENTRY_REASON_OPTIONS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
             </label>
+            {logReasonCategory === "Other" && (
+              <label style={{ display: "block", marginBottom: 10 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Specify</span>
+                <input
+                  type="text"
+                  value={logNotes}
+                  onChange={(e) => setLogNotes(e.target.value)}
+                  placeholder="What happened?"
+                  style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
+                />
+              </label>
+            )}
+            {logReasonCategory !== "Other" && (
+              <label style={{ display: "block", marginBottom: 10 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Additional details (optional)</span>
+                <input
+                  type="text"
+                  value={logNotes}
+                  onChange={(e) => setLogNotes(e.target.value)}
+                  style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
+                />
+              </label>
+            )}
             {logError && <div style={{ color: "var(--danger-text)", fontSize: 11.5, marginBottom: 8 }}>{logError}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <button

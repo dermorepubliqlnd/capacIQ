@@ -87,11 +87,14 @@ export default function TimeTrackerBar() {
       {modalEntry && (
         <ConfirmTimeEntryModal
           entry={modalEntry}
-          onClose={() => setOpenConfirmModalFor(null)}
           onDone={() => {
             setOpenConfirmModalFor(null);
             refresh();
             bumpVersion();
+          }}
+          onContinue={() => {
+            setOpenConfirmModalFor(null);
+            refresh();
           }}
         />
       )}

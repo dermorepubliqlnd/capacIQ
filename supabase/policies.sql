@@ -985,3 +985,174 @@ create policy time_entries_select on time_entries for select
     or exists (select 1 from tasks t where t.id = time_entries.task_id and can_see_project(t.project_id))
     or exists (select 1 from people where id = person_id and reports_to = my_person_id())
   );
+
+-- Migration 2026-07-21c: resume timer + manual-entry reason categories
+--
+-- 1. resume_timer: "Continue work" option on the confirm-time-entry modal.
+--    Sandra removed the "review later" escape hatch -- stopping a timer
+--    now forces a real decision, either Confirm or Continue work (undo
+--    the stop, keep the original start time, go back to running).
+-- 2. time_entries.reason_category: manual entries now pick a reason from
+--    a fixed list (mirrors extension_requests.reason_category) instead of
+--    a single free-text box; "Other" still allows a free-text note.
+
+alter table time_entries add column if not exists reason_category text;
+
+-- 0. Fix "stuck at 0m" entries: datetime-local inputs are minute-granularity,
+-- so a very quick stop could round start==end, and confirm_time_entry used
+-- to reject that (end must be strictly after start) with no way to fix it
+-- short of manually pushing the end time forward. Now: equal timestamps are
+-- allowed and always credited a minimum of 1 minute, both at stop time and
+-- at confirm time, so nothing can land in an unconfirmable state again.
+create or replace function stop_timer(p_entry_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  v_person uuid;
+  v_status text;
+  v_started timestamptz;
+begin
+  select person_id, status, started_at into v_person, v_status, v_started from time_entries where id = p_entry_id;
+  if v_person is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_person <> my_person_id() then
+    raise exception 'not authorized to stop this timer';
+  end if;
+  if v_status <> 'running' then
+    raise exception 'this timer is not currently running';
+  end if;
+
+  update time_entries
+    set ended_at = now(),
+        status = 'pending_confirm',
+        duration_minutes = greatest(1, round(extract(epoch from (now() - v_started)) / 60.0))
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function stop_timer(uuid) to authenticated;
+
+create or replace function confirm_time_entry(
+  p_entry_id uuid,
+  p_started_at timestamptz default null,
+  p_ended_at timestamptz default null,
+  p_notes text default null
+) returns void
+language plpgsql security definer as $$
+declare
+  v_person uuid;
+  v_status text;
+  v_start timestamptz;
+  v_end timestamptz;
+begin
+  select person_id, status, started_at, ended_at into v_person, v_status, v_start, v_end
+    from time_entries where id = p_entry_id;
+
+  if v_person is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_person <> my_person_id() then
+    raise exception 'not authorized to confirm this time entry';
+  end if;
+  if v_status <> 'pending_confirm' then
+    raise exception 'this time entry is not awaiting confirmation';
+  end if;
+
+  if p_started_at is not null then v_start := p_started_at; end if;
+  if p_ended_at is not null then v_end := p_ended_at; end if;
+
+  if v_end < v_start then
+    raise exception 'end time must be at or after start time';
+  end if;
+
+  update time_entries
+    set started_at = v_start,
+        ended_at = v_end,
+        duration_minutes = greatest(1, round(extract(epoch from (v_end - v_start)) / 60.0)),
+        status = 'confirmed',
+        confirmed_at = now(),
+        reason_notes = coalesce(p_notes, reason_notes)
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function confirm_time_entry(uuid, timestamptz, timestamptz, text) to authenticated;
+
+-- Clean up the entries that got genuinely stuck under the old rule
+-- (pending_confirm, 0 minutes, never touched again) -- test artifacts
+-- from building this feature, not real work.
+delete from time_entries where status = 'pending_confirm' and coalesce(duration_minutes, 0) = 0;
+
+create or replace function resume_timer(p_entry_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  v_person uuid;
+  v_status text;
+  v_source text;
+begin
+  select person_id, status, source into v_person, v_status, v_source from time_entries where id = p_entry_id;
+  if v_person is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_person <> my_person_id() then
+    raise exception 'not authorized to resume this timer';
+  end if;
+  if v_status <> 'pending_confirm' then
+    raise exception 'this time entry is not awaiting confirmation';
+  end if;
+  if v_source <> 'timer' then
+    raise exception 'only a timer entry can be resumed';
+  end if;
+  if exists (select 1 from time_entries where person_id = my_person_id() and status = 'running' and id <> p_entry_id) then
+    raise exception 'you already have another timer running -- stop that one first';
+  end if;
+
+  update time_entries
+    set status = 'running',
+        ended_at = null,
+        duration_minutes = null,
+        auto_stopped = false
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function resume_timer(uuid) to authenticated;
+
+-- submit_manual_time_entry gains p_reason_category (kept reason_notes as
+-- the free-text "specify" field, now only required when category='Other').
+create or replace function submit_manual_time_entry(
+  p_task_id uuid,
+  p_started_at timestamptz,
+  p_ended_at timestamptz,
+  p_reason_category text,
+  p_notes text
+) returns uuid
+language plpgsql security definer as $$
+declare
+  v_assignee uuid;
+  v_new_id uuid;
+begin
+  select assignee_id into v_assignee from tasks where id = p_task_id;
+  if v_assignee is null then
+    raise exception 'task not found or has no assignee yet';
+  end if;
+  if v_assignee <> my_person_id() and my_access_level() <> 'full' then
+    raise exception 'only the task assignee can log time for this task';
+  end if;
+  if p_ended_at <= p_started_at then
+    raise exception 'end time must be after start time';
+  end if;
+
+  insert into time_entries
+    (task_id, person_id, started_at, ended_at, duration_minutes, source, status, requested_by, reason_category, reason_notes)
+  values
+    (p_task_id, v_assignee, p_started_at, p_ended_at,
+     round(extract(epoch from (p_ended_at - p_started_at)) / 60.0),
+     'manual', 'pending_approval', my_person_id(), p_reason_category, p_notes)
+  returning id into v_new_id;
+
+  return v_new_id;
+end;
+$$;
+
+grant execute on function submit_manual_time_entry(uuid, timestamptz, timestamptz, text, text) to authenticated;

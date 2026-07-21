@@ -91,6 +91,16 @@ export async function stopTimer(entryId: string): Promise<{ error?: string }> {
   return {};
 }
 
+// "Continue work" -- undoes a stop (or an idle auto-stop), keeping the
+// original start time and going back to running. This is the alternative
+// to Confirm on the confirm-time-entry modal; there's no third "decide
+// later" option, so every stop forces one of these two choices.
+export async function resumeTimer(entryId: string): Promise<{ error?: string }> {
+  const { error } = await supabase.rpc("resume_timer", { p_entry_id: entryId });
+  if (error) return { error: error.message };
+  return {};
+}
+
 export async function confirmTimeEntry(
   entryId: string,
   overrides: { startedAt?: string; endedAt?: string; notes?: string } = {}
@@ -105,16 +115,29 @@ export async function confirmTimeEntry(
   return {};
 }
 
+// Mirrors extension_requests.reason_category (see RequestExtensionModal) --
+// a fixed list instead of a single free-text box; "Other" still allows a
+// free-text note via the notes param.
+export const TIME_ENTRY_REASON_OPTIONS = [
+  "Forgot to Start Timer",
+  "Worked Offline / No Internet",
+  "Continued Work After Hours",
+  "System/Technical Issue",
+  "Other",
+];
+
 export async function submitManualTimeEntry(
   taskId: string,
   startedAt: string,
   endedAt: string,
+  reasonCategory: string,
   notes: string
 ): Promise<{ id?: string; error?: string }> {
   const { data, error } = await supabase.rpc("submit_manual_time_entry", {
     p_task_id: taskId,
     p_started_at: startedAt,
     p_ended_at: endedAt,
+    p_reason_category: reasonCategory,
     p_notes: notes,
   });
   if (error) return { error: error.message };
