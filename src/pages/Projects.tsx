@@ -298,7 +298,10 @@ function timingRank(label: string): number {
   if (label === "Late") return 1;
   if (label === "Due soon") return 2;
   if (label === "On track") return 3;
-  return 4;
+  if (label === "Pending") return 4;
+  if (label === "On time") return 5;
+  if (label === "Early") return 6;
+  return 7;
 }
 
 function priorityTone(priority: string | null): "success" | "warning" | "danger" | "neutral" {
@@ -350,6 +353,8 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
   { value: "On track", label: "On track", tone: "success" },
   { value: "Late", label: "Late", tone: "danger" },
   { value: "On time", label: "On time", tone: "success" },
+  { value: "Early", label: "Early", tone: "success" },
+  { value: "Pending", label: "Pending", tone: "neutral" },
 ];
 
 // Board can group by any of these fields (their values form a fixed,
@@ -382,17 +387,65 @@ function calendarDaysBetween(a: Date, b: Date): number {
   return Math.round((da.getTime() - db.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+// The actual completion moment for Timing purposes: prefer the owner/
+// manager-validated date once it exists (the authoritative record), but
+// fall back to the assignee's own submitted_on stamp (set automatically
+// the moment status flips to Done) rather than assuming On time by
+// default. That old default silently hid genuinely late completions that
+// simply hadn't been through Validate yet -- Sandra's report, 2026-07-21.
+function actualCompletionDateOf(t: TaskRow): string | null {
+  return t.validated_completion_date ?? t.submitted_on;
+}
+
 function timingOf(t: TaskRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
   const group = statusGroupOf(TASK_STATUS_GROUPED, t.status);
   const due = parseLocalDate(t.current_due_date);
   if (group === "complete") {
-    if (t.validated_completion_date && parseLocalDate(t.validated_completion_date) > due) return { label: "Late", tone: "danger" };
+    const actualDateStr = actualCompletionDateOf(t);
+    if (!actualDateStr) return { label: "Pending", tone: "neutral" };
+    const days = calendarDaysBetween(parseLocalDate(actualDateStr.slice(0, 10)), due);
+    if (days > 0) return { label: "Late", tone: "danger" };
+    if (days < 0) return { label: "Early", tone: "success" };
     return { label: "On time", tone: "success" };
   }
   const daysLeft = calendarDaysBetween(due, new Date());
   if (daysLeft < 0) return { label: "Overdue", tone: "danger" };
   if (daysLeft <= 3) return { label: "Due soon", tone: "warning" };
   return { label: "On track", tone: "success" };
+}
+
+// Signed +/- days variance vs the due date -- positive means completed
+// that many days late, negative means that many days early. null when
+// there's no actual completion date to compare yet (task isn't Done, or
+// Done but neither validated nor submitted -- shouldn't happen in
+// practice since submitted_on is stamped automatically).
+function timingVarianceDays(t: TaskRow): number | null {
+  const group = statusGroupOf(TASK_STATUS_GROUPED, t.status);
+  if (group !== "complete") return null;
+  const actualDateStr = actualCompletionDateOf(t);
+  if (!actualDateStr) return null;
+  const due = parseLocalDate(t.current_due_date);
+  return calendarDaysBetween(parseLocalDate(actualDateStr.slice(0, 10)), due);
+}
+
+// Est. vs Actual hours variance -- null when there's no estimate to
+// compare against (can't meaningfully say "over/under budget" without
+// one). Returned as both a signed hour delta and a completion percent
+// (actual/estimated) so callers can render either the number or the
+// ProgressCell visual off one calculation.
+function hoursVarianceOf(t: TaskRow, spentHours: number): { hours: number; percent: number } | null {
+  if (!t.estimated_hours) return null;
+  return {
+    hours: Math.round((spentHours - t.estimated_hours) * 100) / 100,
+    percent: Math.round((spentHours / t.estimated_hours) * 100),
+  };
+}
+
+function hoursVarianceTone(percent: number | null): "success" | "warning" | "danger" | "neutral" {
+  if (percent === null) return "neutral";
+  if (percent <= 100) return "success";
+  if (percent <= 125) return "warning";
+  return "danger";
 }
 
 function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
@@ -781,18 +834,43 @@ export default function Projects() {
   // Full Access can still override, since there are legitimate edge cases
   // (e.g. a genuinely zero-effort placeholder task), but it's not the
   // default path.
+  // Required before locking: a real task name (not the "Untitled task"
+  // placeholder), Start date, Due date, Effort level, Estimated hours.
+  // Assignee is deliberately NOT required -- a task can be scoped before
+  // anyone's been assigned to it (confirmed with Sandra 2026-07-21;
+  // shared/multi-person assignment is a separate, parked idea -- see
+  // [[project_capaciq_time_tracking]]).
   function incompleteTasksFor(projectId: string): { task: TaskRow; missing: string[] }[] {
     return tasks
       .filter((t) => t.project_id === projectId && !t.is_archived)
       .map((t) => {
         const missing: string[] = [];
-        if (!t.effort) missing.push("Effort");
+        if (!t.name || !t.name.trim()) missing.push("Task name");
         if (!t.start_date) missing.push("Start date");
         if (!t.current_due_date) missing.push("Due date");
-        if (!t.assignee_id) missing.push("Assignee");
+        if (!t.effort) missing.push("Effort");
+        if (t.estimated_hours === null || t.estimated_hours === undefined) missing.push("Estimated hours");
         return { task: t, missing };
       })
       .filter((x) => x.missing.length > 0);
+  }
+
+  // Aggregated by column rather than per-task prose -- easier to scan at
+  // a glance than restating every task's name and its own missing-field
+  // list (Sandra's feedback 2026-07-21: "just bullets of column names
+  // with missing data").
+  function missingFieldSummary(incomplete: { task: TaskRow; missing: string[] }[]): string {
+    const counts = new Map<string, number>();
+    for (const x of incomplete) {
+      for (const field of x.missing) {
+        counts.set(field, (counts.get(field) ?? 0) + 1);
+      }
+    }
+    const order = ["Task name", "Start date", "Due date", "Effort", "Estimated hours"];
+    return order
+      .filter((field) => counts.has(field))
+      .map((field) => `- ${field}: ${counts.get(field)} task${counts.get(field)! > 1 ? "s" : ""}`)
+      .join("\n");
   }
 
   async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
@@ -801,16 +879,12 @@ export default function Projects() {
     if (locked) {
       const incomplete = incompleteTasksFor(p.id);
       if (incomplete.length > 0) {
-        const summary = incomplete
-          .slice(0, 8)
-          .map((x) => `- ${x.task.name || "Untitled task"}: missing ${x.missing.join(", ")}`)
-          .join("\n");
-        const more = incomplete.length > 8 ? `\n...and ${incomplete.length - 8} more.` : "";
+        const summary = missingFieldSummary(incomplete);
         if (!isFullAccess) {
-          alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}${more}`);
+          alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}`);
           return;
         }
-        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}${more}\n\nFull Access override: lock anyway?`))) return;
+        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}\n\nFull Access override: lock anyway?`))) return;
       }
     }
 
@@ -1765,6 +1839,20 @@ export default function Projects() {
         },
       },
       {
+        key: "timing_variance_days",
+        label: "Days +/-",
+        defaultWidth: 90,
+        maxWidth: 110,
+        render: (t) => {
+          const days = timingVarianceDays(t);
+          if (days === null) return <span style={{ color: "var(--muted)" }}>—</span>;
+          if (days === 0) return <span className="status-pill success">On time</span>;
+          const tone = days > 0 ? "danger" : "success";
+          const label = days > 0 ? `+${days}d late` : `${Math.abs(days)}d early`;
+          return <span className={`status-pill ${tone}`}>{label}</span>;
+        },
+      },
+      {
         key: "current_due_date",
         label: "Due",
         defaultWidth: 130,
@@ -1861,6 +1949,30 @@ export default function Projects() {
         render: (t) => <InlineNumber value={t.estimated_hours} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { estimated_hours: v })} />,
       },
       {
+        key: "hours_variance",
+        label: "Hrs Variance",
+        defaultWidth: 100,
+        maxWidth: 130,
+        render: (t) => {
+          const variance = hoursVarianceOf(t, spentHoursFor(t.id));
+          if (!variance) return <span style={{ color: "var(--muted)" }}>—</span>;
+          const tone = hoursVarianceTone(variance.percent);
+          const sign = variance.hours > 0 ? "+" : "";
+          return <span className={`status-pill ${tone}`}>{sign}{variance.hours}h</span>;
+        },
+      },
+      {
+        key: "hours_variance_pct",
+        label: "Hrs Variance %",
+        defaultWidth: 120,
+        maxWidth: 150,
+        render: (t) => {
+          const variance = hoursVarianceOf(t, spentHoursFor(t.id));
+          const tone = hoursVarianceTone(variance?.percent ?? null);
+          return <ProgressCell percent={variance?.percent ?? null} tone={tone} display="bar" />;
+        },
+      },
+      {
         key: "time_spent_hours",
         label: "Spent hrs",
         defaultWidth: 110,
@@ -1872,7 +1984,11 @@ export default function Projects() {
           const isRunningHere = running?.task_id === t.id;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(hours)}</span>
+              {/* Fixed width (not sized to the text) so the button after it
+                  lands in the same spot whether the value is "0" or
+                  "123.45" -- assume a max of hhh.mm hours. Right-aligned
+                  so the digits still read naturally against that box. */}
+              <span style={{ fontVariantNumeric: "tabular-nums", width: 46, flexShrink: 0, textAlign: "right" }}>{formatHours(hours)}</span>
               {isMine && !t.is_archived && (
                 <button
                   onClick={async () => {
@@ -1908,7 +2024,7 @@ export default function Projects() {
                     cursor: timerBusy || (Boolean(running) && !isRunningHere) ? "default" : "pointer",
                     borderRadius: "var(--radius-sm)",
                     opacity: Boolean(running) && !isRunningHere ? 0.35 : 1,
-                    color: isRunningHere ? "var(--danger-text)" : "var(--success-text)",
+                    color: isRunningHere ? "var(--danger-text)" : "var(--accent)",
                   }}
                 >
                   {isRunningHere ? <Square size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
