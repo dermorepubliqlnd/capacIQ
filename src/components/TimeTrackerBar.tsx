@@ -19,7 +19,7 @@ function elapsedLabel(startedAt: string, now: number): string {
 // unconfirmed entries waiting (stopped or auto-stopped, not yet locked
 // in), since those don't block anything and could otherwise sit forgotten.
 export default function TimeTrackerBar() {
-  const { running, pendingConfirm, busy, requestStop, refresh, openConfirmModalFor, setOpenConfirmModalFor } = useTimeTracking();
+  const { running, pendingConfirm, busy, requestStop, refresh, openConfirmModalFor, setOpenConfirmModalFor, bumpVersion } = useTimeTracking();
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -91,6 +91,7 @@ export default function TimeTrackerBar() {
           onDone={() => {
             setOpenConfirmModalFor(null);
             refresh();
+            bumpVersion();
           }}
         />
       )}

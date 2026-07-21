@@ -500,7 +500,7 @@ export default function Projects() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
   const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
-  const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer } = useTimeTracking();
+  const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer, version: timeTrackingVersion } = useTimeTracking();
   // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
   // Off, from the Holiday calendar module) -- fed into Health's expected-
   // progress calculation so "working days elapsed" excludes them the same
@@ -626,6 +626,16 @@ export default function Projects() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  // A confirmed time entry (or a Full Access correction) can change what
+  // Spent Hrs should show for a task -- but both happen from outside this
+  // page (the tracker bar's confirm modal, or the Time Tracking log), so
+  // this page has no other way to learn about it. Re-running loadAll on
+  // every version bump keeps the rollup accurate without a full reload.
+  useEffect(() => {
+    if (timeTrackingVersion > 0) loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeTrackingVersion]);
 
   const ownerName = (id: string | null) => people.find((p) => p.id === id)?.name ?? "—";
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? "—";

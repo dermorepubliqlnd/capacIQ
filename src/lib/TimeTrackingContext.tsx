@@ -41,6 +41,14 @@ interface TimeTrackingContextValue {
   refresh: () => Promise<void>;
   openConfirmModalFor: string | null;
   setOpenConfirmModalFor: (id: string | null) => void;
+  // Bumped after any action that can change a task's confirmed/approved
+  // Spent Hrs total (currently: confirming a pending entry). Projects.tsx
+  // watches this to know when to re-fetch its own time_entries rollup --
+  // it fetches independently from this context's own running/pending
+  // poll, so without this a just-confirmed entry wouldn't show up in
+  // Spent Hrs until the next full page reload.
+  version: number;
+  bumpVersion: () => void;
 }
 
 const TimeTrackingContext = createContext<TimeTrackingContextValue | null>(null);
@@ -57,6 +65,8 @@ export function TimeTrackingProvider({ children }: { children: ReactNode }) {
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [openConfirmModalFor, setOpenConfirmModalFor] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const bumpVersion = useCallback(() => setVersion((v) => v + 1), []);
   const pollRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -139,7 +149,9 @@ export function TimeTrackingProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <TimeTrackingContext.Provider value={{ running, pendingConfirm, busy, start, requestStop, refresh, openConfirmModalFor, setOpenConfirmModalFor }}>
+    <TimeTrackingContext.Provider
+      value={{ running, pendingConfirm, busy, start, requestStop, refresh, openConfirmModalFor, setOpenConfirmModalFor, version, bumpVersion }}
+    >
       {children}
     </TimeTrackingContext.Provider>
   );
