@@ -14,6 +14,7 @@ import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../component
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows } from "../lib/tableTypes";
+import { formatDate } from "../lib/formatDate";
 import {
   PROJECT_CATEGORY_OPTIONS,
   PROJECT_CATEGORY_TONES,
@@ -1871,7 +1872,15 @@ export default function Projects() {
   }
 
   const taskGroupOptions: GroupOption<TaskWithDepth>[] = [
-    { key: "project", label: "Project", getGroup: (t) => projectName(t.project_id) },
+    {
+      key: "project",
+      label: "Project",
+      getGroup: (t) => projectName(t.project_id),
+      // Every project shows up here even with zero tasks yet, so a
+      // freshly created project isn't invisible in this view -- it gets
+      // an empty section with its own "+ New task" trigger instead.
+      allGroups: () => projects.map((p) => p.name),
+    },
     {
       key: "status",
       label: "Status",
@@ -2365,7 +2374,10 @@ export default function Projects() {
               groupFooterRow={
                 taskViews.activeView.groupBy === "project"
                   ? (colSpan, group) => {
-                      const projectId = group.rows[0]?.project_id;
+                      // Empty groups (a project with no tasks yet) have no
+                      // rows to read project_id off of -- fall back to
+                      // matching the group's name against the projects list.
+                      const projectId = group.rows[0]?.project_id ?? projects.find((p) => p.name === group.key)?.id;
                       if (!projectId || !canManageTasksIn(projectId)) return null;
                       return (
                         <td colSpan={colSpan} className="add-row-cell">
@@ -2504,7 +2516,7 @@ export default function Projects() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                   <span className={`status-pill ${r.status === "Approved" ? "success" : r.status === "Rejected" ? "danger" : "warning"}`}>{r.status}</span>
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                    {extDetailTask.current_due_date} {"\u2192"} {r.requested_new_due_date}
+                    {formatDate(extDetailTask.current_due_date)} {"\u2192"} {formatDate(r.requested_new_due_date)}
                   </span>
                 </div>
                 <div style={{ fontSize: 11.5, marginBottom: 4 }}>
@@ -2514,8 +2526,8 @@ export default function Projects() {
                   <span style={{ marginLeft: 6 }}>{r.reason_notes}</span>
                 </div>
                 <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
-                  Requested {r.created_at.slice(0, 10)}
-                  {r.status !== "Pending" && r.decided_at && <> · {r.status} on {r.decided_at.slice(0, 10)}</>}
+                  Requested {formatDate(r.created_at)}
+                  {r.status !== "Pending" && r.decided_at && <> · {r.status} on {formatDate(r.decided_at)}</>}
                   {r.decision_notes && <> -- "{r.decision_notes}"</>}
                 </div>
               </div>

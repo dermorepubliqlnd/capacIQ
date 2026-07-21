@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import Modal from "./Modal";
+import { formatDate } from "../lib/formatDate";
 
 // Free-text in the DB (extension_requests.reason_category), but a fixed
 // picker in the UI keeps the data usable for later reporting (e.g. "what's
@@ -61,7 +62,7 @@ export default function RequestExtensionModal({
     <Modal title={`Request extension — ${taskName}`} onClose={onClose} width={420}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          Current due date: <strong style={{ color: "var(--navy)" }}>{currentDueDate}</strong>. {approvalNote}
+          Current due date: <strong style={{ color: "var(--navy)" }}>{formatDate(currentDueDate)}</strong>. {approvalNote}
         </div>
         <div>
           <div style={fieldLabelStyle}>New due date</div>

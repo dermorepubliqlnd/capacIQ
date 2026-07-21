@@ -349,6 +349,9 @@ export default function DataTable<T>({
     );
   } else if (activeGroupOption) {
     const groups = new Map<string, T[]>();
+    activeGroupOption.allGroups?.().forEach((g) => {
+      if (!groups.has(g)) groups.set(g, []);
+    });
     sortedRows.forEach((row) => {
       const g = activeGroupOption.getGroup(row) || "—";
       if (!groups.has(g)) groups.set(g, []);

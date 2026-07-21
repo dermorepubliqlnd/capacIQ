@@ -34,6 +34,12 @@ export interface GroupOption<T> {
   // usable, since accordion sections don't have Board's fixed-column
   // constraint.
   boardGroupable?: boolean;
+  // Optional: every group name that should render even with zero matching
+  // rows right now (e.g. every project's name, so a brand-new project
+  // with no tasks yet still gets a group section instead of silently not
+  // appearing at all in Table's grouped-accordion view). Table-view only;
+  // Board already renders one column per possible value some other way.
+  allGroups?: () => string[];
 }
 
 // Shared with the .status-pill classes in index.css so group headers and

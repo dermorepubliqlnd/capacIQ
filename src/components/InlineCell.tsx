@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { OptionGroup } from "../lib/notionOptions";
+import { formatDate } from "../lib/formatDate";
 
 interface BaseProps {
   editable: boolean;
@@ -120,7 +121,7 @@ interface InlineDateProps extends BaseProps {
 }
 
 export function InlineDate({ value, onCommit, editable, emptyLabel = "—" }: InlineDateProps) {
-  if (!editable) return <>{value || emptyLabel}</>;
+  if (!editable) return <>{formatDate(value, emptyLabel)}</>;
   return (
     <input
       className="inline-cell"

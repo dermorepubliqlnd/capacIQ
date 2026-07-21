@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { REASON_CATEGORY_OPTIONS } from "../components/RequestExtensionModal";
+import { formatDate } from "../lib/formatDate";
 
 interface PersonLite {
   id: string;
@@ -192,8 +193,8 @@ export default function ExtensionRequests() {
                       </span>
                     )}
                   </td>
-                  <td>{row.project ? row.project.end_date ?? "—" : row.task?.current_due_date ?? "—"}</td>
-                  <td style={{ fontWeight: 600 }}>{row.requested_new_due_date}</td>
+                  <td>{formatDate(row.project ? row.project.end_date : row.task?.current_due_date)}</td>
+                  <td style={{ fontWeight: 600 }}>{formatDate(row.requested_new_due_date)}</td>
                   <td>
                     <span className="status-pill neutral" style={{ fontSize: 10 }}>
                       {row.reason_category}
@@ -211,11 +212,11 @@ export default function ExtensionRequests() {
                         <span style={{ color: "var(--muted)" }}>Reason notes:</span> {row.reason_notes}
                       </div>
                       <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
-                        Requested on {row.created_at.slice(0, 10)}
+                        Requested on {formatDate(row.created_at)}
                       </div>
                       {row.status !== "Pending" && (
                         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
-                          {row.status} by {row.decider?.name ?? "—"} on {row.decided_at?.slice(0, 10)}
+                          {row.status} by {row.decider?.name ?? "—"} on {formatDate(row.decided_at)}
                           {row.decision_notes && <> — "{row.decision_notes}"</>}
                         </div>
                       )}
