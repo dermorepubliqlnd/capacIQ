@@ -30,6 +30,11 @@ interface ExtensionRequestRow {
     project_id: string;
     project: { id: string; name: string; owner_id: string | null } | null;
   } | null;
+  // Project-level request (task is null in this case) -- a whole
+  // project's committed end date, not a single task's due date. Always
+  // escalates to the owner's manager/Full Access, never owner-decided;
+  // see can_decide_extension() in Postgres.
+  project: { id: string; name: string; owner_id: string | null; end_date: string | null; original_due_date: string | null } | null;
   requester: { id: string; name: string } | null;
   decider: { id: string; name: string } | null;
 }
@@ -63,6 +68,7 @@ export default function ExtensionRequests() {
         .select(
           `id, requested_new_due_date, reason_category, reason_notes, status, decided_at, decision_notes, is_manager_initiated, created_at,
            task:tasks!extension_requests_task_id_fkey ( id, name, assignee_id, original_due_date, current_due_date, project_id, project:projects ( id, name, owner_id ) ),
+           project:projects!extension_requests_project_id_fkey ( id, name, owner_id, end_date, original_due_date ),
            requester:people!extension_requests_requested_by_fkey ( id, name ),
            decider:people!extension_requests_decided_by_fkey ( id, name )`
         )
@@ -84,6 +90,18 @@ export default function ExtensionRequests() {
   function canDecide(row: ExtensionRequestRow): boolean {
     if (!me) return false;
     if (me.access_level === "full") return true;
+
+    // Project-level: ALWAYS escalates to the owner's manager -- there is
+    // no "owner decides" path at all here, unlike task-level below (a
+    // project-wide deadline move is a bigger commitment than one task
+    // slipping).
+    if (row.project) {
+      const ownerId = row.project.owner_id;
+      if (!ownerId) return false;
+      const owner = people.find((p) => p.id === ownerId);
+      return owner?.reports_to === me.id;
+    }
+
     const ownerId = row.task?.project?.owner_id;
     if (!ownerId) return false;
     const requesterId = row.requester?.id;
@@ -98,12 +116,13 @@ export default function ExtensionRequests() {
   const assigneeName = (id: string | null) => people.find((p) => p.id === id)?.name ?? "\u2014";
 
   async function decide(row: ExtensionRequestRow, status: "Approved" | "Rejected") {
+    const label = row.project ? `"${row.project.name}"'s timeline` : `the extension request for "${row.task?.name}"`;
     if (status === "Rejected") {
-      const ok = await confirm({ message: `Reject the extension request for "${row.task?.name}"?`, confirmLabel: "Reject", danger: true });
+      const ok = await confirm({ message: `Reject ${label}?`, confirmLabel: "Reject", danger: true });
       if (!ok) return;
     }
     setDecidingId(row.id);
-    const { error } = await supabase.rpc("decide_extension_request", {
+    const { error } = await supabase.rpc(row.project ? "decide_project_extension_request" : "decide_extension_request", {
       p_request_id: row.id,
       p_status: status,
       p_decision_notes: notesDraft[row.id]?.trim() || null,
@@ -153,14 +172,19 @@ export default function ExtensionRequests() {
                 >
                   <td style={{ color: "var(--muted)" }}>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</td>
                   <td style={{ fontWeight: 600, color: "var(--navy)" }}>
-                    {row.task?.name ?? "Untitled task"}
+                    {row.project ? (
+                      <span className="status-pill accent" style={{ fontSize: 9.5, marginRight: 6 }}>
+                        Project timeline
+                      </span>
+                    ) : null}
+                    {row.project ? row.project.name : row.task?.name ?? "Untitled task"}
                     {row.is_manager_initiated && (
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "var(--muted)" }}>(manager-initiated)</span>
                     )}
                   </td>
-                  <td>{assigneeName(row.task?.assignee_id ?? null)}</td>
-                  <td>{row.task?.project?.name ?? "—"}</td>
-                  <td style={{ fontWeight: row.task?.assignee_id !== row.requester?.id ? 600 : 400 }}>
+                  <td>{row.project ? "—" : assigneeName(row.task?.assignee_id ?? null)}</td>
+                  <td>{row.project ? row.project.name : row.task?.project?.name ?? "—"}</td>
+                  <td style={{ fontWeight: !row.project && row.task?.assignee_id !== row.requester?.id ? 600 : 400 }}>
                     {row.requester?.name ?? "—"}
                     {row.task && row.requester && row.task.assignee_id !== row.requester.id && (
                       <span style={{ marginLeft: 5, fontSize: 9, fontWeight: 600, color: "var(--muted)" }} title="Requested on behalf of the assignee">
@@ -168,7 +192,7 @@ export default function ExtensionRequests() {
                       </span>
                     )}
                   </td>
-                  <td>{row.task?.current_due_date ?? "—"}</td>
+                  <td>{row.project ? row.project.end_date ?? "—" : row.task?.current_due_date ?? "—"}</td>
                   <td style={{ fontWeight: 600 }}>{row.requested_new_due_date}</td>
                   <td>
                     <span className="status-pill neutral" style={{ fontSize: 10 }}>
@@ -483,8 +507,9 @@ export default function ExtensionRequests() {
       <h1>Extension Requests</h1>
       <p className="subtitle">
         Every due-date change goes through here -- current_due_date is locked at the database level (once a project's timelines are locked) and can
-        only move once a request below is approved. See {REASON_CATEGORY_OPTIONS.length} reason categories available when requesting from a task's
-        Due date cell. Click any row to see full details.
+        only move once a request below is approved. Covers both task-level extensions and whole-project timeline changes (the latter always
+        requires manager/Full Access approval, never the project owner alone). See {REASON_CATEGORY_OPTIONS.length} reason categories available
+        when requesting from a task's Due date cell, or from a locked project's Timelines button. Click any row to see full details.
       </p>
 
       <div style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid var(--border)" }}>

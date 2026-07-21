@@ -19,6 +19,11 @@ interface RequestExtensionModalProps {
   currentDueDate: string;
   onClose: () => void;
   onSubmit: (newDueDate: string, reasonCategory: string, reasonNotes: string) => Promise<void> | void;
+  // Task-level requests go to the project owner (or their manager if the
+  // owner is the one requesting). Project-level requests always escalate
+  // straight to the owner's manager/Full Access -- no owner-decides path
+  // -- so the copy needs to say something different there.
+  approvalNote?: string;
 }
 
 const fieldLabelStyle: CSSProperties = { fontSize: 11, fontWeight: 600, marginBottom: 4, color: "var(--navy)" };
@@ -31,7 +36,13 @@ const fieldStyle: CSSProperties = {
   boxSizing: "border-box",
 };
 
-export default function RequestExtensionModal({ taskName, currentDueDate, onClose, onSubmit }: RequestExtensionModalProps) {
+export default function RequestExtensionModal({
+  taskName,
+  currentDueDate,
+  onClose,
+  onSubmit,
+  approvalNote = "This goes to your project owner (or their manager if you're the owner) for approval -- the due date only updates once it's approved.",
+}: RequestExtensionModalProps) {
   const [newDueDate, setNewDueDate] = useState("");
   const [reasonCategory, setReasonCategory] = useState(REASON_CATEGORY_OPTIONS[0]);
   const [reasonNotes, setReasonNotes] = useState("");
@@ -50,8 +61,7 @@ export default function RequestExtensionModal({ taskName, currentDueDate, onClos
     <Modal title={`Request extension — ${taskName}`} onClose={onClose} width={420}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          Current due date: <strong style={{ color: "var(--navy)" }}>{currentDueDate}</strong>. This goes to your project
-          owner (or their manager if you're the owner) for approval -- the due date only updates once it's approved.
+          Current due date: <strong style={{ color: "var(--navy)" }}>{currentDueDate}</strong>. {approvalNote}
         </div>
         <div>
           <div style={fieldLabelStyle}>New due date</div>

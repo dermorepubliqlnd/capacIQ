@@ -545,6 +545,7 @@ export default function Projects() {
   const { confirm, alert, dialog: confirmDialog } = useConfirm();
 
   const [extensionTask, setExtensionTask] = useState<TaskWithDepth | null>(null);
+  const [extensionProject, setExtensionProject] = useState<ProjectRow | null>(null);
   const [extDetailTask, setExtDetailTask] = useState<TaskWithDepth | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [archivedProjects, setArchivedProjects] = useState<ProjectRow[]>([]);
@@ -843,6 +844,24 @@ export default function Projects() {
     }
     setExtensionTask(null);
     await alert("Extension request submitted -- you'll see it reflected once it's decided.");
+  }
+
+  async function submitProjectExtensionRequest(project: ProjectRow, newDueDate: string, reasonCategory: string, reasonNotes: string) {
+    const { error } = await supabase.from("extension_requests").insert({
+      project_id: project.id,
+      requested_by: me?.id,
+      requested_new_due_date: newDueDate,
+      reason_category: reasonCategory,
+      reason_notes: reasonNotes,
+    });
+    if (error) {
+      await alert(`Couldn't submit timeline change request: ${error.message}`);
+      return;
+    }
+    setExtensionProject(null);
+    await alert(
+      "Timeline change request submitted -- it goes to your manager (or Full Access) for approval. The project's due date only moves once it's approved."
+    );
   }
 
   async function restoreProject(id: string) {
@@ -1267,14 +1286,25 @@ export default function Projects() {
         maxWidth: 160,
         render: (p) => (
           <button
-            onClick={() => canEditProject(p) && lockProjectTimelines(p, !p.timelines_locked)}
+            onClick={() => {
+              if (!canEditProject(p)) return;
+              // Locked + not Full Access: there's no self-service unlock
+              // any more (see set_project_timelines_locked's governance
+              // change) -- clicking opens a Request Timeline Change
+              // instead of a bare toggle.
+              if (p.timelines_locked && !isFullAccess) {
+                setExtensionProject(p);
+                return;
+              }
+              lockProjectTimelines(p, !p.timelines_locked);
+            }}
             disabled={!canEditProject(p)}
             title={
               canEditProject(p)
                 ? p.timelines_locked
                   ? isFullAccess
                     ? "Timelines locked -- click to unlock (Full Access override)"
-                    : "Timelines locked -- unlocking now requires Full Access or an approved timeline extension request"
+                    : "Timelines locked -- click to request a timeline change (goes to your manager for approval)"
                   : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
                 : p.timelines_locked
                 ? "Timelines locked"
@@ -2448,6 +2478,18 @@ export default function Projects() {
           onClose={() => setExtensionTask(null)}
           onSubmit={(newDueDate, reasonCategory, reasonNotes) =>
             submitExtensionRequest(extensionTask, newDueDate, reasonCategory, reasonNotes)
+          }
+        />
+      )}
+
+      {extensionProject && extensionProject.end_date && (
+        <RequestExtensionModal
+          taskName={extensionProject.name}
+          currentDueDate={extensionProject.end_date}
+          onClose={() => setExtensionProject(null)}
+          approvalNote="This is a whole-project timeline change, so it always goes to your manager (or Full Access) for approval -- never self-approved, even by the project owner."
+          onSubmit={(newDueDate, reasonCategory, reasonNotes) =>
+            submitProjectExtensionRequest(extensionProject, newDueDate, reasonCategory, reasonNotes)
           }
         />
       )}
