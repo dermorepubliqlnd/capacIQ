@@ -538,6 +538,8 @@ export default function Projects() {
   }, [tasks]);
   const [extensionRequests, setExtensionRequests] = useState<ExtensionRequestLite[]>([]);
   const [loading, setLoading] = useState(true);
+  // See loadAll() below -- only gates the *first* load's placeholder.
+  const hasLoadedOnce = useRef(false);
 
   const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
   const { confirm, alert, dialog: confirmDialog } = useConfirm();
@@ -595,6 +597,7 @@ export default function Projects() {
     setSelectedProjectIds((prev) => prev.filter((id) => projectIds.has(id)));
     setSelectedTaskIds((prev) => prev.filter((id) => taskIds.has(id)));
     setLoading(false);
+    hasLoadedOnce.current = true;
   }
 
   async function loadArchived() {
@@ -1548,7 +1551,7 @@ export default function Projects() {
                   onClick={() => setCollapsedParents((prev) => (collapsed ? prev.filter((id) => id !== t.id) : [...prev, t.id]))}
                   title={collapsed ? "Expand sub-tasks" : "Collapse sub-tasks"}
                 >
-                  {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                  {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                 </button>
               ) : (
                 t._depth === 0 && <span className="task-collapse-spacer" />
@@ -1561,7 +1564,7 @@ export default function Projects() {
               </div>
               {t._depth === 0 && canManageTasksIn(t.project_id) && (
                 <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
-                  <Plus size={24} />
+                  <Plus size={12} />
                 </button>
               )}
             </div>
@@ -2135,7 +2138,7 @@ export default function Projects() {
           </div>
         )}
         </div>
-        {loading ? (
+        {loading && !hasLoadedOnce.current ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : projectViews.activeView.viewType === "board" ? (
           <>
@@ -2278,7 +2281,7 @@ export default function Projects() {
           </div>
         )}
         </div>
-        {loading ? (
+        {loading && !hasLoadedOnce.current ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : taskViews.activeView.viewType === "board" ? (
           <>

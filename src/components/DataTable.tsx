@@ -68,6 +68,7 @@ export default function DataTable<T>({
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
+  const [dragOverRowKey, setDragOverRowKey] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const isResizingRef = useRef(false);
@@ -266,14 +267,28 @@ export default function DataTable<T>({
       <tr
         key={key}
         onClick={() => onRowClick?.(row)}
-        className={isSelected ? "row-selected" : undefined}
+        className={[
+          isSelected ? "row-selected" : undefined,
+          orderable && dragOverRowKey === key && dragRowKey !== key ? "row-drop-target" : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined}
         style={{ cursor: onRowClick ? "pointer" : "default" }}
-        onDragOver={orderable ? (e) => e.preventDefault() : undefined}
+        onDragOver={
+          orderable
+            ? (e) => {
+                e.preventDefault();
+                if (dragOverRowKey !== key) setDragOverRowKey(key);
+              }
+            : undefined
+        }
+        onDragLeave={orderable ? () => setDragOverRowKey((prev) => (prev === key ? null : prev)) : undefined}
         onDrop={
           orderable
             ? () => {
                 if (dragRowKey && dragRowKey !== key) onReorder?.(dragRowKey, key);
                 setDragRowKey(null);
+                setDragOverRowKey(null);
               }
             : undefined
         }
@@ -286,7 +301,10 @@ export default function DataTable<T>({
                   className="row-grip-btn"
                   draggable
                   onDragStart={() => setDragRowKey(key)}
-                  onDragEnd={() => setDragRowKey(null)}
+                  onDragEnd={() => {
+                    setDragRowKey(null);
+                    setDragOverRowKey(null);
+                  }}
                   title="Drag to reorder"
                 >
                   <GripVertical size={13} />
