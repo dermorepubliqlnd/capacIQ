@@ -194,34 +194,15 @@ export default function DataTable<T>({
   );
 
   const colSpanTotal = (visibleColumns.length || 1) + (hasGutter ? 1 : 0);
-  const allVisibleKeys = sortedRows.map(rowKey);
-  const allSelected = Boolean(hasGutter && selectable && allVisibleKeys.length > 0 && allVisibleKeys.every((k) => selectedKeys?.includes(k)));
-  const someSelected = Boolean(hasGutter && selectable && allVisibleKeys.some((k) => selectedKeys?.includes(k)));
 
   const header = (
     <thead>
       <tr className={activeGroupOption ? "is-grouped" : undefined}>
         {hasGutter && (
-          <th style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth, padding: 0 }}>
-            {selectable && (
-              // Matches the body row's gutter layout exactly (an invisible
-              // spacer standing in for the grip handle's width + gap) so
-              // the header checkbox lines up with the ones below it,
-              // instead of sitting flush against the column's left edge.
-              <div style={{ display: "flex", alignItems: "center", gap: 2, paddingLeft: gutterPadding }}>
-                <span style={{ display: "inline-block", width: 16, flexShrink: 0 }} />
-                <input
-                  type="checkbox"
-                  className="row-checkbox"
-                  checked={allSelected}
-                  ref={(el) => {
-                    if (el) el.indeterminate = !allSelected && someSelected;
-                  }}
-                  onChange={() => onToggleSelectAll?.(allVisibleKeys)}
-                />
-              </div>
-            )}
-          </th>
+          // Select-all was removed from the header (Sandra: not needed) --
+          // individual row checkboxes still work below, this is just an
+          // empty spacer cell kept for gutter-column alignment.
+          <th style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth, padding: 0 }} />
         )}
         {visibleColumns.map((c) => (
           <th

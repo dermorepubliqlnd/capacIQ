@@ -779,7 +779,7 @@ export default function Projects() {
           alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}${more}`);
           return;
         }
-        if (!confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}${more}\n\nFull Access override: lock anyway?`)) return;
+        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}${more}\n\nFull Access override: lock anyway?`))) return;
       }
     }
 
@@ -798,7 +798,7 @@ export default function Projects() {
     const detail = locked
       ? "This freezes every task's current due date as the committed baseline. After this, due dates can only change via an approved Extension Request."
       : "This re-opens every task's due date for free editing during planning, until locked again.";
-    if (!confirm(`${verb} timelines for "${p.name}"?\n\n${detail}`)) return;
+    if (!(await confirm(`${verb} timelines for "${p.name}"?\n\n${detail}`))) return;
     const { error } = await supabase.rpc("set_project_timelines_locked", { p_project_id: p.id, p_locked: locked });
     if (error) {
       alert(`Couldn't ${verb.toLowerCase()} timelines: ${error.message}`);
@@ -1582,7 +1582,7 @@ export default function Projects() {
                   onClick={() => setCollapsedParents((prev) => (collapsed ? prev.filter((id) => id !== t.id) : [...prev, t.id]))}
                   title={collapsed ? "Expand sub-tasks" : "Collapse sub-tasks"}
                 >
-                  {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  {collapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
                 </button>
               ) : (
                 t._depth === 0 && <span className="task-collapse-spacer" />
@@ -1595,7 +1595,7 @@ export default function Projects() {
               </div>
               {t._depth === 0 && canManageTasksIn(t.project_id) && (
                 <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
-                  <Plus size={12} />
+                  <Plus size={16} />
                 </button>
               )}
             </div>

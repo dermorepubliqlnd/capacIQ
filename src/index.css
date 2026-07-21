@@ -573,17 +573,17 @@ select.inline-cell { cursor: pointer; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  padding: 2px;
   flex-shrink: 0;
   color: var(--muted);
   background: none;
   border: none;
   cursor: pointer;
   border-radius: var(--radius-sm);
+  line-height: 0;
 }
 .task-collapse-toggle:hover { background: var(--hover-bg); color: var(--navy); }
-.task-collapse-spacer { display: inline-block; width: 20px; flex-shrink: 0; }
+.task-collapse-spacer { display: inline-block; width: 24px; flex-shrink: 0; }
 /* Generic small row-hover icon action (e.g. archive) -- stays subtle since
    it's a less-frequent, semi-destructive action. */
 .row-icon-btn {
@@ -611,14 +611,14 @@ tr:hover .row-icon-btn { opacity: 1; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  padding: 2px;
   color: var(--accent);
   background: none;
   border: none;
   cursor: pointer;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
+  line-height: 0;
   transition: opacity 0.1s, transform 0.1s;
 }
 tr:hover .add-subtask-btn { opacity: 1; }

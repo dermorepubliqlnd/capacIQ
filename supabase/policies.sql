@@ -564,3 +564,409 @@ drop trigger if exists tasks_effort_change_log on tasks;
 create trigger tasks_effort_change_log
   after update on tasks
   for each row execute function log_task_effort_change();
+-- Migration 2026-07-21b: Task Timer / Time Tracking
+--
+-- New feature: a per-task start/stop time clock. Design (agreed live with
+-- Sandra): one running timer per person globally; stopping opens an
+-- immediate confirm/edit-once step, then the entry is locked; manual
+-- entries (logged after the fact) always require approval via the same
+-- owner-decides / self-request-escalates-to-manager rule as extension
+-- requests; idle timers auto-stop after a configurable threshold (default
+-- 4h) and land back in the confirm step flagged "auto-stopped"; Full
+-- Access can correct an already-confirmed/approved entry, with the
+-- original value preserved so the correction is never silent; Spent Hrs
+-- becomes fully computed from confirmed/approved/legacy entries instead of
+-- being directly typed, with existing values preserved as one frozen
+-- "legacy" baseline entry per task; time tracking gets its own dedicated
+-- log, separate from Extension Requests.
+
+-- 1. Core table -------------------------------------------------------------
+
+create table if not exists time_entries (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid references tasks(id) not null,
+  person_id uuid references people(id) not null,
+  started_at timestamptz not null,
+  ended_at timestamptz,
+  duration_minutes numeric,
+  source text not null check (source in ('timer','manual','legacy')),
+  status text not null check (status in ('running','pending_confirm','confirmed','pending_approval','approved','rejected')),
+  requested_by uuid references people(id),
+  reason_notes text,
+  auto_stopped boolean not null default false,
+  confirmed_at timestamptz,
+  decided_by uuid references people(id),
+  decided_at timestamptz,
+  decision_notes text,
+  corrected_by uuid references people(id),
+  corrected_at timestamptz,
+  original_duration_minutes numeric,
+  correction_notes text,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists one_running_timer_per_person
+  on time_entries(person_id) where status = 'running';
+
+create index if not exists time_entries_task_idx on time_entries(task_id);
+create index if not exists time_entries_person_idx on time_entries(person_id);
+
+alter table time_entries enable row level security;
+
+create policy time_entries_select on time_entries for select
+  using (
+    my_access_level() = 'full'
+    or person_id = my_person_id()
+    or requested_by = my_person_id()
+    or exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = time_entries.task_id and pr.owner_id = my_person_id()
+    )
+    or exists (select 1 from people where id = person_id and reports_to = my_person_id())
+  );
+
+create policy time_entries_insert on time_entries for insert
+  with check (my_access_level() = 'full' or person_id = my_person_id());
+
+create policy time_entries_update on time_entries for update
+  using (my_access_level() = 'full' or person_id = my_person_id())
+  with check (my_access_level() = 'full' or person_id = my_person_id());
+
+-- A confirmed/approved/rejected entry is finalized. Any further change
+-- (other than through correct_time_entry, which flips the bypass flag)
+-- gets rejected -- same lock pattern as tasks_due_date_lock.
+create or replace function enforce_time_entry_lock() returns trigger
+language plpgsql as $$
+begin
+  if OLD.status in ('confirmed','approved','rejected') then
+    if coalesce(current_setting('app.bypass_time_entry_lock', true), '') <> 'on' then
+      raise exception 'this time entry is finalized -- use a correction instead of editing it directly';
+    end if;
+  end if;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists time_entries_lock on time_entries;
+create trigger time_entries_lock
+  before update on time_entries
+  for each row execute function enforce_time_entry_lock();
+
+-- 2. Settings (idle auto-stop threshold, configurable not hardcoded) --------
+
+create table if not exists app_settings (
+  id boolean primary key default true check (id),
+  idle_timeout_minutes int not null default 240
+);
+
+insert into app_settings (id, idle_timeout_minutes) values (true, 240) on conflict (id) do nothing;
+
+alter table app_settings enable row level security;
+
+create policy app_settings_select on app_settings for select using (true);
+
+create policy app_settings_update on app_settings for update
+  using (my_access_level() = 'full')
+  with check (my_access_level() = 'full');
+
+-- 3. Start / stop / confirm --------------------------------------------------
+
+create or replace function start_timer(p_task_id uuid) returns uuid
+language plpgsql security definer as $$
+declare
+  v_assignee uuid;
+  v_archived boolean;
+  v_existing_task_id uuid;
+  v_existing_task_name text;
+  v_new_id uuid;
+begin
+  select assignee_id, is_archived into v_assignee, v_archived from tasks where id = p_task_id;
+  if v_assignee is null then
+    raise exception 'task not found or has no assignee yet';
+  end if;
+  if v_assignee <> my_person_id() then
+    raise exception 'only the task assignee can start this timer';
+  end if;
+  if coalesce(v_archived, false) then
+    raise exception 'cannot start a timer on an archived task';
+  end if;
+
+  select te.task_id, t.name into v_existing_task_id, v_existing_task_name
+    from time_entries te join tasks t on t.id = te.task_id
+    where te.person_id = my_person_id() and te.status = 'running'
+    limit 1;
+
+  if v_existing_task_id is not null then
+    raise exception 'you already have a timer running on "%" -- stop it before starting a new one', v_existing_task_name;
+  end if;
+
+  insert into time_entries (task_id, person_id, started_at, source, status)
+  values (p_task_id, my_person_id(), now(), 'timer', 'running')
+  returning id into v_new_id;
+
+  return v_new_id;
+end;
+$$;
+
+grant execute on function start_timer(uuid) to authenticated;
+
+create or replace function stop_timer(p_entry_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  v_person uuid;
+  v_status text;
+  v_started timestamptz;
+begin
+  select person_id, status, started_at into v_person, v_status, v_started from time_entries where id = p_entry_id;
+  if v_person is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_person <> my_person_id() then
+    raise exception 'not authorized to stop this timer';
+  end if;
+  if v_status <> 'running' then
+    raise exception 'this timer is not currently running';
+  end if;
+
+  update time_entries
+    set ended_at = now(),
+        status = 'pending_confirm',
+        duration_minutes = round(extract(epoch from (now() - v_started)) / 60.0)
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function stop_timer(uuid) to authenticated;
+
+-- Confirm locks the entry in. Optional started_at/ended_at let the person
+-- correct the times once, before the entry becomes immutable.
+create or replace function confirm_time_entry(
+  p_entry_id uuid,
+  p_started_at timestamptz default null,
+  p_ended_at timestamptz default null,
+  p_notes text default null
+) returns void
+language plpgsql security definer as $$
+declare
+  v_person uuid;
+  v_status text;
+  v_start timestamptz;
+  v_end timestamptz;
+begin
+  select person_id, status, started_at, ended_at into v_person, v_status, v_start, v_end
+    from time_entries where id = p_entry_id;
+
+  if v_person is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_person <> my_person_id() then
+    raise exception 'not authorized to confirm this time entry';
+  end if;
+  if v_status <> 'pending_confirm' then
+    raise exception 'this time entry is not awaiting confirmation';
+  end if;
+
+  if p_started_at is not null then v_start := p_started_at; end if;
+  if p_ended_at is not null then v_end := p_ended_at; end if;
+
+  if v_end <= v_start then
+    raise exception 'end time must be after start time';
+  end if;
+
+  update time_entries
+    set started_at = v_start,
+        ended_at = v_end,
+        duration_minutes = round(extract(epoch from (v_end - v_start)) / 60.0),
+        status = 'confirmed',
+        confirmed_at = now(),
+        reason_notes = coalesce(p_notes, reason_notes)
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function confirm_time_entry(uuid, timestamptz, timestamptz, text) to authenticated;
+
+-- 4. Manual entry + approval (mirrors extension_requests' governance) ------
+
+create or replace function submit_manual_time_entry(
+  p_task_id uuid,
+  p_started_at timestamptz,
+  p_ended_at timestamptz,
+  p_notes text
+) returns uuid
+language plpgsql security definer as $$
+declare
+  v_assignee uuid;
+  v_new_id uuid;
+begin
+  select assignee_id into v_assignee from tasks where id = p_task_id;
+  if v_assignee is null then
+    raise exception 'task not found or has no assignee yet';
+  end if;
+  if v_assignee <> my_person_id() and my_access_level() <> 'full' then
+    raise exception 'only the task assignee can log time for this task';
+  end if;
+  if p_ended_at <= p_started_at then
+    raise exception 'end time must be after start time';
+  end if;
+
+  insert into time_entries
+    (task_id, person_id, started_at, ended_at, duration_minutes, source, status, requested_by, reason_notes)
+  values
+    (p_task_id, v_assignee, p_started_at, p_ended_at,
+     round(extract(epoch from (p_ended_at - p_started_at)) / 60.0),
+     'manual', 'pending_approval', my_person_id(), p_notes)
+  returning id into v_new_id;
+
+  return v_new_id;
+end;
+$$;
+
+grant execute on function submit_manual_time_entry(uuid, timestamptz, timestamptz, text) to authenticated;
+
+create or replace function can_decide_time_entry(p_entry_id uuid) returns boolean
+language sql stable security definer as $$
+  select
+    my_access_level() = 'full'
+    or exists (
+      select 1
+      from time_entries te
+      join tasks t on t.id = te.task_id
+      join projects pr on pr.id = t.project_id
+      left join people owner on owner.id = pr.owner_id
+      where te.id = p_entry_id
+        and (
+          (pr.owner_id = my_person_id() and te.requested_by <> pr.owner_id)
+          or (te.requested_by = pr.owner_id and owner.reports_to = my_person_id())
+        )
+    )
+$$;
+
+grant execute on function can_decide_time_entry(uuid) to authenticated;
+
+create policy time_entries_decide_update on time_entries for update
+  using (can_decide_time_entry(id))
+  with check (can_decide_time_entry(id));
+
+create or replace function decide_time_entry(
+  p_entry_id uuid,
+  p_status text,
+  p_decision_notes text default null
+) returns void
+language plpgsql security definer as $$
+declare
+  v_current_status text;
+begin
+  if p_status not in ('approved','rejected') then
+    raise exception 'invalid status: %', p_status;
+  end if;
+  if not can_decide_time_entry(p_entry_id) then
+    raise exception 'not authorized to decide this time entry';
+  end if;
+
+  select status into v_current_status from time_entries where id = p_entry_id;
+  if v_current_status is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_current_status <> 'pending_approval' then
+    raise exception 'this time entry has already been decided';
+  end if;
+
+  update time_entries
+    set status = p_status,
+        decided_by = my_person_id(),
+        decided_at = now(),
+        decision_notes = p_decision_notes
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function decide_time_entry(uuid, text, text) to authenticated;
+
+-- 5. Full Access correction of a finalized entry ----------------------------
+
+create or replace function correct_time_entry(
+  p_entry_id uuid,
+  p_duration_minutes numeric,
+  p_notes text
+) returns void
+language plpgsql security definer as $$
+declare
+  v_status text;
+  v_current_duration numeric;
+begin
+  if my_access_level() <> 'full' then
+    raise exception 'only Full Access can correct a finalized time entry';
+  end if;
+
+  select status, duration_minutes into v_status, v_current_duration from time_entries where id = p_entry_id;
+  if v_status is null then
+    raise exception 'time entry not found';
+  end if;
+  if v_status not in ('confirmed','approved') then
+    raise exception 'only a confirmed or approved time entry can be corrected';
+  end if;
+  if p_duration_minutes is null or p_duration_minutes <= 0 then
+    raise exception 'corrected duration must be greater than zero';
+  end if;
+
+  perform set_config('app.bypass_time_entry_lock', 'on', true);
+  update time_entries
+    set duration_minutes = p_duration_minutes,
+        original_duration_minutes = coalesce(original_duration_minutes, v_current_duration),
+        corrected_by = my_person_id(),
+        corrected_at = now(),
+        correction_notes = p_notes
+    where id = p_entry_id;
+end;
+$$;
+
+grant execute on function correct_time_entry(uuid, numeric, text) to authenticated;
+
+-- 6. Idle auto-stop -----------------------------------------------------
+
+create or replace function auto_stop_idle_timers() returns void
+language plpgsql security definer as $$
+declare
+  v_threshold int;
+begin
+  select idle_timeout_minutes into v_threshold from app_settings where id = true;
+  v_threshold := coalesce(v_threshold, 240);
+
+  update time_entries
+    set ended_at = now(),
+        status = 'pending_confirm',
+        duration_minutes = round(extract(epoch from (now() - started_at)) / 60.0),
+        auto_stopped = true
+    where status = 'running'
+      and started_at < now() - (v_threshold || ' minutes')::interval;
+end;
+$$;
+
+grant execute on function auto_stop_idle_timers() to authenticated;
+
+-- Server-side enforcement so idle timers stop even with no client open.
+select cron.schedule(
+  'auto-stop-idle-timers',
+  '*/15 * * * *',
+  $$select auto_stop_idle_timers()$$
+) where not exists (select 1 from cron.job where jobname = 'auto-stop-idle-timers');
+
+-- 7. Spent Hrs becomes computed -- legacy baseline + parent rollup ---------
+
+-- Freeze today's manually-typed time_spent_hours as a one-time 'legacy'
+-- entry per task, so no historical data is lost when Spent Hrs stops
+-- being directly editable.
+insert into time_entries (task_id, person_id, started_at, ended_at, duration_minutes, source, status, confirmed_at, reason_notes)
+select
+  t.id,
+  coalesce(t.assignee_id, pr.owner_id),
+  now(), now(),
+  t.time_spent_hours * 60,
+  'legacy', 'confirmed', now(),
+  'Frozen baseline from Spent Hrs at the time Time Tracking was introduced.'
+from tasks t
+join projects pr on pr.id = t.project_id
+where coalesce(t.time_spent_hours, 0) > 0
+  and coalesce(t.assignee_id, pr.owner_id) is not null
+  and not exists (select 1 from time_entries te where te.task_id = t.id and te.source = 'legacy');
