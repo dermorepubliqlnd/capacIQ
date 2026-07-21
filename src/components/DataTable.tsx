@@ -28,6 +28,11 @@ interface DataTableProps<T> {
   // and for warning/clearing an active sort first.
   orderable?: boolean;
   onReorder?: (draggedKey: string, targetKey: string) => void;
+  // Tasks has no per-row icon (Projects does, via its own name-column
+  // render), so its gutter can sit tighter to the first column than
+  // Projects' -- shaves the shared paddingLeft down without touching
+  // Projects' gutter at all.
+  compactGutter?: boolean;
 }
 
 // ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
@@ -58,6 +63,7 @@ export default function DataTable<T>({
   onToggleSelect,
   onToggleSelectAll,
   orderable,
+  compactGutter,
   onReorder,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
@@ -68,6 +74,10 @@ export default function DataTable<T>({
   const [, forceRerender] = useState(0);
 
   const hasGutter = Boolean(selectable || orderable);
+  // Tasks passes compactGutter (no per-row icon to make room for);
+  // Projects doesn't, so its gutter is unchanged.
+  const gutterWidth = compactGutter ? GUTTER_WIDTH - 10 : GUTTER_WIDTH;
+  const gutterPadding = compactGutter ? 4 : 8;
 
   const orderedKeys = useMemo(() => {
     const known = columns.map((c) => c.key);
@@ -122,9 +132,9 @@ export default function DataTable<T>({
   // columns is what makes the wrapping div's overflow-x:auto (below) able
   // to kick in.
   const totalWidth = useMemo(
-    () => visibleColumns.reduce((sum, c) => sum + displayWidth(c.key), 0) + (hasGutter ? GUTTER_WIDTH : 0),
+    () => visibleColumns.reduce((sum, c) => sum + displayWidth(c.key), 0) + (hasGutter ? gutterWidth : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleColumns, baseWidths, hasGutter]
+    [visibleColumns, baseWidths, hasGutter, gutterWidth]
   );
 
   function handleDrop(targetKey: string) {
@@ -191,13 +201,13 @@ export default function DataTable<T>({
     <thead>
       <tr className={activeGroupOption ? "is-grouped" : undefined}>
         {hasGutter && (
-          <th style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH, padding: 0 }}>
+          <th style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth, padding: 0 }}>
             {selectable && (
               // Matches the body row's gutter layout exactly (an invisible
               // spacer standing in for the grip handle's width + gap) so
               // the header checkbox lines up with the ones below it,
               // instead of sitting flush against the column's left edge.
-              <div style={{ display: "flex", alignItems: "center", gap: 2, paddingLeft: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 2, paddingLeft: gutterPadding }}>
                 <span style={{ display: "inline-block", width: 16, flexShrink: 0 }} />
                 <input
                   type="checkbox"
@@ -269,8 +279,8 @@ export default function DataTable<T>({
         }
       >
         {hasGutter && (
-          <td className="row-gutter-cell" style={{ width: GUTTER_WIDTH, minWidth: GUTTER_WIDTH, maxWidth: GUTTER_WIDTH }} onClick={(e) => e.stopPropagation()}>
-            <div className="row-gutter-inner">
+          <td className="row-gutter-cell" style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth }} onClick={(e) => e.stopPropagation()}>
+            <div className="row-gutter-inner" style={{ paddingLeft: gutterPadding }}>
               {orderable && (
                 <span
                   className="row-grip-btn"

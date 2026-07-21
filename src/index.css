@@ -560,7 +560,15 @@ select.inline-cell { cursor: pointer; }
    chevron on parents that have a sub-task, and a bare "+" icon (hover-only)
    to add one, capped at parent + 1 sub-task level (no deeper nesting). */
 .task-name-cell { display: flex; align-items: center; gap: 4px; }
-.subtask-connector { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+/* Sub-task rows (depth > 0) get a visible left guide line running the
+   height of the row, not just a small connector glyph -- makes the
+   parent/child relationship read as a tree at a glance, matching the
+   indent instead of floating disconnected from it. */
+.task-name-cell.is-subtask {
+  border-left: 2px solid var(--border, #e2e6ee);
+  margin-left: 1px;
+}
+.subtask-connector { color: var(--muted); font-size: 12px; flex-shrink: 0; }
 .task-collapse-toggle {
   display: inline-flex;
   align-items: center;
@@ -595,26 +603,26 @@ select.inline-cell { cursor: pointer; }
 tr:hover .row-icon-btn { opacity: 1; }
 .row-icon-btn:hover { background: var(--hover-bg); color: var(--accent); }
 
-/* Add-subtask "+" affordance: this is a primary, frequently-used action, so
-   unlike .row-icon-btn it stays faintly visible at rest (a tinted circle)
-   instead of fully invisible until hover -- it was easy to miss before. */
+/* Add-subtask "+" affordance: bare icon, no background/circle -- and fully
+   hover-only like .row-icon-btn (was a faintly-visible tinted circle at
+   rest; Sandra asked for a plainer, hover-revealed "+" instead). */
 .add-subtask-btn {
-  opacity: 0.55;
+  opacity: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
   color: var(--accent);
-  background: #eaf1fb;
+  background: none;
   border: none;
   cursor: pointer;
   flex-shrink: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   transition: opacity 0.1s, transform 0.1s;
 }
 tr:hover .add-subtask-btn { opacity: 1; }
-.add-subtask-btn:hover { background: var(--accent); color: #fff; transform: scale(1.08); }
+.add-subtask-btn:hover { background: var(--hover-bg); transform: scale(1.08); }
 
 /* Inline "add row" at the bottom of a dense table */
 .add-row-cell { padding: 4px 8px !important; }

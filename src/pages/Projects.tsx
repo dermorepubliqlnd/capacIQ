@@ -1381,8 +1381,8 @@ export default function Projects() {
           const children = t._depth === 0 && hasChildren(t.id);
           const collapsed = children && collapsedParents.includes(t.id);
           return (
-            <div className="task-name-cell" style={{ paddingLeft: t._depth * 16 }}>
-              {t._depth > 0 && <CornerDownRight size={11} className="subtask-connector" />}
+            <div className={`task-name-cell${t._depth > 0 ? " is-subtask" : ""}`} style={{ paddingLeft: t._depth * 16 }}>
+              {t._depth > 0 && <CornerDownRight size={12} className="subtask-connector" />}
               {children ? (
                 <button
                   className="task-collapse-toggle"
@@ -1395,7 +1395,10 @@ export default function Projects() {
                 t._depth === 0 && <span className="task-collapse-spacer" />
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+                {/* Bold marks a parent task; sub-tasks render at normal
+                    weight so the hierarchy reads visually, not just via
+                    indentation + the connector glyph. */}
+                <InlineText value={t.name} editable={canEditTask(t)} bold={t._depth === 0} onCommit={(v) => updateTask(t.id, { name: v })} />
               </div>
               {t._depth === 0 && canManageTasksIn(t.project_id) && (
                 <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
@@ -2138,6 +2141,7 @@ export default function Projects() {
               groupOptions={taskGroupOptions}
               sortOptions={taskSortOptions}
               emptyLabel="No tasks yet. Add one below."
+              compactGutter
               selectable
               selectedKeys={selectedTaskIds}
               onToggleSelect={(key) => setSelectedTaskIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
