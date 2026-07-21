@@ -1402,7 +1402,7 @@ export default function Projects() {
               </div>
               {t._depth === 0 && canManageTasksIn(t.project_id) && (
                 <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
-                  <Plus size={12} />
+                  <Plus size={24} />
                 </button>
               )}
             </div>

@@ -611,8 +611,8 @@ tr:hover .row-icon-btn { opacity: 1; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 36px;
+  height: 36px;
   color: var(--accent);
   background: none;
   border: none;
