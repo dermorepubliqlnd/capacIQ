@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
-import { sortRows, TONE_STYLES } from "../lib/tableTypes";
+import { sortRows, sortRowsHierarchical, TONE_STYLES } from "../lib/tableTypes";
 
 interface DataTableProps<T> {
   columns: ColumnDef<T>[];
@@ -33,6 +33,12 @@ interface DataTableProps<T> {
   // Projects' -- shaves the shared paddingLeft down without touching
   // Projects' gutter at all.
   compactGutter?: boolean;
+  // When set (alongside rowKey), sorting stays hierarchy-aware: a parent
+  // and all its descendants stay grouped together, with the active sort
+  // applied at each sibling level instead of flattening the whole list.
+  // Only Tasks (which have sub-tasks) pass this -- Projects has no
+  // parent/child relationship so it keeps the plain flat sort.
+  getParentId?: (row: T) => string | null | undefined;
 }
 
 // ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
@@ -58,6 +64,7 @@ export default function DataTable<T>({
   emptyLabel = "Nothing here yet.",
   footerRow,
   groupFooterRow,
+  getParentId,
   selectable,
   selectedKeys,
   onToggleSelect,
@@ -191,10 +198,12 @@ export default function DataTable<T>({
   }
 
   const activeGroupOption = groupOptions?.find((g) => g.key === view.groupBy);
-  const sortedRows = useMemo(
-    () => (sortOptions && view.sorts?.length ? sortRows(rows, view.sorts, sortOptions) : rows),
-    [rows, sortOptions, view.sorts]
-  );
+  const sortedRows = useMemo(() => {
+    if (!sortOptions || !view.sorts?.length) return rows;
+    return getParentId
+      ? sortRowsHierarchical(rows, view.sorts, sortOptions, rowKey, getParentId)
+      : sortRows(rows, view.sorts, sortOptions);
+  }, [rows, sortOptions, view.sorts, getParentId, rowKey]);
 
   const colSpanTotal = (visibleColumns.length || 1) + (hasGutter ? 1 : 0);
 

@@ -91,11 +91,12 @@ export interface SortRule {
   direction: "asc" | "desc";
 }
 
-export function sortRows<T>(rows: T[], sorts: SortRule[], sortOptions: SortOption<T>[]): T[] {
-  if (sorts.length === 0) return rows;
+// Shared by sortRows and sortRowsHierarchical -- builds a single comparator from
+// the active sort rules, or null if there's nothing active to sort by.
+function buildSortComparator<T>(sorts: SortRule[], sortOptions: SortOption<T>[]): ((a: T, b: T) => number) | null {
   const active = sorts.map((s) => ({ rule: s, option: sortOptions.find((o) => o.key === s.key) })).filter((x) => x.option);
-  if (active.length === 0) return rows;
-  return [...rows].sort((a, b) => {
+  if (active.length === 0) return null;
+  return (a: T, b: T) => {
     for (const { rule, option } of active) {
       const av = option!.getValue(a);
       const bv = option!.getValue(b);
@@ -109,7 +110,59 @@ export function sortRows<T>(rows: T[], sorts: SortRule[], sortOptions: SortOptio
       if (cmp !== 0) return cmp;
     }
     return 0;
+  };
+}
+
+export function sortRows<T>(rows: T[], sorts: SortRule[], sortOptions: SortOption<T>[]): T[] {
+  const cmp = buildSortComparator(rows.length ? sorts : [], sortOptions);
+  if (!cmp) return rows;
+  return [...rows].sort(cmp);
+}
+
+// Hierarchy-aware sort for parent/sub-row tables (e.g. Tasks with sub-tasks).
+// A flat sortRows() would scatter children away from their parent based purely
+// on the child's own field value. This instead: sorts top-level (root) rows by
+// the active rule, then recursively sorts each parent's own children among
+// themselves by the same rule -- so every subtree stays grouped under its
+// root while still respecting the chosen sort at every level.
+// A row is treated as a "root" if it has no parent, or if its parent isn't
+// present in `rows` (e.g. filtered out by a status/person filter) -- an
+// orphaned child is promoted rather than silently dropped from the sort.
+export function sortRowsHierarchical<T>(
+  rows: T[],
+  sorts: SortRule[],
+  sortOptions: SortOption<T>[],
+  getId: (row: T) => string,
+  getParentId: (row: T) => string | null | undefined
+): T[] {
+  const cmp = buildSortComparator(rows.length ? sorts : [], sortOptions);
+  if (!cmp) return rows;
+
+  const byId = new Set(rows.map(getId));
+  const childrenOf = new Map<string, T[]>();
+  const roots: T[] = [];
+  rows.forEach((r) => {
+    const pid = getParentId(r);
+    if (pid && byId.has(pid)) {
+      if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+      childrenOf.get(pid)!.push(r);
+    } else {
+      roots.push(r);
+    }
   });
+
+  function sortLevel(list: T[]): T[] {
+    const sorted = [...list].sort(cmp!);
+    const out: T[] = [];
+    sorted.forEach((r) => {
+      out.push(r);
+      const kids = childrenOf.get(getId(r));
+      if (kids) out.push(...sortLevel(kids));
+    });
+    return out;
+  }
+
+  return sortLevel(roots);
 }
 
 export type ViewType = "table" | "board" | "calendar" | "timeline";

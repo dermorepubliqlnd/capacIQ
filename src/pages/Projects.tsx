@@ -14,7 +14,7 @@ import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
-import { sortRows, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
+import { sortRows, sortRowsHierarchical, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, ownHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
@@ -2902,7 +2902,7 @@ export default function Projects() {
         ) : taskViews.activeView.viewType === "board" ? (
           <>
             <BoardView
-              rows={sortRows(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions)}
+              rows={sortRowsHierarchical(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions, (t) => t.id, (t) => t.parent_task_id)}
               rowKey={(t) => t.id}
               columns={getTaskBoardColumns(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
               getValue={(t) => getTaskBoardValue(t, resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
@@ -2921,7 +2921,7 @@ export default function Projects() {
         ) : taskViews.activeView.viewType === "timeline" ? (
           <>
             <TimelineView
-              rows={sortRows(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions)}
+              rows={sortRowsHierarchical(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions, (t) => t.id, (t) => t.parent_task_id)}
               rowKey={(t) => t.id}
               renderLabel={(t) => taskColumns.find((c) => c.key === "name")?.render(t)}
               getStart={(t) => t.start_date}
@@ -2951,6 +2951,7 @@ export default function Projects() {
               columns={taskColumns}
               rows={filteredVisibleTasks}
               rowKey={(t) => t.id}
+              getParentId={(t) => t.parent_task_id}
               view={taskViews.activeView}
               onViewChange={taskViews.updateActiveView}
               groupOptions={taskGroupOptions}
