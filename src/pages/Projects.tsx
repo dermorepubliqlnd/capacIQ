@@ -2351,7 +2351,22 @@ export default function Projects() {
   const taskTimelineGroupOption =
     taskGroupMode === "timeline" ? taskBoardGroupOptions.find((g) => g.key === taskResolvedGroupBy) : undefined;
 
-  const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView).filter((c) => c.key !== "name");
+  // Timeline chips: Owner is dropped here (redundant with the Projects table
+  // itself -- Sandra's fine seeing it there instead), and Priority + Actual
+  // Progress are pulled to the front so they can never be starved out by
+  // whatever else happens to be visible (Status, Health, Category, Effort,
+  // dates, ...) competing for the same fixed-width chip row.
+  const PROJECT_TIMELINE_PINNED_KEYS = ["priority", "actual_progress"];
+  const projectTimelinePropertyColumns = (() => {
+    const visible = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
+      (c) => c.key !== "name" && c.key !== "owner"
+    );
+    const pinned = PROJECT_TIMELINE_PINNED_KEYS.map((key) => visible.find((c) => c.key === key)).filter(
+      (c): c is (typeof visible)[number] => !!c
+    );
+    const rest = visible.filter((c) => !PROJECT_TIMELINE_PINNED_KEYS.includes(c.key));
+    return [...pinned, ...rest];
+  })();
   const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
 
   return (

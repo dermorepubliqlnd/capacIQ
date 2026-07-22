@@ -86,10 +86,13 @@ function addQuarters(d: Date, n: number): Date {
 // slivers).
 const CELL_W: Record<TimelineScale, number> = { day: 34, week: 68, month: 96, quarter: 130 };
 const ROW_H = 32;
-// Bumped from 220 -> 260 so the label column has room for a chip or two
-// of property info (Owner/Priority/etc.) next to the name without
-// immediately clipping everything -- see propertyColumns above.
-const LABEL_W = 260;
+// Bumped 220 -> 260 -> 300: the Projects Timeline pins Priority + Actual
+// Progress chips first (see projectTimelinePropertyColumns in Projects.tsx)
+// and those two need ~180-190px together in the widest ("bar") Actual
+// Progress display mode, so the label column needed more room than a
+// single generic "a chip or two" estimate -- see .timeline-label-chips in
+// index.css for the matching chip-area width bump.
+const LABEL_W = 300;
 const HEADER_H = 30;
 // Day scale uses a two-row header (Month group row + Day-number row)
 // instead of a single row of "Jul 16"-style labels, so a Gantt view at

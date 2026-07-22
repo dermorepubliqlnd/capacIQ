@@ -924,7 +924,13 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  max-width: 55%;
+  /* Fixed px rather than a %-of-LABEL_W cut so the guarantee doesn't drift
+     if LABEL_W changes again later: the Projects Timeline always pins
+     Priority + Actual Progress first (see projectTimelinePropertyColumns
+     in Projects.tsx), and those two need ~190px together in the widest
+     ("bar") Actual Progress display mode -- 210px leaves them a small
+     margin before any further (unpinned) chips start getting clipped. */
+  max-width: 210px;
   overflow: hidden;
 }
 .timeline-chip {
