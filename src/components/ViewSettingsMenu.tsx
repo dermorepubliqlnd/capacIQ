@@ -22,6 +22,10 @@ interface ViewControlsProps<T> {
   // otherwise free to be any boardGroupable field -- unlike the old v1
   // behavior, the field itself is no longer locked to Status.
   isBoard?: boolean;
+  // True on Timeline views: a Gantt row list has no use for grouping in
+  // this v1, so the whole Group-by control is disabled (greyed out with
+  // a tooltip) rather than just constrained like Board's isBoard above.
+  groupByDisabled?: boolean;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -103,6 +107,7 @@ export default function ViewSettingsMenu<T>({
   sorts,
   onSortsChange,
   isBoard,
+  groupByDisabled,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -207,6 +212,16 @@ export default function ViewSettingsMenu<T>({
         )}
       </IconPopoverButton>
 
+      {groupByDisabled ? (
+        <button
+          className="toolbar-icon-btn"
+          disabled
+          title="Group-by isn't available for Timeline views"
+          style={{ opacity: 0.4, cursor: "not-allowed" }}
+        >
+          <Layers size={13} />
+        </button>
+      ) : (
       <IconPopoverButton icon={<Layers size={13} />} label="Group by" active={Boolean(groupBy)}>
         {(close) => (
           <>
@@ -275,6 +290,7 @@ export default function ViewSettingsMenu<T>({
           </>
         )}
       </IconPopoverButton>
+      )}
 
       <IconPopoverButton icon={<SlidersHorizontal size={13} />} label="Properties" active={hiddenColumns.length > 0} width={220}>
         {(close) => (
@@ -322,6 +338,7 @@ export function ViewFilterPills<T>({
   sorts,
   onSortsChange,
   isBoard,
+  groupByDisabled,
 }: {
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
@@ -332,8 +349,9 @@ export function ViewFilterPills<T>({
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
   isBoard?: boolean;
+  groupByDisabled?: boolean;
 }) {
-  const activeOption = groupOptions.find((g) => g.key === groupBy);
+  const activeOption = groupByDisabled ? undefined : groupOptions.find((g) => g.key === groupBy);
   if (!activeOption && sorts.length === 0) return null;
 
   return (

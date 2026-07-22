@@ -825,3 +825,132 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   cursor: pointer;
 }
 .bulk-bar-delete:hover { opacity: 0.9; }
+
+/* Gantt-style Timeline alternate view (see TimelineView.tsx) -- a fixed,
+   sticky label column (reusing the row's own Name cell renderer) next to
+   a horizontally-scrolling date grid whose column width/label format vary
+   by the chosen scale (Daily/Weekly/Monthly/Quarterly). Vertical scrolling
+   is left to the page itself, same as Table/DataTable. */
+.timeline-view {
+  padding: 4px 0 12px;
+}
+.timeline-scroll {
+  overflow-x: auto;
+}
+.timeline-inner {
+  position: relative;
+}
+.timeline-header-row {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.timeline-header-label-cell {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.timeline-header-cell {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  border-left: 1px solid var(--border);
+  white-space: nowrap;
+  padding: 0 2px;
+  text-align: center;
+}
+.timeline-row {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+.timeline-row:hover {
+  background: var(--hover-bg);
+}
+.timeline-label-cell {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.timeline-row:hover .timeline-label-cell {
+  background: var(--hover-bg);
+}
+.timeline-row-grid {
+  position: relative;
+  flex-shrink: 0;
+}
+.timeline-bar {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 14px;
+  min-width: 6px;
+  border-radius: 7px;
+  border: 1.5px solid;
+  cursor: default;
+}
+.timeline-marker {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  cursor: default;
+}
+.timeline-today-line {
+  position: absolute;
+  width: 0;
+  border-left: 1.5px dashed var(--danger-text);
+  z-index: 1;
+  pointer-events: none;
+}
+.timeline-empty {
+  padding: 20px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.timeline-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.timeline-segmented-btn {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+.timeline-segmented-btn:last-child {
+  border-right: none;
+}
+.timeline-segmented-btn:hover {
+  background: var(--hover-bg);
+}
+.timeline-segmented-btn.active {
+  background: #eaf1fb;
+  color: var(--accent);
+}

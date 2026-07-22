@@ -126,6 +126,13 @@ export interface TableView {
   // fall back to "bar" when reading an older view that predates this
   // field. See ProgressCell.tsx.
   progressDisplay?: "bar" | "number" | "ring";
+  // Per-view Timeline settings -- both optional for the same reason as
+  // progressDisplay above (older saved views predate Timeline and must
+  // keep loading without a migration). Callers should fall back to
+  // "month" / "range" when reading a view that predates these fields.
+  // See TimelineView.tsx.
+  timelineScale?: "day" | "week" | "month" | "quarter";
+  timelineDateMode?: "range" | "start" | "due";
 }
 
 export type DefaultView = Omit<TableView, "id" | "name">;

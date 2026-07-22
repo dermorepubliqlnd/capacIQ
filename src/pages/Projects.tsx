@@ -5,6 +5,7 @@ import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
 import BoardView, { type BoardColumnDef } from "../components/BoardView";
+import TimelineView, { TimelineControls } from "../components/TimelineView";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
@@ -2332,7 +2333,16 @@ export default function Projects() {
               sorts={projectViews.activeView.sorts}
               onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
               isBoard={projectViews.activeView.viewType === "board"}
+              groupByDisabled={projectViews.activeView.viewType === "timeline"}
             />
+            {projectViews.activeView.viewType === "timeline" && (
+              <TimelineControls
+                scale={projectViews.activeView.timelineScale ?? "month"}
+                onScaleChange={(timelineScale) => projectViews.updateActiveView({ timelineScale })}
+                dateMode={projectViews.activeView.timelineDateMode ?? "range"}
+                onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
+              />
+            )}
           </div>
         </div>
         <ViewFilterPills
@@ -2349,8 +2359,9 @@ export default function Projects() {
           sorts={projectViews.activeView.sorts}
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
           isBoard={projectViews.activeView.viewType === "board"}
+          groupByDisabled={projectViews.activeView.viewType === "timeline"}
         />
-        {projectViews.activeView.viewType !== "board" && selectedProjectIds.length > 0 && (
+        {projectViews.activeView.viewType !== "board" && projectViews.activeView.viewType !== "timeline" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
             <span className="bulk-bar-count">{selectedProjectIds.length} selected</span>
             <button className="bulk-bar-clear" onClick={() => setSelectedProjectIds([])}>
@@ -2388,6 +2399,27 @@ export default function Projects() {
               renderCard={renderProjectCard}
               onMoveCard={getProjectBoardMoveHandler(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
               onReorderCard={reorderProjects}
+            />
+            {canCreateProject && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
+                <Plus size={12} />
+                New project
+              </div>
+            )}
+          </>
+        ) : projectViews.activeView.viewType === "timeline" ? (
+          <>
+            <TimelineView
+              rows={sortRows(projects, projectViews.activeView.sorts, projectSortOptions)}
+              rowKey={(p) => p.id}
+              renderLabel={(p) => projectColumns.find((c) => c.key === "name")?.render(p)}
+              getStart={(p) => p.start_date}
+              getDue={(p) => p.end_date}
+              dateMode={projectViews.activeView.timelineDateMode ?? "range"}
+              scale={projectViews.activeView.timelineScale ?? "month"}
+              getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
+              getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
+              emptyLabel="No projects yet. Add one below."
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -2476,7 +2508,16 @@ export default function Projects() {
               sorts={taskViews.activeView.sorts}
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
               isBoard={taskViews.activeView.viewType === "board"}
+              groupByDisabled={taskViews.activeView.viewType === "timeline"}
             />
+            {taskViews.activeView.viewType === "timeline" && (
+              <TimelineControls
+                scale={taskViews.activeView.timelineScale ?? "month"}
+                onScaleChange={(timelineScale) => taskViews.updateActiveView({ timelineScale })}
+                dateMode={taskViews.activeView.timelineDateMode ?? "range"}
+                onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
+              />
+            )}
           </div>
         </div>
         <ViewFilterPills
@@ -2493,8 +2534,9 @@ export default function Projects() {
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
           isBoard={taskViews.activeView.viewType === "board"}
+          groupByDisabled={taskViews.activeView.viewType === "timeline"}
         />
-        {taskViews.activeView.viewType !== "board" && selectedTaskIds.length > 0 && (
+        {taskViews.activeView.viewType !== "board" && taskViews.activeView.viewType !== "timeline" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
             <span className="bulk-bar-count">{selectedTaskIds.length} selected</span>
             <button className="bulk-bar-clear" onClick={() => setSelectedTaskIds([])}>
@@ -2531,6 +2573,27 @@ export default function Projects() {
               renderCard={renderTaskCard}
               onMoveCard={getTaskBoardMoveHandler(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
               onReorderCard={reorderTasks}
+            />
+            {canCreateTask && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
+                <Plus size={12} />
+                New task
+              </div>
+            )}
+          </>
+        ) : taskViews.activeView.viewType === "timeline" ? (
+          <>
+            <TimelineView
+              rows={sortRows(visibleTasks, taskViews.activeView.sorts, taskSortOptions)}
+              rowKey={(t) => t.id}
+              renderLabel={(t) => taskColumns.find((c) => c.key === "name")?.render(t)}
+              getStart={(t) => t.start_date}
+              getDue={(t) => t.current_due_date}
+              dateMode={taskViews.activeView.timelineDateMode ?? "range"}
+              scale={taskViews.activeView.timelineScale ?? "month"}
+              getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
+              getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
+              emptyLabel="No tasks yet. Add one below."
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

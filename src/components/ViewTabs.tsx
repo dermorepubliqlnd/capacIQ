@@ -50,7 +50,7 @@ const VIEW_TYPE_ICONS: Record<ViewType, typeof Table2> = {
 const VIEW_TYPE_TILES: { type: ViewType; label: string; enabled: boolean }[] = [
   { type: "table", label: "Table", enabled: true },
   { type: "board", label: "Board", enabled: true },
-  { type: "timeline", label: "Timeline", enabled: false },
+  { type: "timeline", label: "Timeline", enabled: true },
   { type: "calendar", label: "Calendar", enabled: false },
 ];
 
@@ -118,7 +118,7 @@ export default function ViewTabs<T>({
   // view immediately with an auto-generated name the person can rename
   // later via the tab's own "⋯" menu.
   function handleCreateView(viewType: ViewType) {
-    const base = viewType === "board" ? "New board" : "New view";
+    const base = viewType === "board" ? "New board" : viewType === "timeline" ? "New timeline" : "New view";
     const existingUntitled = views.filter((v) => new RegExp(`^${base}( \\d+)?$`).test(v.name)).length;
     const name = existingUntitled === 0 ? base : `${base} ${existingUntitled + 1}`;
     onCreate(name, viewType, viewType === "board" ? boardDefaultGroupBy : undefined);
