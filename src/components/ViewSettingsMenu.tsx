@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpDown, Layers, SlidersHorizontal, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { ArrowUpDown, Layers, SlidersHorizontal, Filter, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, SortRule } from "../lib/tableTypes";
 
 interface ViewControlsProps<T> {
@@ -26,6 +27,15 @@ interface ViewControlsProps<T> {
   // this v1, so the whole Group-by control is disabled (greyed out with
   // a tooltip) rather than just constrained like Board's isBoard above.
   groupByDisabled?: boolean;
+  // Row-level Filter (assigned-to-me + status multi-select) -- unlike
+  // Sort/Group-by/Properties, this isn't view-rendering config: it's
+  // applied to the shared row list *before* Table/Board/Timeline ever
+  // see it, so the same filter holds no matter which view type is active.
+  filterAssignedToMe: boolean;
+  onFilterAssignedToMeChange: (value: boolean) => void;
+  statusOptions: string[];
+  filterStatuses: string[];
+  onFilterStatusesChange: (statuses: string[]) => void;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -33,6 +43,18 @@ interface ViewControlsProps<T> {
 // background + small dot while its config is active, matching Notion's own
 // view toolbar (Sort / Filter / Properties as separate quick icons instead
 // of one combined gear menu).
+//
+// The popover itself is portaled to document.body and positioned with
+// `position: fixed` from the trigger button's own bounding rect, rather
+// than rendered in-place with `position: absolute` inside a `position:
+// relative` wrapper. The in-place approach silently breaks whenever the
+// trigger sits inside a `position: sticky` ancestor (e.g. the Projects
+// page's `.sticky-toolbar-cluster`): the sticky ancestor establishes its
+// own stacking context, so the popover's z-index only gets compared
+// against siblings *within* that context and can't paint above unrelated
+// later DOM content (this is exactly what caused the Properties popover to
+// render clipped under the Tasks table below it). Portaling to
+// document.body escapes that stacking context entirely.
 function IconPopoverButton({
   icon,
   label,
@@ -47,19 +69,45 @@ function IconPopoverButton({
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      // The popover is portaled outside triggerRef's DOM subtree, so the
+      // old single `ref.current.contains(...)` check no longer covers it --
+      // a click has to miss *both* the trigger and the portaled popover to
+      // count as "outside".
+      if (triggerRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
+  // Recompute position whenever the popover opens. Anchored to the
+  // trigger's bottom-left by default, right-aligned to the trigger's right
+  // edge (matching the old in-place `right: 0` look), and flipped back
+  // toward the left edge of the viewport if that would overflow off
+  // either side. Doesn't track scroll/resize while open -- not needed for
+  // this pass since these are short-lived toolbar popovers.
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    let left = rect.right - width;
+    if (left < 4) left = Math.max(4, rect.left);
+    if (left + width > viewportWidth - 4) left = Math.max(4, viewportWidth - width - 4);
+    setPos({ top: rect.bottom + 4, left });
+  }, [open, width]);
+
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <>
       <button
+        ref={triggerRef}
         className={`toolbar-icon-btn${open || active ? " active" : ""}`}
         title={label}
         onClick={() => setOpen((v) => !v)}
@@ -67,12 +115,19 @@ function IconPopoverButton({
         {icon}
         {active && <span className="toolbar-icon-dot" />}
       </button>
-      {open && (
-        <div className="toolbar-popover" style={{ width }} onClick={(e) => e.stopPropagation()}>
-          {children(() => setOpen(false))}
-        </div>
-      )}
-    </div>
+      {open &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="toolbar-popover"
+            style={{ top: pos.top, left: pos.left, width }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body
+        )}
+    </>
   );
 }
 
@@ -87,10 +142,10 @@ function PopoverHeader({ label, onClose }: { label: string; onClose: () => void 
   );
 }
 
-// Three quick-access toolbar icons (Sort, Filter, Properties) replacing the
-// old single combined "View settings" gear -- mirrors Notion's own view
-// toolbar layout. Meant to be rendered inside a ".toolbar-actions" wrapper
-// alongside any other per-page icon buttons (e.g. Task Effort colors).
+// Four quick-access toolbar icons (Filter, Sort, Group by, Properties)
+// mirroring Notion's own view toolbar layout. Meant to be rendered inside a
+// ".toolbar-actions" wrapper alongside any other per-page icon buttons
+// (e.g. Task Effort colors).
 export default function ViewSettingsMenu<T>({
   rows,
   columns,
@@ -108,6 +163,11 @@ export default function ViewSettingsMenu<T>({
   onSortsChange,
   isBoard,
   groupByDisabled,
+  filterAssignedToMe,
+  onFilterAssignedToMeChange,
+  statusOptions,
+  filterStatuses,
+  onFilterStatusesChange,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -116,6 +176,10 @@ export default function ViewSettingsMenu<T>({
 
   function toggleGroupVisible(name: string) {
     onHiddenGroupsChange(hiddenGroups.includes(name) ? hiddenGroups.filter((g) => g !== name) : [...hiddenGroups, name]);
+  }
+
+  function toggleFilterStatus(value: string) {
+    onFilterStatusesChange(filterStatuses.includes(value) ? filterStatuses.filter((s) => s !== value) : [...filterStatuses, value]);
   }
 
   const usedKeys = new Set(sorts.map((s) => s.key));
@@ -141,6 +205,29 @@ export default function ViewSettingsMenu<T>({
 
   return (
     <>
+      <IconPopoverButton icon={<Filter size={13} />} label="Filter" active={filterAssignedToMe || filterStatuses.length > 0} width={200}>
+        {(close) => (
+          <>
+            <PopoverHeader label="Filter" onClose={close} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer", marginBottom: 6 }}>
+              <input type="checkbox" checked={filterAssignedToMe} onChange={(e) => onFilterAssignedToMeChange(e.target.checked)} />
+              Assigned to me
+            </label>
+            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
+              Status
+            </div>
+            <div style={{ maxHeight: 160, overflowY: "auto" }}>
+              {statusOptions.map((s) => (
+                <label key={s} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={filterStatuses.includes(s)} onChange={() => toggleFilterStatus(s)} />
+                  {s}
+                </label>
+              ))}
+            </div>
+          </>
+        )}
+      </IconPopoverButton>
+
       <IconPopoverButton icon={<ArrowUpDown size={13} />} label="Sort" active={sorts.length > 0}>
         {(close) => (
           <>
@@ -339,6 +426,9 @@ export function ViewFilterPills<T>({
   onSortsChange,
   isBoard,
   groupByDisabled,
+  filterAssignedToMe,
+  filterStatuses,
+  onClearFilter,
 }: {
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
@@ -350,12 +440,28 @@ export function ViewFilterPills<T>({
   onSortsChange: (sorts: SortRule[]) => void;
   isBoard?: boolean;
   groupByDisabled?: boolean;
+  filterAssignedToMe: boolean;
+  filterStatuses: string[];
+  onClearFilter: () => void;
 }) {
   const activeOption = groupByDisabled ? undefined : groupOptions.find((g) => g.key === groupBy);
-  if (!activeOption && sorts.length === 0) return null;
+  const hasFilter = filterAssignedToMe || filterStatuses.length > 0;
+  if (!activeOption && sorts.length === 0 && !hasFilter) return null;
+
+  const filterParts: string[] = [];
+  if (filterAssignedToMe) filterParts.push("Assigned to me");
+  if (filterStatuses.length > 0) filterParts.push(`Status: ${filterStatuses.join(", ")}`);
 
   return (
     <div className="view-filter-pills">
+      {hasFilter && (
+        <span className="filter-pill">
+          Filtered: {filterParts.join(", ")}
+          <button title="Clear filter" onClick={onClearFilter}>
+            <X size={10} />
+          </button>
+        </span>
+      )}
       {activeOption && (
         <span className="filter-pill">
           Grouped by {activeOption.label}

@@ -1160,6 +1160,23 @@ export default function Projects() {
     progressDisplay: "bar",
   });
 
+  // Row-level Filter applied upstream of sort/group/render so it covers
+  // Table, Board, and Timeline alike -- "assigned to me" reuses the same
+  // owner_id identity check as canEditProject/isProjectOwner above, and an
+  // empty filterStatuses (or it being unset on older saved views) means
+  // "no filter", matching hiddenColumns/hiddenGroups' own empty-means-
+  // nothing-hidden convention.
+  const filteredProjects = useMemo(() => {
+    const view = projectViews.activeView;
+    let out = projects;
+    if (view.filterAssignedToMe) out = out.filter((p) => p.owner_id === me?.id);
+    if (view.filterStatuses && view.filterStatuses.length > 0) {
+      const statuses = view.filterStatuses;
+      out = out.filter((p) => statuses.includes(p.project_status ?? ""));
+    }
+    return out;
+  }, [projects, projectViews.activeView, me?.id]);
+
   const projectColumns: ColumnDef<ProjectRow>[] = useMemo(
     () => [
       {
@@ -2235,6 +2252,20 @@ export default function Projects() {
     sorts: [],
   });
 
+  // Same upstream Filter step as filteredProjects above -- "assigned to me"
+  // reuses the same t.assignee_id === me?.id identity check already used
+  // to gate the per-row timer button.
+  const filteredVisibleTasks = useMemo(() => {
+    const view = taskViews.activeView;
+    let out = visibleTasks;
+    if (view.filterAssignedToMe) out = out.filter((t) => t.assignee_id === me?.id);
+    if (view.filterStatuses && view.filterStatuses.length > 0) {
+      const statuses = view.filterStatuses;
+      out = out.filter((t) => statuses.includes(t.status ?? ""));
+    }
+    return out;
+  }, [visibleTasks, taskViews.activeView, me?.id]);
+
   // Instant, Notion-style row creation (mirrors createBlankProject): insert
   // a sensibly-defaulted task immediately and let the person fill it in via
   // the same inline cells every other row uses, instead of a separate
@@ -2308,7 +2339,7 @@ export default function Projects() {
           />
           <div className="toolbar-actions">
             <ViewSettingsMenu
-              rows={projects}
+              rows={filteredProjects}
               columns={projectColumns}
               hiddenColumns={projectViews.activeView.hiddenColumns}
               onToggleColumn={(key) =>
@@ -2334,6 +2365,11 @@ export default function Projects() {
               onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
               isBoard={projectViews.activeView.viewType === "board"}
               groupByDisabled={projectViews.activeView.viewType === "timeline"}
+              filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
+              onFilterAssignedToMeChange={(filterAssignedToMe) => projectViews.updateActiveView({ filterAssignedToMe })}
+              statusOptions={PROJECT_STATUS_OPTIONS}
+              filterStatuses={projectViews.activeView.filterStatuses ?? []}
+              onFilterStatusesChange={(filterStatuses) => projectViews.updateActiveView({ filterStatuses })}
             />
             {projectViews.activeView.viewType === "timeline" && (
               <TimelineControls
@@ -2360,6 +2396,9 @@ export default function Projects() {
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
           isBoard={projectViews.activeView.viewType === "board"}
           groupByDisabled={projectViews.activeView.viewType === "timeline"}
+          filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
+          filterStatuses={projectViews.activeView.filterStatuses ?? []}
+          onClearFilter={() => projectViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
         />
         {projectViews.activeView.viewType !== "board" && projectViews.activeView.viewType !== "timeline" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
@@ -2391,7 +2430,7 @@ export default function Projects() {
         ) : projectViews.activeView.viewType === "board" ? (
           <>
             <BoardView
-              rows={sortRows(projects, projectViews.activeView.sorts, projectSortOptions)}
+              rows={sortRows(filteredProjects, projectViews.activeView.sorts, projectSortOptions)}
               rowKey={(p) => p.id}
               columns={getProjectBoardColumns(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
               getValue={(p) => getProjectBoardValue(p, resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
@@ -2410,7 +2449,7 @@ export default function Projects() {
         ) : projectViews.activeView.viewType === "timeline" ? (
           <>
             <TimelineView
-              rows={sortRows(projects, projectViews.activeView.sorts, projectSortOptions)}
+              rows={sortRows(filteredProjects, projectViews.activeView.sorts, projectSortOptions)}
               rowKey={(p) => p.id}
               renderLabel={(p) => projectColumns.find((c) => c.key === "name")?.render(p)}
               getStart={(p) => p.start_date}
@@ -2432,7 +2471,7 @@ export default function Projects() {
           <div className="data-table-dense">
             <DataTable
               columns={projectColumns}
-              rows={projects}
+              rows={filteredProjects}
               rowKey={(p) => p.id}
               view={projectViews.activeView}
               onViewChange={projectViews.updateActiveView}
@@ -2483,7 +2522,7 @@ export default function Projects() {
           />
           <div className="toolbar-actions">
             <ViewSettingsMenu
-              rows={visibleTasks}
+              rows={filteredVisibleTasks}
               columns={taskColumns}
               hiddenColumns={taskViews.activeView.hiddenColumns}
               onToggleColumn={(key) =>
@@ -2509,6 +2548,11 @@ export default function Projects() {
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
               isBoard={taskViews.activeView.viewType === "board"}
               groupByDisabled={taskViews.activeView.viewType === "timeline"}
+              filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
+              onFilterAssignedToMeChange={(filterAssignedToMe) => taskViews.updateActiveView({ filterAssignedToMe })}
+              statusOptions={TASK_STATUS_OPTIONS}
+              filterStatuses={taskViews.activeView.filterStatuses ?? []}
+              onFilterStatusesChange={(filterStatuses) => taskViews.updateActiveView({ filterStatuses })}
             />
             {taskViews.activeView.viewType === "timeline" && (
               <TimelineControls
@@ -2535,6 +2579,9 @@ export default function Projects() {
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
           isBoard={taskViews.activeView.viewType === "board"}
           groupByDisabled={taskViews.activeView.viewType === "timeline"}
+          filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
+          filterStatuses={taskViews.activeView.filterStatuses ?? []}
+          onClearFilter={() => taskViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
         />
         {taskViews.activeView.viewType !== "board" && taskViews.activeView.viewType !== "timeline" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
@@ -2565,7 +2612,7 @@ export default function Projects() {
         ) : taskViews.activeView.viewType === "board" ? (
           <>
             <BoardView
-              rows={sortRows(visibleTasks, taskViews.activeView.sorts, taskSortOptions)}
+              rows={sortRows(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions)}
               rowKey={(t) => t.id}
               columns={getTaskBoardColumns(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
               getValue={(t) => getTaskBoardValue(t, resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
@@ -2584,7 +2631,7 @@ export default function Projects() {
         ) : taskViews.activeView.viewType === "timeline" ? (
           <>
             <TimelineView
-              rows={sortRows(visibleTasks, taskViews.activeView.sorts, taskSortOptions)}
+              rows={sortRows(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions)}
               rowKey={(t) => t.id}
               renderLabel={(t) => taskColumns.find((c) => c.key === "name")?.render(t)}
               getStart={(t) => t.start_date}
@@ -2606,7 +2653,7 @@ export default function Projects() {
           <div className="data-table-dense">
             <DataTable
               columns={taskColumns}
-              rows={visibleTasks}
+              rows={filteredVisibleTasks}
               rowKey={(t) => t.id}
               view={taskViews.activeView}
               onViewChange={taskViews.updateActiveView}

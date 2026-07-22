@@ -62,6 +62,12 @@ const CELL_W: Record<TimelineScale, number> = { day: 34, week: 68, month: 96, qu
 const ROW_H = 32;
 const LABEL_W = 220;
 const HEADER_H = 30;
+// Day scale uses a two-row header (Month group row + Day-number row)
+// instead of a single row of "Jul 16"-style labels, so a Gantt view at
+// day resolution reads at a glance which month a run of day-columns
+// belongs to without repeating it in every cell. Week/Month/Quarter
+// scales are unaffected and keep the original single-row HEADER_H.
+const HEADER_ROW_H = 22;
 
 interface Column {
   start: Date;
@@ -191,6 +197,25 @@ export default function TimelineView<T>({
   const showToday = today >= rangeStart && today <= rangeEnd;
   const todayX = showToday ? dateToX(today, columns, cellW) : 0;
   const gridWidth = columns.length * cellW;
+  const headerHeight = scale === "day" ? HEADER_ROW_H * 2 : HEADER_H;
+
+  // Group consecutive day-columns that fall in the same month, so the
+  // Day-scale header's top row can render one "July 2026"-style cell
+  // spanning all of that month's visible day-columns instead of repeating
+  // the month in every single day cell (the bottom row then only needs
+  // the bare day number). Only computed/used when scale === "day" --
+  // Week/Month/Quarter keep their existing single-row header untouched.
+  const monthGroups = useMemo(() => {
+    if (scale !== "day") return [];
+    const groups: { label: string; span: number }[] = [];
+    for (const col of columns) {
+      const label = col.start.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) last.span += 1;
+      else groups.push({ label, span: 1 });
+    }
+    return groups;
+  }, [columns, scale]);
 
   function barFor(row: T) {
     const startStr = getStart(row);
@@ -239,23 +264,33 @@ export default function TimelineView<T>({
     <div className="timeline-view">
       <div className="timeline-scroll">
         <div className="timeline-inner" style={{ width: LABEL_W + gridWidth }}>
-          <div className="timeline-header-row" style={{ height: HEADER_H }}>
+          <div className="timeline-header-row" style={{ height: headerHeight }}>
             <div className="timeline-header-label-cell" style={{ width: LABEL_W }} />
-            {columns.map((col, i) => (
-              <div key={i} className="timeline-header-cell" style={{ width: cellW }}>
-                {col.label}
+            <div style={{ display: "flex", flexDirection: "column", flexShrink: 0, width: gridWidth }}>
+              {scale === "day" && (
+                <div style={{ display: "flex", height: HEADER_ROW_H }}>
+                  {monthGroups.map((g, i) => (
+                    <div key={i} className="timeline-header-cell timeline-header-cell-month" style={{ width: g.span * cellW }}>
+                      {g.label}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", height: scale === "day" ? HEADER_ROW_H : headerHeight }}>
+                {columns.map((col, i) => (
+                  <div key={i} className="timeline-header-cell" style={{ width: cellW }}>
+                    {scale === "day" ? col.start.getDate() : col.label}
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
           {rows.map((row) => (
             <div key={rowKey(row)} className="timeline-row" style={{ height: ROW_H }}>
               <div className="timeline-label-cell" style={{ width: LABEL_W }}>
                 {renderLabel(row)}
               </div>
-              <div
-                className="timeline-row-grid"
-                style={{ width: gridWidth, backgroundImage: `repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px, transparent 1px, transparent ${cellW}px)` }}
-              >
+              <div className="timeline-row-grid" style={{ width: gridWidth }}>
                 {barFor(row)}
               </div>
             </div>
@@ -264,7 +299,7 @@ export default function TimelineView<T>({
           {showToday && rows.length > 0 && (
             <div
               className="timeline-today-line"
-              style={{ left: LABEL_W + todayX, top: HEADER_H, height: rows.length * ROW_H }}
+              style={{ left: LABEL_W + todayX, top: headerHeight, height: rows.length * ROW_H }}
               title="Today"
             />
           )}

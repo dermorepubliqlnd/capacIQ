@@ -133,6 +133,16 @@ export interface TableView {
   // See TimelineView.tsx.
   timelineScale?: "day" | "week" | "month" | "quarter";
   timelineDateMode?: "range" | "start" | "due";
+  // Row-level Filter (v1: "assigned to me" + a Status multi-select) --
+  // optional for the same reason as progressDisplay/timelineScale above.
+  // Undefined/false and undefined/empty both mean "no filter, show all",
+  // matching how hiddenColumns/hiddenGroups empty arrays already mean
+  // "nothing hidden" elsewhere in this file. Unlike Sort/Group-by/
+  // Properties, this isn't rendering config -- callers apply it to the
+  // shared row list before it's handed to whichever view (Table/Board/
+  // Timeline) is active, so one filter setting covers all three.
+  filterAssignedToMe?: boolean;
+  filterStatuses?: string[];
 }
 
 export type DefaultView = Omit<TableView, "id" | "name">;
