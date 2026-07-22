@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { TONE_STYLES, type ColumnDef } from "../lib/tableTypes";
 
 export type TimelineScale = "day" | "week" | "month" | "quarter";
@@ -45,6 +45,14 @@ interface TimelineViewProps<T> {
   getGroup?: (row: T) => string;
   getGroupTone?: (row: T) => string;
   hiddenGroups?: string[];
+  // Width (px) of the sticky label column -- lifted to the caller (backed by
+  // each view's own timelineLabelWidth, see tableTypes.ts) so it persists
+  // per-view the same way progressDisplay/timelineScale already do, rather
+  // than resetting every time TimelineView remounts. Replaces the old
+  // hardcoded LABEL_W constant everywhere it was used (header cell, label
+  // cell, timeline-inner's total width, the today-line's left offset).
+  labelWidth: number;
+  onLabelWidthChange: (width: number) => void;
 }
 
 // Local-timezone date helpers -- same "YYYY-MM-DD" UTC-midnight parsing fix
@@ -86,13 +94,12 @@ function addQuarters(d: Date, n: number): Date {
 // slivers).
 const CELL_W: Record<TimelineScale, number> = { day: 34, week: 68, month: 96, quarter: 130 };
 const ROW_H = 32;
-// Bumped 220 -> 260 -> 300: the Projects Timeline pins Priority + Actual
-// Progress chips first (see projectTimelinePropertyColumns in Projects.tsx)
-// and those two need ~180-190px together in the widest ("bar") Actual
-// Progress display mode, so the label column needed more room than a
-// single generic "a chip or two" estimate -- see .timeline-label-chips in
-// index.css for the matching chip-area width bump.
-const LABEL_W = 380;
+// Label column is now user-resizable (drag handle on the right edge of
+// .timeline-label-cell / .timeline-header-label-cell) rather than a fixed
+// constant -- these just bound the drag, and give TimelineView something
+// sane to render before the caller's own labelWidth prop arrives.
+const LABEL_W_MIN = 220;
+const LABEL_W_MAX = 640;
 const HEADER_H = 30;
 // Day scale uses a two-row header (Month group row + Day-number row)
 // instead of a single row of "Jul 16"-style labels, so a Gantt view at
@@ -193,8 +200,50 @@ export default function TimelineView<T>({
   getGroup,
   getGroupTone,
   hiddenGroups,
+  labelWidth,
+  onLabelWidthChange,
 }: TimelineViewProps<T>) {
   const cellW = CELL_W[scale];
+
+  // Live width while dragging the label-column resize handle -- mirrors
+  // DataTable's own column-resize pattern (a ref tracks the in-progress
+  // drag, mousemove updates a rerender-triggering piece of state, mouseup
+  // commits the final value to the caller via onLabelWidthChange). Synced
+  // back to the prop whenever it changes from outside the drag (switching
+  // views, or a fresh view that predates timelineLabelWidth).
+  const [dragLabelWidth, setDragLabelWidth] = useState<number | null>(null);
+  const labelResizeState = useRef<{ startX: number; startWidth: number } | null>(null);
+  useEffect(() => {
+    setDragLabelWidth(null);
+  }, [labelWidth]);
+  const effectiveLabelWidth = dragLabelWidth ?? labelWidth;
+
+  function startLabelResize(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    labelResizeState.current = { startX: e.clientX, startWidth: effectiveLabelWidth };
+
+    function onMove(ev: MouseEvent) {
+      if (!labelResizeState.current) return;
+      const delta = ev.clientX - labelResizeState.current.startX;
+      const next = Math.min(LABEL_W_MAX, Math.max(LABEL_W_MIN, labelResizeState.current.startWidth + delta));
+      setDragLabelWidth(next);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      labelResizeState.current = null;
+      // Commit whatever the last onMove landed on (dragLabelWidth is only
+      // null before a drag has happened, or once useEffect clears it after
+      // the prop catches up) to the caller's persisted per-view width.
+      setDragLabelWidth((current) => {
+        if (current !== null) onLabelWidthChange(current);
+        return current;
+      });
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
 
   const { columns, rangeStart, rangeEnd } = useMemo(() => {
     const allDates: Date[] = [];
@@ -341,7 +390,7 @@ export default function TimelineView<T>({
   function renderRow(row: T) {
     return (
       <div key={rowKey(row)} className="timeline-row" style={{ height: ROW_H }}>
-        <div className="timeline-label-cell" style={{ width: LABEL_W }}>
+        <div className="timeline-label-cell" style={{ width: effectiveLabelWidth }}>
           <div className="timeline-label-row">
             <span className="timeline-label-name">{renderLabel(row)}</span>
             {propertyColumns && propertyColumns.length > 0 && (
@@ -354,6 +403,13 @@ export default function TimelineView<T>({
               </div>
             )}
           </div>
+          <span
+            className="timeline-label-resize-handle"
+            onMouseDown={startLabelResize}
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            title="Drag to resize"
+          />
         </div>
         <div className="timeline-row-grid" style={{ width: gridWidth }}>
           {barFor(row)}
@@ -365,9 +421,9 @@ export default function TimelineView<T>({
   return (
     <div className="timeline-view">
       <div className="timeline-scroll">
-        <div className="timeline-inner" style={{ width: LABEL_W + gridWidth }}>
+        <div className="timeline-inner" style={{ width: effectiveLabelWidth + gridWidth }}>
           <div className="timeline-header-row" style={{ height: headerHeight }}>
-            <div className="timeline-header-label-cell" style={{ width: LABEL_W }}>
+            <div className="timeline-header-label-cell" style={{ width: effectiveLabelWidth }}>
               <span className="timeline-header-name-label">Name</span>
               {propertyColumns && propertyColumns.length > 0 && (
                 <div className="timeline-header-chips">
@@ -378,6 +434,13 @@ export default function TimelineView<T>({
                   ))}
                 </div>
               )}
+              <span
+                className="timeline-label-resize-handle"
+                onMouseDown={startLabelResize}
+                draggable={false}
+                onDragStart={(e) => e.preventDefault()}
+                title="Drag to resize"
+              />
             </div>
             <div style={{ display: "flex", flexDirection: "column", flexShrink: 0, width: gridWidth }}>
               {scale === "day" && (
@@ -421,7 +484,7 @@ export default function TimelineView<T>({
           {showToday && rows.length > 0 && (
             <div
               className="timeline-today-line"
-              style={{ left: LABEL_W + todayX, top: headerHeight, height: contentHeight }}
+              style={{ left: effectiveLabelWidth + todayX, top: headerHeight, height: contentHeight }}
               title="Today"
             />
           )}

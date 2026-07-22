@@ -8,12 +8,19 @@ interface ViewTabsProps<T> {
   rows: T[];
   groupOptions: GroupOption<T>[];
   onSelect: (id: string) => void;
-  onCreate: (name: string, viewType?: ViewType, initialGroupBy?: string) => void;
+  onCreate: (name: string, viewType?: ViewType, initialGroupBy?: string, initialHiddenColumns?: string[]) => void;
   // Field a new Board view should group by out of the box (e.g.
   // "project_status" / "status") -- Board can't render without some
   // grouping, so this seeds a sensible default the user is then free to
   // change via the Group-by picker.
   boardDefaultGroupBy?: string;
+  // Column keys a new Timeline view should start with hidden (e.g. Category/
+  // Effort/Timelines/Days Extended on Projects) -- mirrors boardDefaultGroupBy's
+  // pattern above but for Timeline's curated default Properties set instead
+  // of Board's required grouping field. Undefined means "fall back to
+  // whatever the table's own default view has hidden" (createView's own
+  // fallback), which is what Tasks' Timeline still does today.
+  timelineDefaultHiddenColumns?: string[];
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
@@ -77,6 +84,7 @@ export default function ViewTabs<T>({
   onSelect,
   onCreate,
   boardDefaultGroupBy,
+  timelineDefaultHiddenColumns,
   onRename,
   onDelete,
   onColorChange,
@@ -121,7 +129,12 @@ export default function ViewTabs<T>({
     const base = viewType === "board" ? "New board" : viewType === "timeline" ? "New timeline" : "New view";
     const existingUntitled = views.filter((v) => new RegExp(`^${base}( \\d+)?$`).test(v.name)).length;
     const name = existingUntitled === 0 ? base : `${base} ${existingUntitled + 1}`;
-    onCreate(name, viewType, viewType === "board" ? boardDefaultGroupBy : undefined);
+    onCreate(
+      name,
+      viewType,
+      viewType === "board" ? boardDefaultGroupBy : undefined,
+      viewType === "timeline" ? timelineDefaultHiddenColumns : undefined
+    );
     setAddOpen(false);
     setAddSearch("");
   }

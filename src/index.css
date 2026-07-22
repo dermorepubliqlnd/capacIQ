@@ -974,13 +974,12 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  /* Fixed px rather than a %-of-LABEL_W cut so the guarantee doesn't drift
-     if LABEL_W changes again later: the Projects Timeline always pins
-     Priority + Actual Progress first (see projectTimelinePropertyColumns
-     in Projects.tsx), and those two need ~190px together in the widest
-     ("bar") Actual Progress display mode -- 210px leaves them a small
-     margin before any further (unpinned) chips start getting clipped. */
-  max-width: 210px;
+  /* No fixed max-width any more -- the label column itself is now
+     user-resizable (see timelineLabelWidth / the drag handle on
+     .timeline-label-cell in TimelineView.tsx), so chips just flow within
+     whatever width the person has dragged the column to. overflow: hidden
+     stays as a plain safety net for an unresized/narrow column, not a
+     designed-in cap. */
   overflow: hidden;
 }
 .timeline-chip {
@@ -991,6 +990,33 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   overflow: hidden;
   font-size: 11px;
   white-space: nowrap;
+}
+/* Drag handle for Timeline's resizable label column (see labelWidth /
+   onLabelWidthChange / startLabelResize in TimelineView.tsx) -- same
+   interaction feel as DataTable's own column-resize handle (an invisible
+   ~col-resize hit target pinned to the column's right edge), but with a
+   subtle hover highlight since here it's the *only* way to resize (Table's
+   columns are also draggable-reorderable via the header itself, so its
+   handle doesn't need one). Sits on .timeline-label-cell (row) and
+   .timeline-header-label-cell (header) -- both are already sticky-
+   positioned, which doubles as this handle's absolute-positioning context. */
+.timeline-label-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Both host cells (.timeline-label-cell / .timeline-header-label-cell)
+     have overflow: hidden (needed to clip long names/chips), so unlike
+     DataTable's <th> handle this can't hang half outside the cell edge --
+     keep it fully inside at right: 0 or it would itself get clipped. */
+  right: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.timeline-label-resize-handle:hover,
+.timeline-label-resize-handle:active {
+  background: var(--accent);
+  opacity: 0.35;
 }
 .timeline-row:hover .timeline-label-cell {
   background: var(--hover-bg);

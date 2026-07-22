@@ -48,11 +48,18 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     setViews((vs) => vs.map((v) => (v.id === activeView.id ? { ...v, ...patch } : v)));
   }
 
-  function createView(name: string, viewType: ViewType = "table", initialGroupBy?: string) {
+  function createView(name: string, viewType: ViewType = "table", initialGroupBy?: string, initialHiddenColumns?: string[]) {
     const id = `view_${Date.now()}`;
     setViews((vs) => [
       ...vs,
-      { ...makeDefault(defaultView), id, name, viewType, groupBy: initialGroupBy ?? defaultView.groupBy },
+      {
+        ...makeDefault(defaultView),
+        id,
+        name,
+        viewType,
+        groupBy: initialGroupBy ?? defaultView.groupBy,
+        hiddenColumns: initialHiddenColumns ?? defaultView.hiddenColumns,
+      },
     ]);
     setActiveViewId(id);
   }

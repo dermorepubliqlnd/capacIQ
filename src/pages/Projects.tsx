@@ -105,6 +105,13 @@ interface ExtensionRequestLite {
 type TaskWithDepth = TaskRow & { _depth: number };
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
+
+// Default hidden-columns set for a brand-new Projects Timeline view (see
+// timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
+// createView) -- per Sandra's curated Timeline-chip spec, Category/Effort/
+// Timelines(lock state)/Days Extended start hidden but stay available to
+// turn on via Properties; Status/Owner/Priority/Health start visible.
+const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "timelines_locked", "days_extended"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -2351,26 +2358,22 @@ export default function Projects() {
   const taskTimelineGroupOption =
     taskGroupMode === "timeline" ? taskBoardGroupOptions.find((g) => g.key === taskResolvedGroupBy) : undefined;
 
-  // Timeline chips: Owner is dropped here (redundant with the Projects table
-  // itself -- Sandra's fine seeing it there instead). Actual Progress is
-  // ALSO dropped from the chip row -- it now renders as a plain "NN%" label
-  // directly after the Gantt bar itself (see getProgressLabel below), which
-  // makes the old progress chip (bar/ring + number crammed into the label
-  // column) redundant. Priority is still pulled to the front so it can't be
-  // starved out by whatever else happens to be visible (Status, Health,
-  // Category, Effort, dates, ...) competing for the same fixed-width chip
-  // row.
-  const PROJECT_TIMELINE_PINNED_KEYS = ["priority"];
-  const projectTimelinePropertyColumns = (() => {
-    const visible = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
-      (c) => c.key !== "name" && c.key !== "owner" && c.key !== "actual_progress"
-    );
-    const pinned = PROJECT_TIMELINE_PINNED_KEYS.map((key) => visible.find((c) => c.key === key)).filter(
-      (c): c is (typeof visible)[number] => !!c
-    );
-    const rest = visible.filter((c) => !PROJECT_TIMELINE_PINNED_KEYS.includes(c.key));
-    return [...pinned, ...rest];
-  })();
+  // Timeline chips: curated per Sandra's Projects-Timeline spec. Name is
+  // never a chip (it's the label itself); Actual Progress is never a chip
+  // either -- it renders as a plain "NN%" label directly after the Gantt
+  // bar (see getProgress/getProgressLabel above), which would be a
+  // redundant second progress indicator here. Start/Due dates are also
+  // permanently excluded -- Sandra agreed they're redundant with the bar's
+  // own position/length. Everything else (Status, Owner, Priority, Health
+  // visible by default; Category, Effort, Timelines, Days Extended hidden
+  // by default -- see PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS) is a normal
+  // toggleable Properties column, shown in plain left-to-right
+  // PROJECT_COLUMN_ORDER order -- no more pinning any one property to the
+  // front.
+  const PROJECT_TIMELINE_EXCLUDED_KEYS = ["name", "actual_progress", "start_date", "end_date"];
+  const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
+    (c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key)
+  );
   const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
 
   return (
@@ -2407,6 +2410,7 @@ export default function Projects() {
             onSelect={projectViews.setActiveViewId}
             onCreate={projectViews.createView}
             boardDefaultGroupBy="project_status"
+            timelineDefaultHiddenColumns={PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
@@ -2532,6 +2536,8 @@ export default function Projects() {
               getGroup={projectTimelineGroupOption ? (p) => projectTimelineGroupOption.getGroup(p) : undefined}
               getGroupTone={projectTimelineGroupOption?.getTone}
               hiddenGroups={projectViews.activeView.hiddenGroups}
+              labelWidth={projectViews.activeView.timelineLabelWidth ?? 460}
+              onLabelWidthChange={(timelineLabelWidth) => projectViews.updateActiveView({ timelineLabelWidth })}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -2710,6 +2716,8 @@ export default function Projects() {
               getGroup={taskTimelineGroupOption ? (t) => taskTimelineGroupOption.getGroup(t) : undefined}
               getGroupTone={taskTimelineGroupOption?.getTone}
               hiddenGroups={taskViews.activeView.hiddenGroups}
+              labelWidth={taskViews.activeView.timelineLabelWidth ?? 460}
+              onLabelWidthChange={(timelineLabelWidth) => taskViews.updateActiveView({ timelineLabelWidth })}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

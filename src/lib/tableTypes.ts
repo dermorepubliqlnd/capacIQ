@@ -133,6 +133,11 @@ export interface TableView {
   // See TimelineView.tsx.
   timelineScale?: "day" | "week" | "month" | "quarter";
   timelineDateMode?: "range" | "start" | "due";
+  // Width (px) of Timeline's sticky label column, user-resizable via a drag
+  // handle on its right edge (see TimelineView.tsx) -- optional/fallback-safe
+  // for the same reason as progressDisplay/timelineScale above; callers
+  // should fall back to 460 when reading a view that predates this field.
+  timelineLabelWidth?: number;
   // Row-level Filter (a person multi-select + a Status multi-select) --
   // optional for the same reason as progressDisplay/timelineScale above.
   // Undefined/empty both mean "no filter, show all", matching how
