@@ -871,12 +871,19 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
    aren't pixel-locked to each chip below (chips are a flexible, clipped
    row, not fixed columns), but showing the same property names in the
    same left-to-right order gives clear context for what each pill means. */
+/* Matches .data-table th (text-align: left, uppercase, letter-spacing,
+   var(--font-caption)) so Timeline's own column headers read as the same
+   kind of header used everywhere else in the app -- Sandra: "think
+   consistency in all aspects of this app". */
 .timeline-header-name-label {
   flex: 1 1 auto;
   min-width: 24px;
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -886,14 +893,25 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  max-width: 60%;
   overflow: hidden;
 }
+/* flex-shrink: 0 mirrors .timeline-chip below it -- without this, the
+   header's chip labels (default flex-shrink: 1) would shrink independently
+   of the row chips (flex-shrink: 0), so the two containers ended up
+   different total widths and the whole header row's chips visually
+   drifted out of alignment with the data underneath (Sandra: "the header
+   is centered but the details are left aligned"). Widths are set inline
+   per column key (see chipColWidths in TimelineView.tsx) so both rows use
+   the exact same box per property. */
 .timeline-header-chip-label {
-  font-size: 10.5px;
+  font-size: var(--font-caption);
   font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
+  text-align: left;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .timeline-header-cell {
   flex-shrink: 0;
