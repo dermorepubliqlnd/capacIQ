@@ -858,6 +858,42 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   z-index: 4;
   background: var(--surface);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  overflow: hidden;
+}
+/* Mirrors the row-level name+chips split below it (.timeline-label-name /
+   .timeline-label-chips) so the header reads as real column headers for
+   whichever properties are currently visible -- Sandra: "add property
+   headers in the column if the property is shown in the grid". Widths
+   aren't pixel-locked to each chip below (chips are a flexible, clipped
+   row, not fixed columns), but showing the same property names in the
+   same left-to-right order gives clear context for what each pill means. */
+.timeline-header-name-label {
+  flex: 1 1 auto;
+  min-width: 24px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-header-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  max-width: 60%;
+  overflow: hidden;
+}
+.timeline-header-chip-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .timeline-header-cell {
   flex-shrink: 0;
@@ -983,6 +1019,12 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   top: 0;
   left: 0;
   bottom: 0;
+  /* Match the parent .timeline-bar's own border-radius (7px, a full
+     "pill"/"stadium" shape -- rounded ends, straight sides) so the solid
+     fill doesn't show a hard square inner edge near 100% progress, where
+     the flat rectangle used to visibly poke past the parent's rounded
+     cap. Sandra flagged this as "broken" shape at high percentages. */
+  border-radius: inherit;
 }
 /* Plain "NN%" label rendered just after a Projects-Timeline bar's right
    edge (see getProgress in TimelineView.tsx) -- Sandra asked for the

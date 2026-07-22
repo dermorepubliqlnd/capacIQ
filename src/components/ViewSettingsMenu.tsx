@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpDown, Layers, SlidersHorizontal, Filter, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Trash2, X } from "lucide-react";
+import { ArrowUpDown, Layers, SlidersHorizontal, Filter, Eye, EyeOff, ArrowUp, ArrowDown, ChevronUp, ChevronDown, Plus, Trash2, X } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, SortRule } from "../lib/tableTypes";
 
 interface ViewControlsProps<T> {
@@ -270,8 +270,19 @@ export default function ViewSettingsMenu<T>({
             {sorts.map((s, idx) => {
               const option = sortOptions.find((o) => o.key === s.key);
               return (
-                <div key={`${s.key}_${idx}`} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
-                  <span style={{ fontSize: 10, color: "var(--muted)", width: 12 }}>{idx + 1}.</span>
+                <div key={`${s.key}_${idx}`} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  {/* Priority badge: a filled pill rather than plain "1."
+                      text, so hierarchy (which rule applies first) reads
+                      as its own distinct visual concept from the A-Z/Z-A
+                      direction toggle next to it -- these two used to be
+                      easy to mix up since both were bare up/down arrows
+                      of nearly the same size. */}
+                  <span
+                    title="Sort priority -- rule 1 sorts first, the rest break ties in order"
+                    style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", background: "#eaf1fb", borderRadius: "50%", width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                  >
+                    {idx + 1}
+                  </span>
                   <select
                     value={s.key}
                     onChange={(e) => updateSort(idx, { key: e.target.value })}
@@ -286,27 +297,35 @@ export default function ViewSettingsMenu<T>({
                   </select>
                   <button
                     onClick={() => updateSort(idx, { direction: s.direction === "asc" ? "desc" : "asc" })}
-                    title={s.direction === "asc" ? "Ascending" : "Descending"}
+                    title={s.direction === "asc" ? "Direction: Ascending -- click for Descending" : "Direction: Descending -- click for Ascending"}
                     style={{ display: "flex", alignItems: "center", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", cursor: "pointer", padding: 4, color: "var(--text-secondary)" }}
                   >
                     {s.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
                   </button>
-                  <button
-                    onClick={() => moveSort(idx, -1)}
-                    disabled={idx === 0}
-                    title="Move up (higher priority)"
-                    style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: idx === 0 ? "default" : "pointer", padding: 2, color: idx === 0 ? "var(--border)" : "var(--muted)" }}
-                  >
-                    <ArrowUp size={11} />
-                  </button>
-                  <button
-                    onClick={() => moveSort(idx, 1)}
-                    disabled={idx === sorts.length - 1}
-                    title="Move down (lower priority)"
-                    style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: idx === sorts.length - 1 ? "default" : "pointer", padding: 2, color: idx === sorts.length - 1 ? "var(--border)" : "var(--muted)" }}
-                  >
-                    <ArrowDown size={11} />
-                  </button>
+                  {/* Reorder (hierarchy) control: a separate bordered
+                      stepper using chevrons, not arrows -- a different icon
+                      shape from the direction toggle above so the two
+                      controls can't be mistaken for each other at a
+                      glance, plus visual grouping (its own box) signals
+                      "these two buttons are one control". */}
+                  <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+                    <button
+                      onClick={() => moveSort(idx, -1)}
+                      disabled={idx === 0}
+                      title="Higher priority (applies earlier)"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderBottom: "1px solid var(--border)", cursor: idx === 0 ? "default" : "pointer", padding: "1px 3px", color: idx === 0 ? "var(--border)" : "var(--text-secondary)" }}
+                    >
+                      <ChevronUp size={11} />
+                    </button>
+                    <button
+                      onClick={() => moveSort(idx, 1)}
+                      disabled={idx === sorts.length - 1}
+                      title="Lower priority (applies later)"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: idx === sorts.length - 1 ? "default" : "pointer", padding: "1px 3px", color: idx === sorts.length - 1 ? "var(--border)" : "var(--text-secondary)" }}
+                    >
+                      <ChevronDown size={11} />
+                    </button>
+                  </div>
                   <button
                     onClick={() => removeSort(idx)}
                     title="Remove sort"
@@ -318,7 +337,9 @@ export default function ViewSettingsMenu<T>({
               );
             })}
             {sorts.length > 1 && (
-              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 6 }}>Rule 1 sorts first; the rest break ties in order.</div>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 6 }}>
+                Numbered badge = priority order (rule 1 sorts first). Chevron stepper = reorder priority. Arrow button = ascending/descending direction.
+              </div>
             )}
             {availableToAdd.length > 0 && (
               <button
@@ -407,29 +428,29 @@ export default function ViewSettingsMenu<T>({
         {(close) => (
           <>
             <PopoverHeader label="Properties" onClose={close} />
-            {columns.map((c) => (
-              <label
-                key={c.key}
-                title={c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: 12,
-                  padding: "3px 2px",
-                  cursor: c.alwaysVisible ? "default" : "pointer",
-                  color: c.alwaysVisible ? "var(--muted)" : undefined,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={c.alwaysVisible ? true : !hiddenColumns.includes(c.key)}
-                  disabled={c.alwaysVisible}
-                  onChange={() => !c.alwaysVisible && onToggleColumn(c.key)}
-                />
-                {c.label}
-              </label>
-            ))}
+            {columns.map((c) => {
+              const visible = c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
+              return (
+                <div
+                  key={c.key}
+                  onClick={() => !c.alwaysVisible && onToggleColumn(c.key)}
+                  title={c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 6,
+                    fontSize: 12,
+                    padding: "3px 2px",
+                    cursor: c.alwaysVisible ? "default" : "pointer",
+                    color: c.alwaysVisible ? "var(--muted)" : visible ? "var(--text)" : "var(--muted)",
+                  }}
+                >
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
+                  {visible ? <Eye size={13} /> : <EyeOff size={13} />}
+                </div>
+              );
+            })}
           </>
         )}
       </IconPopoverButton>

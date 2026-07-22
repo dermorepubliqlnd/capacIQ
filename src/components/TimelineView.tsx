@@ -367,7 +367,18 @@ export default function TimelineView<T>({
       <div className="timeline-scroll">
         <div className="timeline-inner" style={{ width: LABEL_W + gridWidth }}>
           <div className="timeline-header-row" style={{ height: headerHeight }}>
-            <div className="timeline-header-label-cell" style={{ width: LABEL_W }} />
+            <div className="timeline-header-label-cell" style={{ width: LABEL_W }}>
+              <span className="timeline-header-name-label">Name</span>
+              {propertyColumns && propertyColumns.length > 0 && (
+                <div className="timeline-header-chips">
+                  {propertyColumns.map((c) => (
+                    <span key={c.key} className="timeline-header-chip-label">
+                      {c.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
             <div style={{ display: "flex", flexDirection: "column", flexShrink: 0, width: gridWidth }}>
               {scale === "day" && (
                 <div style={{ display: "flex", height: HEADER_ROW_H }}>
