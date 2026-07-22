@@ -133,16 +133,39 @@ export interface TableView {
   // See TimelineView.tsx.
   timelineScale?: "day" | "week" | "month" | "quarter";
   timelineDateMode?: "range" | "start" | "due";
-  // Row-level Filter (v1: "assigned to me" + a Status multi-select) --
+  // Row-level Filter (a person multi-select + a Status multi-select) --
   // optional for the same reason as progressDisplay/timelineScale above.
-  // Undefined/false and undefined/empty both mean "no filter, show all",
-  // matching how hiddenColumns/hiddenGroups empty arrays already mean
-  // "nothing hidden" elsewhere in this file. Unlike Sort/Group-by/
-  // Properties, this isn't rendering config -- callers apply it to the
-  // shared row list before it's handed to whichever view (Table/Board/
-  // Timeline) is active, so one filter setting covers all three.
+  // Undefined/empty both mean "no filter, show all", matching how
+  // hiddenColumns/hiddenGroups empty arrays already mean "nothing hidden"
+  // elsewhere in this file. Unlike Sort/Group-by/Properties, this isn't
+  // rendering config -- callers apply it to the shared row list before
+  // it's handed to whichever view (Table/Board/Timeline) is active, so one
+  // filter setting covers all three.
+  //
+  // Each entry is either a real `person.id`, or the sentinel string "me".
+  // "me" is stored literally rather than baking in the viewer's own id
+  // because views are shared across the team -- "me" must resolve
+  // dynamically to whoever is currently looking at the view (see
+  // resolveFilterPersonIds below), not whoever last edited the filter.
+  //
+  // `filterAssignedToMe` is the old (now-retired) boolean-only version of
+  // this filter -- kept here, still optional, purely so already-saved
+  // views that shipped before this field existed don't lose their filter.
+  // Read sites should go through resolveFilterPersonIds() rather than
+  // reading either field directly, so the migration lives in one place.
   filterAssignedToMe?: boolean;
+  filterPersonIds?: string[];
   filterStatuses?: string[];
+}
+
+// One-line migration for views saved before filterPersonIds existed: if a
+// view predates this field (filterPersonIds is undefined) but had the old
+// filterAssignedToMe boolean set, treat that as ["me"] so the filter isn't
+// silently dropped. Once a view has been edited via the new picker,
+// filterPersonIds is always present (possibly []) and this fallback no
+// longer applies to it.
+export function resolveFilterPersonIds(view: TableView): string[] {
+  return view.filterPersonIds ?? (view.filterAssignedToMe ? ["me"] : []);
 }
 
 export type DefaultView = Omit<TableView, "id" | "name">;

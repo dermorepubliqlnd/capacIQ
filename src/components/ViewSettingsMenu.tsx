@@ -28,12 +28,19 @@ interface ViewControlsProps<T> {
   // grouped-accordion view, where every listed option is usable and
   // ungrouped is always allowed.
   groupMode?: "board" | "timeline";
-  // Row-level Filter (assigned-to-me + status multi-select) -- unlike
-  // Sort/Group-by/Properties, this isn't view-rendering config: it's
-  // applied to the shared row list *before* Table/Board/Timeline ever
-  // see it, so the same filter holds no matter which view type is active.
-  filterAssignedToMe: boolean;
-  onFilterAssignedToMeChange: (value: boolean) => void;
+  // Row-level Filter (a person multi-select + a status multi-select) --
+  // unlike Sort/Group-by/Properties, this isn't view-rendering config:
+  // it's applied to the shared row list *before* Table/Board/Timeline
+  // ever see it, so the same filter holds no matter which view type is
+  // active.
+  //
+  // `people` is the same list Projects.tsx already fetches once and reuses
+  // for its Owner/Assignee dropdowns -- passed through here rather than
+  // refetched, purely so the Filter popover's checklist and the pill's
+  // name lookups stay in sync with whatever the rest of the page shows.
+  people: { id: string; name: string }[];
+  filterPersonIds: string[];
+  onFilterPersonIdsChange: (ids: string[]) => void;
   statusOptions: string[];
   filterStatuses: string[];
   onFilterStatusesChange: (statuses: string[]) => void;
@@ -163,8 +170,9 @@ export default function ViewSettingsMenu<T>({
   sorts,
   onSortsChange,
   groupMode,
-  filterAssignedToMe,
-  onFilterAssignedToMeChange,
+  people,
+  filterPersonIds,
+  onFilterPersonIdsChange,
   statusOptions,
   filterStatuses,
   onFilterStatusesChange,
@@ -180,6 +188,13 @@ export default function ViewSettingsMenu<T>({
 
   function toggleFilterStatus(value: string) {
     onFilterStatusesChange(filterStatuses.includes(value) ? filterStatuses.filter((s) => s !== value) : [...filterStatuses, value]);
+  }
+
+  // "me" plus every real person.id are just entries in the same array --
+  // toggling either works the same way, which is what lets a lead check
+  // "Me" and two direct reports at once.
+  function toggleFilterPerson(id: string) {
+    onFilterPersonIdsChange(filterPersonIds.includes(id) ? filterPersonIds.filter((p) => p !== id) : [...filterPersonIds, id]);
   }
 
   const usedKeys = new Set(sorts.map((s) => s.key));
@@ -205,14 +220,33 @@ export default function ViewSettingsMenu<T>({
 
   return (
     <>
-      <IconPopoverButton icon={<Filter size={13} />} label="Filter" active={filterAssignedToMe || filterStatuses.length > 0} width={200}>
+      <IconPopoverButton icon={<Filter size={13} />} label="Filter" active={filterPersonIds.length > 0 || filterStatuses.length > 0} width={220}>
         {(close) => (
           <>
             <PopoverHeader label="Filter" onClose={close} />
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer", marginBottom: 6 }}>
-              <input type="checkbox" checked={filterAssignedToMe} onChange={(e) => onFilterAssignedToMeChange(e.target.checked)} />
-              Assigned to me
-            </label>
+            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
+              Assigned to
+            </div>
+            <div style={{ maxHeight: 160, overflowY: "auto", marginBottom: 6 }}>
+              {/* "Me" is pinned first and kept visually separate (its own
+                  row plus a thin divider) from the rest of the people list
+                  below it, since it's the quick common case (an individual
+                  contributor filtering to their own work) while the person
+                  checklist underneath is the supervisor/lead case (picking
+                  one or more *other* specific people). Both live in the
+                  same filterPersonIds array either way. */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer", fontWeight: 500 }}>
+                <input type="checkbox" checked={filterPersonIds.includes("me")} onChange={() => toggleFilterPerson("me")} />
+                Me
+              </label>
+              {people.length > 0 && <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />}
+              {people.map((p) => (
+                <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 2px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={filterPersonIds.includes(p.id)} onChange={() => toggleFilterPerson(p.id)} />
+                  {p.name}
+                </label>
+              ))}
+            </div>
             <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3, color: "var(--muted)", marginBottom: 4 }}>
               Status
             </div>
@@ -415,7 +449,8 @@ export function ViewFilterPills<T>({
   sorts,
   onSortsChange,
   groupMode,
-  filterAssignedToMe,
+  people,
+  filterPersonIds,
   filterStatuses,
   onClearFilter,
 }: {
@@ -428,23 +463,31 @@ export function ViewFilterPills<T>({
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
   groupMode?: "board" | "timeline";
-  filterAssignedToMe: boolean;
+  people: { id: string; name: string }[];
+  filterPersonIds: string[];
   filterStatuses: string[];
   onClearFilter: () => void;
 }) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
-  const hasFilter = filterAssignedToMe || filterStatuses.length > 0;
+  const hasFilter = filterPersonIds.length > 0 || filterStatuses.length > 0;
   if (!activeOption && sorts.length === 0 && !hasFilter) return null;
 
   const filterParts: string[] = [];
-  if (filterAssignedToMe) filterParts.push("Assigned to me");
+  if (filterPersonIds.length > 0) {
+    // Resolve each id to a display name -- "me" always shows literally as
+    // "Me" (the pill can't know who's looking without duplicating the
+    // caller's own useSession() call), everything else is looked up by id
+    // in the same `people` list the picker above uses.
+    const names = filterPersonIds.map((id) => (id === "me" ? "Me" : people.find((p) => p.id === id)?.name ?? "Unknown"));
+    filterParts.push(names.join(", "));
+  }
   if (filterStatuses.length > 0) filterParts.push(`Status: ${filterStatuses.join(", ")}`);
 
   return (
     <div className="view-filter-pills">
       {hasFilter && (
         <span className="filter-pill">
-          Filtered: {filterParts.join(", ")}
+          Filtered: {filterParts.join(" \u00b7 ")}
           <button title="Clear filter" onClick={onClearFilter}>
             <X size={10} />
           </button>

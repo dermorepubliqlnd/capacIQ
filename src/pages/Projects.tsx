@@ -14,7 +14,7 @@ import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
-import { sortRows, visibleOrderedColumns } from "../lib/tableTypes";
+import { sortRows, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
@@ -1170,15 +1170,22 @@ export default function Projects() {
   });
 
   // Row-level Filter applied upstream of sort/group/render so it covers
-  // Table, Board, and Timeline alike -- "assigned to me" reuses the same
-  // owner_id identity check as canEditProject/isProjectOwner above, and an
-  // empty filterStatuses (or it being unset on older saved views) means
+  // Table, Board, and Timeline alike -- the person filter reuses the same
+  // owner_id identity check as canEditProject/isProjectOwner above, just
+  // extended from a single "is it me" boolean to a multi-select ("me"
+  // and/or specific people, e.g. a supervisor checking a couple of direct
+  // reports at once). resolveFilterPersonIds() folds in the old
+  // filterAssignedToMe boolean for views saved before this field existed.
+  // An empty filterStatuses (or it being unset on older saved views) means
   // "no filter", matching hiddenColumns/hiddenGroups' own empty-means-
   // nothing-hidden convention.
   const filteredProjects = useMemo(() => {
     const view = projectViews.activeView;
     let out = projects;
-    if (view.filterAssignedToMe) out = out.filter((p) => p.owner_id === me?.id);
+    const personIds = resolveFilterPersonIds(view);
+    if (personIds.length > 0) {
+      out = out.filter((p) => personIds.some((id) => (id === "me" ? p.owner_id === me?.id : p.owner_id === id)));
+    }
     if (view.filterStatuses && view.filterStatuses.length > 0) {
       const statuses = view.filterStatuses;
       out = out.filter((p) => statuses.includes(p.project_status ?? ""));
@@ -2261,13 +2268,18 @@ export default function Projects() {
     sorts: [],
   });
 
-  // Same upstream Filter step as filteredProjects above -- "assigned to me"
-  // reuses the same t.assignee_id === me?.id identity check already used
-  // to gate the per-row timer button.
+  // Same upstream Filter step as filteredProjects above -- the person
+  // filter reuses the same t.assignee_id === me?.id identity check already
+  // used to gate the per-row timer button, extended to a multi-select via
+  // resolveFilterPersonIds() (see filteredProjects above for the full
+  // rationale).
   const filteredVisibleTasks = useMemo(() => {
     const view = taskViews.activeView;
     let out = visibleTasks;
-    if (view.filterAssignedToMe) out = out.filter((t) => t.assignee_id === me?.id);
+    const personIds = resolveFilterPersonIds(view);
+    if (personIds.length > 0) {
+      out = out.filter((t) => personIds.some((id) => (id === "me" ? t.assignee_id === me?.id : t.assignee_id === id)));
+    }
     if (view.filterStatuses && view.filterStatuses.length > 0) {
       const statuses = view.filterStatuses;
       out = out.filter((t) => statuses.includes(t.status ?? ""));
@@ -2405,8 +2417,9 @@ export default function Projects() {
               sorts={projectViews.activeView.sorts}
               onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
               groupMode={projectGroupMode}
-              filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
-              onFilterAssignedToMeChange={(filterAssignedToMe) => projectViews.updateActiveView({ filterAssignedToMe })}
+              people={people}
+              filterPersonIds={resolveFilterPersonIds(projectViews.activeView)}
+              onFilterPersonIdsChange={(filterPersonIds) => projectViews.updateActiveView({ filterPersonIds })}
               statusOptions={PROJECT_STATUS_OPTIONS}
               filterStatuses={projectViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => projectViews.updateActiveView({ filterStatuses })}
@@ -2431,9 +2444,10 @@ export default function Projects() {
           sorts={projectViews.activeView.sorts}
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
           groupMode={projectGroupMode}
-          filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
+          people={people}
+          filterPersonIds={resolveFilterPersonIds(projectViews.activeView)}
           filterStatuses={projectViews.activeView.filterStatuses ?? []}
-          onClearFilter={() => projectViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
+          onClearFilter={() => projectViews.updateActiveView({ filterPersonIds: [], filterStatuses: [] })}
         />
         {projectViews.activeView.viewType !== "board" && projectViews.activeView.viewType !== "timeline" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
@@ -2583,8 +2597,9 @@ export default function Projects() {
               sorts={taskViews.activeView.sorts}
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
               groupMode={taskGroupMode}
-              filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
-              onFilterAssignedToMeChange={(filterAssignedToMe) => taskViews.updateActiveView({ filterAssignedToMe })}
+              people={people}
+              filterPersonIds={resolveFilterPersonIds(taskViews.activeView)}
+              onFilterPersonIdsChange={(filterPersonIds) => taskViews.updateActiveView({ filterPersonIds })}
               statusOptions={TASK_STATUS_OPTIONS}
               filterStatuses={taskViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => taskViews.updateActiveView({ filterStatuses })}
@@ -2609,9 +2624,10 @@ export default function Projects() {
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
           groupMode={taskGroupMode}
-          filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
+          people={people}
+          filterPersonIds={resolveFilterPersonIds(taskViews.activeView)}
           filterStatuses={taskViews.activeView.filterStatuses ?? []}
-          onClearFilter={() => taskViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
+          onClearFilter={() => taskViews.updateActiveView({ filterPersonIds: [], filterStatuses: [] })}
         />
         {taskViews.activeView.viewType !== "board" && taskViews.activeView.viewType !== "timeline" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
