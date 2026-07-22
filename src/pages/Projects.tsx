@@ -2441,7 +2441,7 @@ export default function Projects() {
     { key: "timing", label: "Timing", getValue: (t) => timingRank(timingOf(t).label) },
     { key: "current_due_date", label: "Due", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
     { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
-    { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => t.time_spent_hours ?? null },
+    { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => spentHoursFor(t.id) },
     {
       key: "due_date_ext",
       label: "Due Date Ext.",
