@@ -2371,9 +2371,21 @@ export default function Projects() {
   // PROJECT_COLUMN_ORDER order -- no more pinning any one property to the
   // front.
   const PROJECT_TIMELINE_EXCLUDED_KEYS = ["name", "actual_progress", "start_date", "end_date"];
-  const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
-    (c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key)
-  );
+  // Explicit chip order agreed with Sandra: Status, Owner, Priority, Health
+  // (the default-visible tier) first, then Category/Effort/Timelines/Days
+  // Extended (hidden-by-default, shown if opted into) after -- deliberately
+  // NOT the same left-to-right order as PROJECT_COLUMN_ORDER (which drives
+  // Table view and lists Owner before Status), so Table's own column order
+  // is untouched by this Timeline-only preference.
+  const PROJECT_TIMELINE_CHIP_ORDER = ["project_status", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended"];
+  const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView)
+    .filter((c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key))
+    .slice()
+    .sort((a, b) => {
+      const ai = PROJECT_TIMELINE_CHIP_ORDER.indexOf(a.key);
+      const bi = PROJECT_TIMELINE_CHIP_ORDER.indexOf(b.key);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
   const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
 
   return (
