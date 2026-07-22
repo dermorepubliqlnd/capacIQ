@@ -916,7 +916,12 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 }
 .timeline-label-name {
   flex: 1 1 auto;
-  min-width: 24px;
+  /* Protects the project/task name from being squeezed down to a couple
+     of characters by the pinned property chips -- LABEL_W (380) was
+     sized so a typical name plus the two guaranteed chips (Priority +
+     Actual Progress, ~210px) both fit comfortably; this min-width is a
+     backstop for longer names, at which point chips clip first. */
+  min-width: 100px;
   overflow: hidden;
 }
 .timeline-label-chips {

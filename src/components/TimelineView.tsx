@@ -92,7 +92,7 @@ const ROW_H = 32;
 // Progress display mode, so the label column needed more room than a
 // single generic "a chip or two" estimate -- see .timeline-label-chips in
 // index.css for the matching chip-area width bump.
-const LABEL_W = 300;
+const LABEL_W = 380;
 const HEADER_H = 30;
 // Day scale uses a two-row header (Month group row + Day-number row)
 // instead of a single row of "Jul 16"-style labels, so a Gantt view at
