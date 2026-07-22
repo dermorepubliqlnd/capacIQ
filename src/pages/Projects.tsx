@@ -1332,6 +1332,12 @@ export default function Projects() {
             />
           </span>
         ),
+        // The bar/number/ring toggle above belongs in the real column
+        // header, not the Properties show/hide popover (it's a display
+        // switch, not a name) -- plainLabel gives that popover a
+        // text-only fallback so it doesn't render the icon as a stray
+        // glyph next to a checklist row (Sandra, 2026-07-22).
+        plainLabel: "Actual Progress",
         defaultWidth: 170,
         minWidth: 120,
         render: (p) => {

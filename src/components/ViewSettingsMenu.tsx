@@ -463,7 +463,7 @@ export default function ViewSettingsMenu<T>({
                     color: locked ? "var(--muted)" : visible ? "var(--text)" : "var(--muted)",
                   }}
                 >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.plainLabel ?? c.label}</span>
                   {visible ? <Eye size={13} /> : <EyeOff size={13} />}
                 </div>
               );

@@ -4,9 +4,19 @@ export interface ColumnDef<T> {
   key: string;
   // Usually a plain string, but a column can supply richer header content
   // (e.g. Actual Progress's inline bar/number/ring display-mode toggle) --
-  // DataTable and the Properties checklist both just render this as a
-  // child, so ReactNode works everywhere a string did.
+  // DataTable renders this as the real <th> content, where the toggle is
+  // meant to live so people can switch the display format. The Properties
+  // popover shows plainLabel instead when it's set (see below) so that
+  // same toggle icon doesn't leak into a plain show/hide checklist row,
+  // where it doesn't do anything and just reads as a stray glyph --
+  // Sandra flagged this 2026-07-22.
   label: ReactNode;
+  // Text-only variant of `label`, used anywhere a column name needs to
+  // render as plain text rather than the richer header content -- today
+  // just the Properties popover. Falls back to `label` itself when
+  // unset, so every column that already has a plain-string label needs no
+  // change.
+  plainLabel?: string;
   minWidth?: number;
   defaultWidth?: number;
   // Caps how far this column can be dragged wider — sized per column's
