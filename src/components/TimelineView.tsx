@@ -390,7 +390,10 @@ export default function TimelineView<T>({
       const width = Math.max(Math.abs(x2 - x1), 6);
       const progress = getProgress?.(row) ?? null;
       return (
-        <div key="range-wrap" style={{ position: "absolute", left, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 6 }}>
+        <div
+          key="range-wrap"
+          style={{ position: "absolute", left, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 10 }}
+        >
           <div
             className="timeline-bar"
             title={tooltip}
