@@ -23,24 +23,52 @@ function load(storageKey: string, defaultView: DefaultView): TableView[] {
   return [makeDefault(defaultView)];
 }
 
+// Which view was last active also needs its own persisted slot -- without
+// this, a refresh always fell back to views[0] (the "All" table view) no
+// matter what the person was actually looking at, e.g. reloading while on
+// a Timeline view silently dropped them back to the Table view (caught by
+// Sandra 2026-07-22). Stored as a tiny separate key rather than folded
+// into the main views array so bumping it doesn't touch the (much larger,
+// already-JSON'd) view list on every tab switch.
+function loadActiveId(activeKey: string, views: TableView[]): string {
+  try {
+    const raw = localStorage.getItem(activeKey);
+    if (raw && views.some((v) => v.id === raw)) return raw;
+  } catch {
+    // ignore corrupt storage
+  }
+  return views[0].id;
+}
+
 // Notion-style saved "views" for a data table: each view remembers its own
 // column order, hidden columns, widths, and grouping. Stored per-person
 // (keyed by personId) in localStorage so everyone gets their own layout.
 export function useTableViews(tableKey: string, personId: string | undefined, defaultView: DefaultView) {
   const storageKey = `${STORAGE_PREFIX}_${tableKey}_${personId ?? "anon"}`;
+  const activeKey = `${storageKey}_active`;
   const [views, setViews] = useState<TableView[]>(() => load(storageKey, defaultView));
-  const [activeViewId, setActiveViewId] = useState<string>(() => load(storageKey, defaultView)[0].id);
+  const [activeViewId, setActiveViewId] = useState<string>(() => loadActiveId(activeKey, load(storageKey, defaultView)));
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const loaded = load(storageKey, defaultView);
     setViews(loaded);
-    setActiveViewId(loaded[0].id);
+    setActiveViewId(loadActiveId(activeKey, loaded));
   }, [storageKey]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(views));
   }, [views, storageKey]);
+
+  // Persist whichever view (Table/Board/Timeline tab, or a saved view
+  // within one) is currently active so a page refresh returns to it
+  // instead of resetting to "All". Guarded so a stale id (e.g. the active
+  // view was just deleted, see deleteView below) never gets written back.
+  useEffect(() => {
+    if (views.some((v) => v.id === activeViewId)) {
+      localStorage.setItem(activeKey, activeViewId);
+    }
+  }, [activeViewId, activeKey, views]);
 
   const activeView = views.find((v) => v.id === activeViewId) ?? views[0];
 
