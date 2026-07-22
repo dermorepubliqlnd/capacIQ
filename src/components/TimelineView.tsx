@@ -397,7 +397,20 @@ export default function TimelineView<T>({
           <div
             className="timeline-bar"
             title={tooltip}
-            style={{ position: "static", top: "auto", transform: "none", width, background: tone.bg, borderColor: tone.text }}
+            // position: "relative" (not "static") is load-bearing here --
+            // .timeline-bar-progress is `position: absolute; width: X%`,
+            // and a percentage width resolves against the nearest
+            // positioned ancestor. With this parent at "static" that
+            // ancestor search skipped past it to "range-wrap" above
+            // (bar + gap + label all together), so the fill rendered at
+            // X% of bar+gap+label's combined width instead of X% of just
+            // the bar -- at high percentages the fill visibly overflowed
+            // past the bar's own right edge and painted over the label
+            // text next to it (Sandra: "actual progress is hidden in the
+            // bar", worst at Quarter scale where the effect was largest).
+            // "relative" keeps it a normal flex item (unlike "absolute")
+            // while making it the correct containing block for the fill.
+            style={{ position: "relative", top: "auto", transform: "none", width, background: tone.bg, borderColor: tone.text }}
           >
             {progress !== null && (
               <div
