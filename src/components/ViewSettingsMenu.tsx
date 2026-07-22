@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpDown, Layers, SlidersHorizontal, Filter, Eye, EyeOff, ArrowUp, ArrowDown, ChevronUp, ChevronDown, Plus, Trash2, X } from "lucide-react";
+import { ArrowUpDown, Layers, SlidersHorizontal, Filter, Eye, EyeOff, ArrowUp, ArrowDown, GripVertical, Plus, Trash2, X } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, SortRule } from "../lib/tableTypes";
 
 interface ViewControlsProps<T> {
@@ -224,11 +224,19 @@ export default function ViewSettingsMenu<T>({
   function removeSort(idx: number) {
     onSortsChange(sorts.filter((_, i) => i !== idx));
   }
-  function moveSort(idx: number, dir: -1 | 1) {
+  // Drag-to-reorder for sort priority -- replaces the old up/down chevron
+  // stepper with a grip handle, matching Notion's own reorder affordance
+  // (Sandra, 2026-07-22: "can the sort hierarchy sorter be a grip bar
+  // instead of an arrow up and down"). draggedSortIdx tracks which row's
+  // drag is in progress; dropping onto another row splices it to that
+  // position (an array move, not a swap, so dragging rule 1 down past
+  // rules 2 and 3 lands it at position 3 in one drag, not just one slot).
+  const [draggedSortIdx, setDraggedSortIdx] = useState<number | null>(null);
+  function reorderSort(from: number, to: number) {
+    if (from === to) return;
     const next = [...sorts];
-    const target = idx + dir;
-    if (target < 0 || target >= next.length) return;
-    [next[idx], next[target]] = [next[target], next[idx]];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
     onSortsChange(next);
   }
 
@@ -283,8 +291,42 @@ export default function ViewSettingsMenu<T>({
             {sorts.length === 0 && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>No sorting applied</div>}
             {sorts.map((s, idx) => {
               const option = sortOptions.find((o) => o.key === s.key);
+              const isDragging = draggedSortIdx === idx;
               return (
-                <div key={`${s.key}_${idx}`} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                <div
+                  key={`${s.key}_${idx}`}
+                  onDragOver={(e) => {
+                    if (draggedSortIdx === null || draggedSortIdx === idx) return;
+                    e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggedSortIdx === null) return;
+                    reorderSort(draggedSortIdx, idx);
+                    setDraggedSortIdx(null);
+                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, opacity: isDragging ? 0.4 : 1 }}
+                >
+                  {/* Grip handle: drag-to-reorder the sort priority, same
+                      affordance as Notion's own rule reordering -- replaces
+                      the old up/down chevron stepper (Sandra, 2026-07-22:
+                      "can the sort hierarchy sorter be a grip bar instead
+                      of an arrow up and down"). Single-rule lists don't
+                      need a grip at all, since there's nothing to reorder
+                      against. */}
+                  {sorts.length > 1 ? (
+                    <span
+                      draggable
+                      onDragStart={() => setDraggedSortIdx(idx)}
+                      onDragEnd={() => setDraggedSortIdx(null)}
+                      title="Drag to reorder priority"
+                      style={{ display: "flex", alignItems: "center", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                    >
+                      <GripVertical size={14} />
+                    </span>
+                  ) : (
+                    <span style={{ width: 14, flexShrink: 0 }} />
+                  )}
                   {/* Priority badge: a filled pill rather than plain "1."
                       text, so hierarchy (which rule applies first) reads
                       as its own distinct visual concept from the A-Z/Z-A
@@ -316,30 +358,6 @@ export default function ViewSettingsMenu<T>({
                   >
                     {s.direction === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
                   </button>
-                  {/* Reorder (hierarchy) control: a separate bordered
-                      stepper using chevrons, not arrows -- a different icon
-                      shape from the direction toggle above so the two
-                      controls can't be mistaken for each other at a
-                      glance, plus visual grouping (its own box) signals
-                      "these two buttons are one control". */}
-                  <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
-                    <button
-                      onClick={() => moveSort(idx, -1)}
-                      disabled={idx === 0}
-                      title="Higher priority (applies earlier)"
-                      style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderBottom: "1px solid var(--border)", cursor: idx === 0 ? "default" : "pointer", padding: "1px 3px", color: idx === 0 ? "var(--border)" : "var(--text-secondary)" }}
-                    >
-                      <ChevronUp size={11} />
-                    </button>
-                    <button
-                      onClick={() => moveSort(idx, 1)}
-                      disabled={idx === sorts.length - 1}
-                      title="Lower priority (applies later)"
-                      style={{ display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: idx === sorts.length - 1 ? "default" : "pointer", padding: "1px 3px", color: idx === sorts.length - 1 ? "var(--border)" : "var(--text-secondary)" }}
-                    >
-                      <ChevronDown size={11} />
-                    </button>
-                  </div>
                   <button
                     onClick={() => removeSort(idx)}
                     title="Remove sort"
@@ -352,7 +370,7 @@ export default function ViewSettingsMenu<T>({
             })}
             {sorts.length > 1 && (
               <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 6 }}>
-                Numbered badge = priority order (rule 1 sorts first). Chevron stepper = reorder priority. Arrow button = ascending/descending direction.
+                Numbered badge = priority order (rule 1 sorts first). Grip handle = drag to reorder priority. Arrow button = ascending/descending direction.
               </div>
             )}
             {availableToAdd.length > 0 && (

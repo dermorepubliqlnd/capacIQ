@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock, X } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock, X, RotateCcw } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -770,6 +770,16 @@ export default function Projects() {
   }
   const canManageTasksIn = (projectId: string) => isFullAccess || isProjectOwner(projectId);
   const canEditTask = (t: TaskRow) => canManageTasksIn(t.project_id) || t.assignee_id === me?.id;
+  // Once a task's completion has been validated (owner/manager's
+  // independent sign-off, see the "Validated" column below), its editable
+  // fields freeze -- Assignee, Status, Effort, Estimated Hours, and
+  // Start/Due -- so nothing can silently drift out of sync with a record
+  // that's already been signed off (Sandra, 2026-07-22: "if it's validated
+  // then it can't be modified any more"). Reopening (clearing the
+  // validation and unlocking these fields again) is a deliberate, visible
+  // action restricted to Full Access only -- see the Reopen button in the
+  // validated_completion_date column.
+  const isTaskLocked = (t: TaskRow) => Boolean(t.validated_completion_date);
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
@@ -1879,7 +1889,7 @@ export default function Projects() {
         render: (t) => (
           <InlineSelect
             value={t.assignee_id ? ownerName(t.assignee_id) : ""}
-            editable={canEditTask(t)}
+            editable={canEditTask(t) && !isTaskLocked(t)}
             allowEmpty
             emptyLabel="— none —"
             options={people.map((x) => x.name)}
@@ -1899,7 +1909,7 @@ export default function Projects() {
         render: (t) => (
           <InlineSelect
             value={t.status ?? ""}
-            editable={canEditTask(t)}
+            editable={canEditTask(t) && !isTaskLocked(t)}
             allowEmpty
             options={TASK_STATUS_GROUPED}
             renderReadOnly={() =>
@@ -1933,7 +1943,7 @@ export default function Projects() {
           return (
             <InlineSelect
               value={t.effort ?? ""}
-              editable={canEditTask(t)}
+              editable={canEditTask(t) && !isTaskLocked(t)}
               allowEmpty
               options={TASK_EFFORT_OPTIONS}
               renderReadOnly={() =>
@@ -1962,7 +1972,7 @@ export default function Projects() {
             <span title={computed ? "Computed from this task's own sub-tasks (earliest sub-task start)" : undefined}>
               <InlineDate
                 value={t.start_date}
-                editable={!isParent && canEditTask(t)}
+                editable={!isParent && canEditTask(t) && !isTaskLocked(t)}
                 onCommit={(v) => {
                   if (v && t.current_due_date && v > t.current_due_date) {
                     alert("Start date can't be after the due date.");
@@ -2018,7 +2028,7 @@ export default function Projects() {
             <span title={computed ? "Computed from this task's own sub-tasks (latest sub-task due date)" : undefined}>
               <InlineDate
                 value={t.current_due_date}
-                editable={!isParent && !locked && canEditTask(t)}
+                editable={!isParent && !locked && canEditTask(t) && !isTaskLocked(t)}
                 onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
               />
             </span>
@@ -2084,6 +2094,37 @@ export default function Projects() {
               <span style={{ fontSize: 10, color: "var(--muted)" }} title="Validated by">
                 {ownerName(t.validated_by)}
               </span>
+              {/* Reopening clears the validation and reverts Status to
+                  In Progress, unlocking Assignee/Status/Effort/Est. Hrs/
+                  Start/Due again (see isTaskLocked above). Restricted to
+                  Full Access only, never the project owner -- Sandra,
+                  2026-07-22: "keep it for full access only" -- a
+                  deliberate, visible action rather than something that
+                  falls out of just editing Status directly (which is now
+                  locked once validated). */}
+              {isFullAccess && (
+                <button
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Reopen task",
+                      message: `Reopen "${t.name}"? This clears its validation and sets Status back to In Progress, unlocking its fields for editing again.`,
+                      confirmLabel: "Reopen",
+                    });
+                    if (!ok) return;
+                    updateTask(t.id, {
+                      validated_completion_date: null,
+                      validated_by: null,
+                      status: "In Progress",
+                      submitted_on: null,
+                      submitted_by: null,
+                    });
+                  }}
+                  title="Reopen -- clears validation and unlocks this task"
+                  style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: 2, color: "var(--muted)" }}
+                >
+                  <RotateCcw size={12} />
+                </button>
+              )}
             </div>
           );
         },
@@ -2093,7 +2134,7 @@ export default function Projects() {
         label: "Est. hrs",
         defaultWidth: 90,
         maxWidth: 120,
-        render: (t) => <InlineNumber value={t.estimated_hours} editable={canEditTask(t)} onCommit={(v) => updateTask(t.id, { estimated_hours: v })} />,
+        render: (t) => <InlineNumber value={t.estimated_hours} editable={canEditTask(t) && !isTaskLocked(t)} onCommit={(v) => updateTask(t.id, { estimated_hours: v })} />,
       },
       {
         key: "hours_variance",
@@ -2129,6 +2170,14 @@ export default function Projects() {
           const hours = spentHoursFor(t.id);
           const isMine = t.assignee_id === me?.id;
           const isRunningHere = running?.task_id === t.id;
+          // A Done task shouldn't still be accruing logged time -- disable
+          // *starting* a fresh timer once status is Done (Sandra, 2026-07-22:
+          // "disable the timer if the task is tagged as done"). Stopping
+          // stays available regardless, so nobody's left with a timer stuck
+          // running if the status happened to flip to Done while it was
+          // already going.
+          const doneBlocksStart = t.status === "Done" && !isRunningHere;
+          const disabled = timerBusy || (Boolean(running) && !isRunningHere) || doneBlocksStart;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {/* Fixed width (not sized to the text) so the button after it
@@ -2147,10 +2196,12 @@ export default function Projects() {
                       if (res.error) alert(`Couldn't start timer: ${res.error}`);
                     }
                   }}
-                  disabled={timerBusy || (Boolean(running) && !isRunningHere)}
+                  disabled={disabled}
                   title={
                     isRunningHere
                       ? "Stop timer"
+                      : doneBlocksStart
+                      ? "Task is Done -- timer disabled"
                       : running
                       ? `Stop the timer running on "${running.task_name}" first`
                       : "Start timer"
@@ -2168,9 +2219,9 @@ export default function Projects() {
                     flexShrink: 0,
                     background: "none",
                     border: "none",
-                    cursor: timerBusy || (Boolean(running) && !isRunningHere) ? "default" : "pointer",
+                    cursor: disabled ? "default" : "pointer",
                     borderRadius: "var(--radius-sm)",
-                    opacity: Boolean(running) && !isRunningHere ? 0.35 : 1,
+                    opacity: Boolean(running) && !isRunningHere ? 0.35 : doneBlocksStart ? 0.35 : 1,
                     color: isRunningHere ? "var(--danger-text)" : "var(--accent)",
                   }}
                 >
