@@ -1,4 +1,5 @@
 import { AlertTriangle } from "lucide-react";
+import { Fragment } from "react";
 
 interface ConfirmDialogProps {
   title?: string;
@@ -12,6 +13,53 @@ interface ConfirmDialogProps {
   hideCancel?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+}
+
+// Splits a plain-text message into paragraphs, rendering any contiguous
+// run of "- " prefixed lines as a real <ul><li> list instead of relying on
+// literal "\n"s -- those collapse under normal CSS white-space and used to
+// run every bullet together on one line (e.g. the pre-lock missing-fields
+// summary). Non-bullet lines render as their own paragraph.
+function renderMessage(message: string) {
+  const lines = message.split("\n");
+  const blocks: { type: "text" | "list"; lines: string[] }[] = [];
+  for (const line of lines) {
+    const isBullet = line.startsWith("- ");
+    const last = blocks[blocks.length - 1];
+    if (line.trim() === "") {
+      blocks.push({ type: "text", lines: [""] });
+      continue;
+    }
+    if (isBullet && last?.type === "list") {
+      last.lines.push(line.slice(2));
+    } else if (isBullet) {
+      blocks.push({ type: "list", lines: [line.slice(2)] });
+    } else if (!isBullet && last?.type === "text") {
+      last.lines.push(line);
+    } else {
+      blocks.push({ type: "text", lines: [line] });
+    }
+  }
+  return blocks.map((block, i) => {
+    if (block.type === "list") {
+      return (
+        <ul key={i} style={{ margin: "4px 0", paddingLeft: 18 }}>
+          {block.lines.map((l, j) => (
+            <li key={j} style={{ marginBottom: 2 }}>
+              {l}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+    return (
+      <Fragment key={i}>
+        {block.lines.map((l, j) => (
+          <div key={j}>{l || "\u00A0"}</div>
+        ))}
+      </Fragment>
+    );
+  });
 }
 
 // Centered, in-app replacement for window.confirm — Notion/browser-native
@@ -60,7 +108,7 @@ export default function ConfirmDialog({
           )}
           <div>
             {title && <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)", marginBottom: 4 }}>{title}</div>}
-            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{message}</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{renderMessage(message)}</div>
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
