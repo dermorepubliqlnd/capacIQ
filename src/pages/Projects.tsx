@@ -112,6 +112,15 @@ const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "he
 // Timelines(lock state)/Days Extended start hidden but stay available to
 // turn on via Properties; Status/Owner/Priority/Health start visible.
 const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+// Same idea for Tasks Timeline: "Days +/-" (Sandra: a signed day-count is
+// redundant once you can already see a bar's length/position on the
+// chart), Hrs Variance/%/Est./Spent (effort-tracking detail, not
+// scheduling), Validated (a completion-approval flag, not a date signal),
+// and Project (redundant with the swimlane header while the default
+// grouping is "by Project" -- worth re-showing if grouping changes).
+// All still available via Properties, just not cluttering a fresh
+// Timeline view by default.
+const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -2572,7 +2581,14 @@ export default function Projects() {
       const bi = PROJECT_TIMELINE_CHIP_ORDER.indexOf(b.key);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
-  const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
+  // Mirrors PROJECT_TIMELINE_EXCLUDED_KEYS -- Start/Due are already shown via
+  // the bar's own position/length on the chart, so repeating them as chips
+  // is redundant (Sandra: "remove start and due dates in columns since this
+  // is covered in the gantt").
+  const TASK_TIMELINE_EXCLUDED_KEYS = ["name", "start_date", "current_due_date"];
+  const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
+    (c) => !TASK_TIMELINE_EXCLUDED_KEYS.includes(c.key)
+  );
 
   // Explains to the Properties popover why toggling Name/Actual
   // Progress/Start/Due does nothing on a Timeline view -- see
@@ -2590,7 +2606,11 @@ export default function Projects() {
       : undefined;
   const taskTimelinePropertyLockInfo =
     taskViews.activeView.viewType === "timeline"
-      ? { name: { reason: "Always shown as the row label, not a chip", forcedVisible: true } }
+      ? {
+          name: { reason: "Always shown as the row label, not a chip", forcedVisible: true },
+          start_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+          current_due_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+        }
       : undefined;
 
   return (
@@ -2811,6 +2831,7 @@ export default function Projects() {
             onSelect={taskViews.setActiveViewId}
             onCreate={taskViews.createView}
             boardDefaultGroupBy="status"
+            timelineDefaultHiddenColumns={TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}

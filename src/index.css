@@ -984,6 +984,15 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
      Gantt bar/marker's own title tooltip) fully interactive. */
   pointer-events: none;
 }
+/* Carve-out from .timeline-label-row's pointer-events: none above -- the
+   sub-task collapse/expand chevron is view-state navigation, not a data
+   edit, so it should stay clickable in Timeline the same way it is in
+   Table. Fixes a real bug Sandra hit: the toggle rendered (via the same
+   Name-column render() Table uses) but was completely unclickable inside
+   Timeline because it inherited the read-only row's pointer-events: none. */
+.timeline-label-row .task-collapse-toggle {
+  pointer-events: auto;
+}
 .timeline-label-name {
   flex: 1 1 auto;
   /* Protects the project/task name from being squeezed down to a couple
