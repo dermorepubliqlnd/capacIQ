@@ -310,18 +310,26 @@ export default function TimelineView<T>({
       const width = Math.max(Math.abs(x2 - x1), 6);
       const progress = getProgress?.(row) ?? null;
       return (
-        <div
-          key="range"
-          className="timeline-bar"
-          title={tooltip}
-          style={{ left, width, background: tone.bg, borderColor: tone.text }}
-        >
-          {progress !== null && (
-            <div
-              className="timeline-bar-progress"
-              style={{ width: `${Math.max(0, Math.min(100, progress))}%`, background: tone.text }}
-            />
-          )}
+        <div key="range-wrap" style={{ position: "absolute", left, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", gap: 6 }}>
+          <div
+            className="timeline-bar"
+            title={tooltip}
+            style={{ position: "static", top: "auto", transform: "none", width, background: tone.bg, borderColor: tone.text }}
+          >
+            {progress !== null && (
+              <div
+                className="timeline-bar-progress"
+                style={{ width: `${Math.max(0, Math.min(100, progress))}%`, background: tone.text }}
+              />
+            )}
+          </div>
+          {/* Plain "NN%" label just after the bar's end -- replaces the old
+              progress chip that used to live in the label column (Sandra:
+              "can't the progress % be after the bar... only show the
+              number"). Only rendered when a real percent exists; the bar's
+              own fill overlay above already carries the visual, this is
+              just the readable number next to it. */}
+          {progress !== null && <span className="timeline-bar-progress-label" style={{ color: tone.text }}>{Math.round(progress)}%</span>}
         </div>
       );
     }

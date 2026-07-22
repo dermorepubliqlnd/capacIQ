@@ -913,6 +913,15 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   gap: 6px;
   min-width: 0;
   width: 100%;
+  /* Timeline is read-only by design (Sandra: "do not allow changes of any
+     properties in timeline view") -- the name and every property chip
+     here reuse the exact same editable render() functions Table/Board use
+     (text inputs, selects, etc.), so without this the Gantt view would
+     silently let you edit a project/task's fields. pointer-events: none
+     blocks all click/focus interaction with that reused, otherwise-
+     editable markup while leaving the row itself (hover highlight, the
+     Gantt bar/marker's own title tooltip) fully interactive. */
+  pointer-events: none;
 }
 .timeline-label-name {
   flex: 1 1 auto;
@@ -974,6 +983,15 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   top: 0;
   left: 0;
   bottom: 0;
+}
+/* Plain "NN%" label rendered just after a Projects-Timeline bar's right
+   edge (see getProgress in TimelineView.tsx) -- Sandra asked for the
+   percent to sit after the bar rather than as a separate chip. */
+.timeline-bar-progress-label {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .timeline-marker {
   position: absolute;

@@ -2352,14 +2352,18 @@ export default function Projects() {
     taskGroupMode === "timeline" ? taskBoardGroupOptions.find((g) => g.key === taskResolvedGroupBy) : undefined;
 
   // Timeline chips: Owner is dropped here (redundant with the Projects table
-  // itself -- Sandra's fine seeing it there instead), and Priority + Actual
-  // Progress are pulled to the front so they can never be starved out by
-  // whatever else happens to be visible (Status, Health, Category, Effort,
-  // dates, ...) competing for the same fixed-width chip row.
-  const PROJECT_TIMELINE_PINNED_KEYS = ["priority", "actual_progress"];
+  // itself -- Sandra's fine seeing it there instead). Actual Progress is
+  // ALSO dropped from the chip row -- it now renders as a plain "NN%" label
+  // directly after the Gantt bar itself (see getProgressLabel below), which
+  // makes the old progress chip (bar/ring + number crammed into the label
+  // column) redundant. Priority is still pulled to the front so it can't be
+  // starved out by whatever else happens to be visible (Status, Health,
+  // Category, Effort, dates, ...) competing for the same fixed-width chip
+  // row.
+  const PROJECT_TIMELINE_PINNED_KEYS = ["priority"];
   const projectTimelinePropertyColumns = (() => {
     const visible = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
-      (c) => c.key !== "name" && c.key !== "owner"
+      (c) => c.key !== "name" && c.key !== "owner" && c.key !== "actual_progress"
     );
     const pinned = PROJECT_TIMELINE_PINNED_KEYS.map((key) => visible.find((c) => c.key === key)).filter(
       (c): c is (typeof visible)[number] => !!c
