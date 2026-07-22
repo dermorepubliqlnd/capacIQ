@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { TONE_STYLES, type ColumnDef } from "../lib/tableTypes";
 
 export type TimelineScale = "day" | "week" | "month" | "quarter";
@@ -218,6 +218,37 @@ export default function TimelineView<T>({
   }, [labelWidth]);
   const effectiveLabelWidth = dragLabelWidth ?? labelWidth;
 
+  // Per-column chip widths shared between the header row's labels
+  // (.timeline-header-chip-label) and every data row's chips
+  // (.timeline-chip) so a property's column lines up vertically across
+  // rows instead of each row's chips flowing at their own natural width
+  // (Sandra: "can the columns and date be aligned for the properties?").
+  // Measured after render (chips have no width set yet, so
+  // getBoundingClientRect reflects true content size), then re-applied as
+  // an explicit width on every cell for that key -- widest content across
+  // the header label + every row wins, so no value gets clipped.
+  const timelineRootRef = useRef<HTMLDivElement>(null);
+  const [chipColWidths, setChipColWidths] = useState<Record<string, number>>({});
+  useLayoutEffect(() => {
+    const root = timelineRootRef.current;
+    if (!root || !propertyColumns || propertyColumns.length === 0) {
+      if (Object.keys(chipColWidths).length > 0) setChipColWidths({});
+      return;
+    }
+    const next: Record<string, number> = {};
+    for (const c of propertyColumns) {
+      let max = 0;
+      root.querySelectorAll<HTMLElement>(`[data-chip-key="${c.key}"]`).forEach((el) => {
+        max = Math.max(max, el.scrollWidth);
+      });
+      next[c.key] = max;
+    }
+    setChipColWidths((prev) => {
+      const changed = propertyColumns.some((c) => prev[c.key] !== next[c.key]) || Object.keys(prev).length !== Object.keys(next).length;
+      return changed ? next : prev;
+    });
+  });
+
   function startLabelResize(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -396,7 +427,12 @@ export default function TimelineView<T>({
             {propertyColumns && propertyColumns.length > 0 && (
               <div className="timeline-label-chips">
                 {propertyColumns.map((c) => (
-                  <span key={c.key} className="timeline-chip">
+                  <span
+                    key={c.key}
+                    className="timeline-chip"
+                    data-chip-key={c.key}
+                    style={chipColWidths[c.key] ? { width: chipColWidths[c.key] } : undefined}
+                  >
                     {c.render(row)}
                   </span>
                 ))}
@@ -419,7 +455,7 @@ export default function TimelineView<T>({
   }
 
   return (
-    <div className="timeline-view">
+    <div className="timeline-view" ref={timelineRootRef}>
       <div className="timeline-scroll">
         <div className="timeline-inner" style={{ width: effectiveLabelWidth + gridWidth }}>
           <div className="timeline-header-row" style={{ height: headerHeight }}>
@@ -428,7 +464,12 @@ export default function TimelineView<T>({
               {propertyColumns && propertyColumns.length > 0 && (
                 <div className="timeline-header-chips">
                   {propertyColumns.map((c) => (
-                    <span key={c.key} className="timeline-header-chip-label">
+                    <span
+                      key={c.key}
+                      className="timeline-header-chip-label"
+                      data-chip-key={c.key}
+                      style={chipColWidths[c.key] ? { width: chipColWidths[c.key] } : undefined}
+                    >
                       {c.label}
                     </span>
                   ))}

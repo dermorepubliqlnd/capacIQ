@@ -2388,6 +2388,25 @@ export default function Projects() {
     });
   const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
 
+  // Explains to the Properties popover why toggling Name/Actual
+  // Progress/Start/Due does nothing on a Timeline view -- see
+  // PROJECT_TIMELINE_EXCLUDED_KEYS above. Only passed while the active
+  // view actually is Timeline (Table/Board's Properties popover keeps
+  // full normal toggling for every column).
+  const projectTimelinePropertyLockInfo =
+    projectViews.activeView.viewType === "timeline"
+      ? {
+          name: { reason: "Always shown as the row label, not a chip", forcedVisible: true },
+          actual_progress: { reason: "Always shown as the Gantt bar's own fill, not a chip", forcedVisible: true },
+          start_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+          end_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+        }
+      : undefined;
+  const taskTimelinePropertyLockInfo =
+    taskViews.activeView.viewType === "timeline"
+      ? { name: { reason: "Always shown as the row label, not a chip", forcedVisible: true } }
+      : undefined;
+
   return (
     <div>
       {confirmDialog}
@@ -2458,6 +2477,7 @@ export default function Projects() {
               statusOptions={PROJECT_STATUS_OPTIONS}
               filterStatuses={projectViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => projectViews.updateActiveView({ filterStatuses })}
+              propertyLockInfo={projectTimelinePropertyLockInfo}
             />
             {projectViews.activeView.viewType === "timeline" && (
               <TimelineControls
@@ -2640,6 +2660,7 @@ export default function Projects() {
               statusOptions={TASK_STATUS_OPTIONS}
               filterStatuses={taskViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => taskViews.updateActiveView({ filterStatuses })}
+              propertyLockInfo={taskTimelinePropertyLockInfo}
             />
             {taskViews.activeView.viewType === "timeline" && (
               <TimelineControls

@@ -44,6 +44,19 @@ interface ViewControlsProps<T> {
   statusOptions: string[];
   filterStatuses: string[];
   onFilterStatusesChange: (statuses: string[]) => void;
+  // Some columns are structurally excluded from ever rendering as a
+  // Timeline chip regardless of hiddenColumns (see
+  // PROJECT_TIMELINE_EXCLUDED_KEYS in Projects.tsx -- e.g. Name is always
+  // the row label, Actual Progress is always the Gantt bar's own fill,
+  // Start/Due are shown via the bar's position, never as a chip). Without
+  // this, their Eye/EyeOff toggle in the Properties popover looks fully
+  // functional but silently does nothing when the active view is
+  // Timeline -- Sandra caught this ("shows hide and show options but not
+  // really doing anything"). Passed only when the active view is a
+  // Timeline view; keyed by column key, value is the tooltip explaining
+  // why it's locked and whether it should read as always-shown or
+  // always-hidden.
+  propertyLockInfo?: Record<string, { reason: string; forcedVisible: boolean }>;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -176,6 +189,7 @@ export default function ViewSettingsMenu<T>({
   statusOptions,
   filterStatuses,
   onFilterStatusesChange,
+  propertyLockInfo,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -374,7 +388,7 @@ export default function ViewSettingsMenu<T>({
               }}
             >
               <option value="" disabled={groupMode === "board"} title={groupMode === "board" ? "A board needs a property to group into columns" : undefined}>
-                No filter
+                No grouping
               </option>
               {groupOptions.map((g) => {
                 const disabled = Boolean(groupMode) && g.boardGroupable === false;
@@ -429,12 +443,15 @@ export default function ViewSettingsMenu<T>({
           <>
             <PopoverHeader label="Properties" onClose={close} />
             {columns.map((c) => {
-              const visible = c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
+              const lock = propertyLockInfo?.[c.key];
+              const locked = Boolean(c.alwaysVisible) || Boolean(lock);
+              const visible = lock ? lock.forcedVisible : c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
+              const lockTooltip = lock?.reason ?? (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined);
               return (
                 <div
                   key={c.key}
-                  onClick={() => !c.alwaysVisible && onToggleColumn(c.key)}
-                  title={c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined}
+                  onClick={() => !locked && onToggleColumn(c.key)}
+                  title={lockTooltip}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -442,8 +459,8 @@ export default function ViewSettingsMenu<T>({
                     gap: 6,
                     fontSize: 12,
                     padding: "3px 2px",
-                    cursor: c.alwaysVisible ? "default" : "pointer",
-                    color: c.alwaysVisible ? "var(--muted)" : visible ? "var(--text)" : "var(--muted)",
+                    cursor: locked ? "default" : "pointer",
+                    color: locked ? "var(--muted)" : visible ? "var(--text)" : "var(--muted)",
                   }}
                 >
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.label}</span>
