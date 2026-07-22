@@ -902,6 +902,40 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   overflow: hidden;
   border-right: 1px solid var(--border);
 }
+/* Name + inline property chips (Properties toggle, see propertyColumns in
+   TimelineView.tsx) share one row so a Timeline row never grows past
+   ROW_H -- the name gets first claim on the space (ellipsis-truncated),
+   chips follow and clip via the label cell's own overflow: hidden above
+   rather than wrapping to a second line. */
+.timeline-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.timeline-label-name {
+  flex: 1 1 auto;
+  min-width: 24px;
+  overflow: hidden;
+}
+.timeline-label-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 55%;
+  overflow: hidden;
+}
+.timeline-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  max-height: 20px;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+}
 .timeline-row:hover .timeline-label-cell {
   background: var(--hover-bg);
 }
@@ -918,6 +952,17 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   border-radius: 7px;
   border: 1.5px solid;
   cursor: default;
+  overflow: hidden;
+}
+/* Actual-progress fill overlay (Projects Timeline only, see getProgress in
+   TimelineView.tsx) -- a second, solid-tone layer from the bar's left edge
+   covering `percent`% of its width, sitting inside the lighter full-span
+   bar behind it. */
+.timeline-bar-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
 }
 .timeline-marker {
   position: absolute;
@@ -939,6 +984,26 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   padding: 20px 10px;
   font-size: 12px;
   color: var(--muted);
+}
+/* Swimlane section header (Group-by on Timeline, see getGroup in
+   TimelineView.tsx) -- same tone-tinted-background idea as Table's
+   grouped-accordion group row (data-table-group-row), adapted to
+   Timeline's flex row layout instead of a <tr>/<td>. The label is itself
+   sticky-left so it stays visible while the section's date grid scrolls
+   horizontally, matching .timeline-label-cell's own sticky behavior. */
+.timeline-group-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.timeline-group-row-label {
+  position: sticky;
+  left: 0;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .timeline-segmented {
@@ -966,4 +1031,31 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .timeline-segmented-btn.active {
   background: #eaf1fb;
   color: var(--accent);
+}
+
+/* "Dates View" dropdown (replaces the old Range/Start/Due segmented
+   control, see TimelineControls in TimelineView.tsx) -- small uppercase
+   muted label + native select, matching the section-label convention used
+   inside ViewSettingsMenu's own popovers (e.g. Filter's "Status" label). */
+.timeline-datemode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.timeline-datemode-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.timeline-datemode-select {
+  font-size: 11px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
 }

@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from "react";
-import { TONE_STYLES } from "../lib/tableTypes";
+import { TONE_STYLES, type ColumnDef } from "../lib/tableTypes";
 
 export type TimelineScale = "day" | "week" | "month" | "quarter";
 export type TimelineDateMode = "range" | "start" | "due";
@@ -19,6 +19,32 @@ interface TimelineViewProps<T> {
   getTone?: (row: T) => string;
   getTooltip?: (row: T) => string;
   emptyLabel?: string;
+  // Whichever columns are currently visible per the view's Properties
+  // settings, already filtered to exclude the label/name column itself
+  // (it's already shown as the label) -- same
+  // visibleOrderedColumns(...).filter(name-out) callers compute for Board's
+  // renderProjectCard/renderTaskCard. Rendered as small inline chips after
+  // the name using each column's own render(row), so a chip is exactly
+  // what that property looks like everywhere else (a status pill, an
+  // owner name, etc.) rather than a bespoke Timeline-only representation.
+  propertyColumns?: ColumnDef<T>[];
+  // Optional: when provided, a "range" bar (both Start and Due present)
+  // gets a second, darker fill layer from its left edge covering
+  // `percent`% of the bar's own width -- a Gantt-style actual-progress
+  // overlay on top of the plain start->due span. Null means "no weighted
+  // tasks to measure progress from" and renders the bar as before with no
+  // overlay. Not used at all for start/due single-marker rendering, or by
+  // callers (e.g. Tasks Timeline) that don't pass it.
+  getProgress?: (row: T) => number | null;
+  // Optional grouping -- when set, rows render as vertical swimlane
+  // sections (group header row, then that group's rows) instead of one
+  // flat list, while the date-axis columns/header stay shared across every
+  // section (computed once from the full `rows` list, same as the
+  // ungrouped case). Mirrors Table's grouped-accordion bucketing (group by
+  // getGroup(row), "—" for empty/falsy) and Board's per-group tone.
+  getGroup?: (row: T) => string;
+  getGroupTone?: (row: T) => string;
+  hiddenGroups?: string[];
 }
 
 // Local-timezone date helpers -- same "YYYY-MM-DD" UTC-midnight parsing fix
@@ -60,7 +86,10 @@ function addQuarters(d: Date, n: number): Date {
 // slivers).
 const CELL_W: Record<TimelineScale, number> = { day: 34, week: 68, month: 96, quarter: 130 };
 const ROW_H = 32;
-const LABEL_W = 220;
+// Bumped from 220 -> 260 so the label column has room for a chip or two
+// of property info (Owner/Priority/etc.) next to the name without
+// immediately clipping everything -- see propertyColumns above.
+const LABEL_W = 260;
 const HEADER_H = 30;
 // Day scale uses a two-row header (Month group row + Day-number row)
 // instead of a single row of "Jul 16"-style labels, so a Gantt view at
@@ -68,6 +97,9 @@ const HEADER_H = 30;
 // belongs to without repeating it in every cell. Week/Month/Quarter
 // scales are unaffected and keep the original single-row HEADER_H.
 const HEADER_ROW_H = 22;
+// Swimlane section header row (group name + count), same idea as Table's
+// grouped-accordion group row and Board's per-column header.
+const GROUP_ROW_H = 26;
 
 interface Column {
   start: Date;
@@ -153,6 +185,11 @@ export default function TimelineView<T>({
   getTone,
   getTooltip,
   emptyLabel = "No items to show on the timeline.",
+  propertyColumns,
+  getProgress,
+  getGroup,
+  getGroupTone,
+  hiddenGroups,
 }: TimelineViewProps<T>) {
   const cellW = CELL_W[scale];
 
@@ -217,6 +254,28 @@ export default function TimelineView<T>({
     return groups;
   }, [columns, scale]);
 
+  // Bucket rows into swimlane sections when getGroup is provided --
+  // insertion order (first row encountered for a group starts its
+  // section), same as DataTable's grouped-accordion body when it has no
+  // allGroups() list to pre-seed empty sections with. Hidden groups (the
+  // same per-view hiddenGroups the Group-by popover's Show/Hide-all list
+  // writes to) are filtered out entirely rather than rendered collapsed.
+  const groupedRows = useMemo(() => {
+    if (!getGroup) return null;
+    const map = new Map<string, T[]>();
+    rows.forEach((r) => {
+      const g = getGroup(r) || "—";
+      if (!map.has(g)) map.set(g, []);
+      map.get(g)!.push(r);
+    });
+    const hidden = hiddenGroups ?? [];
+    return Array.from(map.entries()).filter(([groupName]) => !hidden.includes(groupName));
+  }, [rows, getGroup, hiddenGroups]);
+
+  const contentHeight = groupedRows
+    ? groupedRows.reduce((sum, [, groupRows]) => sum + GROUP_ROW_H + groupRows.length * ROW_H, 0)
+    : rows.length * ROW_H;
+
   function barFor(row: T) {
     const startStr = getStart(row);
     const dueStr = getDue(row);
@@ -246,18 +305,50 @@ export default function TimelineView<T>({
       const x2 = dateToX(parseLocalDate(dueStr), columns, cellW);
       const left = Math.min(x1, x2);
       const width = Math.max(Math.abs(x2 - x1), 6);
+      const progress = getProgress?.(row) ?? null;
       return (
         <div
           key="range"
           className="timeline-bar"
           title={tooltip}
           style={{ left, width, background: tone.bg, borderColor: tone.text }}
-        />
+        >
+          {progress !== null && (
+            <div
+              className="timeline-bar-progress"
+              style={{ width: `${Math.max(0, Math.min(100, progress))}%`, background: tone.text }}
+            />
+          )}
+        </div>
       );
     }
     if (startStr) return marker(startStr, "start-only");
     if (dueStr) return marker(dueStr, "due-only");
     return null;
+  }
+
+  function renderRow(row: T) {
+    return (
+      <div key={rowKey(row)} className="timeline-row" style={{ height: ROW_H }}>
+        <div className="timeline-label-cell" style={{ width: LABEL_W }}>
+          <div className="timeline-label-row">
+            <span className="timeline-label-name">{renderLabel(row)}</span>
+            {propertyColumns && propertyColumns.length > 0 && (
+              <div className="timeline-label-chips">
+                {propertyColumns.map((c) => (
+                  <span key={c.key} className="timeline-chip">
+                    {c.render(row)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="timeline-row-grid" style={{ width: gridWidth }}>
+          {barFor(row)}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -285,21 +376,30 @@ export default function TimelineView<T>({
               </div>
             </div>
           </div>
-          {rows.map((row) => (
-            <div key={rowKey(row)} className="timeline-row" style={{ height: ROW_H }}>
-              <div className="timeline-label-cell" style={{ width: LABEL_W }}>
-                {renderLabel(row)}
-              </div>
-              <div className="timeline-row-grid" style={{ width: gridWidth }}>
-                {barFor(row)}
-              </div>
-            </div>
-          ))}
+          {groupedRows
+            ? groupedRows.map(([groupName, groupRows]) => {
+                const tone = TONE_STYLES[getGroupTone?.(groupRows[0]) ?? "neutral"] ?? TONE_STYLES.neutral;
+                return (
+                  <div key={`group_${groupName}`}>
+                    <div
+                      className="timeline-group-row"
+                      style={{ height: GROUP_ROW_H, background: tone.bg, color: tone.text }}
+                    >
+                      <span className="timeline-group-row-label">
+                        {groupName}
+                        <span style={{ opacity: 0.7, fontWeight: 400 }}> ({groupRows.length})</span>
+                      </span>
+                    </div>
+                    {groupRows.map((row) => renderRow(row))}
+                  </div>
+                );
+              })
+            : rows.map((row) => renderRow(row))}
           {rows.length === 0 && <div className="timeline-empty">{emptyLabel}</div>}
           {showToday && rows.length > 0 && (
             <div
               className="timeline-today-line"
-              style={{ left: LABEL_W + todayX, top: headerHeight, height: rows.length * ROW_H }}
+              style={{ left: LABEL_W + todayX, top: headerHeight, height: contentHeight }}
               title="Today"
             />
           )}
@@ -316,17 +416,20 @@ const SCALE_TILES: { value: TimelineScale; label: string }[] = [
   { value: "quarter", label: "Quarter" },
 ];
 
-const DATE_MODE_TILES: { value: TimelineDateMode; label: string; title: string }[] = [
-  { value: "range", label: "Range", title: "Bar spans Start → Due" },
-  { value: "start", label: "Start", title: "Marker at Start date only" },
-  { value: "due", label: "Due", title: "Marker at Due date only" },
+const DATE_MODE_OPTIONS: { value: TimelineDateMode; label: string }[] = [
+  { value: "range", label: "Start and End Date" },
+  { value: "start", label: "Start Date" },
+  { value: "due", label: "End Date" },
 ];
 
-// Small segmented-button pair for Timeline's own toolbar controls (scale +
-// date mode) -- same visual idea as ProgressDisplayToggle's per-view
-// cycling button in ProgressCell.tsx, just rendered as an explicit 4-way /
-// 3-way picker instead of a single cycling icon since both choices have
-// more than 2-3 options worth seeing at a glance.
+// Small toolbar controls for Timeline: scale stays a 4-way segmented
+// button (Day/Week/Month/Quarter), but the date-mode picker (what a bar
+// represents) is a labeled "Dates View" dropdown rather than a 3-way
+// segmented control -- Sandra asked for a dropdown with an explicit
+// header label instead of Range/Start/Due tiles, with wordier option text
+// ("Start and End Date" / "Start Date" / "End Date"). The underlying
+// TimelineDateMode values (range/start/due) are unchanged; only the label
+// and control type differ.
 export function TimelineControls({
   scale,
   onScaleChange,
@@ -351,17 +454,19 @@ export function TimelineControls({
           </button>
         ))}
       </div>
-      <div className="timeline-segmented" title="What a task's bar represents">
-        {DATE_MODE_TILES.map((t) => (
-          <button
-            key={t.value}
-            className={`timeline-segmented-btn${dateMode === t.value ? " active" : ""}`}
-            title={t.title}
-            onClick={() => onDateModeChange(t.value)}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="timeline-datemode" title="What a bar represents">
+        <span className="timeline-datemode-label">Dates View</span>
+        <select
+          className="timeline-datemode-select"
+          value={dateMode}
+          onChange={(e) => onDateModeChange(e.target.value as TimelineDateMode)}
+        >
+          {DATE_MODE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
       </div>
     </>
   );

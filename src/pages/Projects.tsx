@@ -14,7 +14,7 @@ import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
-import { sortRows } from "../lib/tableTypes";
+import { sortRows, visibleOrderedColumns } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
@@ -367,6 +367,15 @@ const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "t
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
   return groupBy && groupableKeys.includes(groupBy) ? groupBy : fallback;
+}
+
+// Same idea as resolveBoardGroupBy above, but for Timeline: unlike Board
+// (which can't render without a grouping and always falls back to a
+// default field), a flat Timeline row list is a perfectly normal default
+// state, so an unrecognized/unset groupBy resolves to null (ungrouped)
+// rather than a forced fallback field.
+function resolveTimelineGroupBy(groupBy: string | null, groupableKeys: string[]): string | null {
+  return groupBy && groupableKeys.includes(groupBy) ? groupBy : null;
 }
 
 // Supabase date columns come back as plain "YYYY-MM-DD" strings. Passing
@@ -2297,6 +2306,42 @@ export default function Projects() {
     loadAll();
   }
 
+  // Which Group-by option set + resolved groupBy + restriction mode is
+  // active right now, computed once here and reused by ViewSettingsMenu,
+  // ViewFilterPills, and TimelineView's own swimlane grouping below --
+  // Board and Timeline both restrict to the boardGroupable-flagged option
+  // list (projectBoardGroupOptions/taskBoardGroupOptions), but only Board
+  // forces a non-null groupBy (a Kanban board can't render without
+  // columns); Timeline's flat list is a normal default state, so an
+  // unrecognized/unset groupBy resolves to null (ungrouped) instead of a
+  // forced fallback field.
+  const projectGroupMode: "board" | "timeline" | undefined =
+    projectViews.activeView.viewType === "board" ? "board" : projectViews.activeView.viewType === "timeline" ? "timeline" : undefined;
+  const projectGroupModeOptions = projectGroupMode ? projectBoardGroupOptions : projectGroupOptions;
+  const projectResolvedGroupBy =
+    projectGroupMode === "board"
+      ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
+      : projectGroupMode === "timeline"
+      ? resolveTimelineGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS)
+      : projectViews.activeView.groupBy;
+  const projectTimelineGroupOption =
+    projectGroupMode === "timeline" ? projectBoardGroupOptions.find((g) => g.key === projectResolvedGroupBy) : undefined;
+
+  const taskGroupMode: "board" | "timeline" | undefined =
+    taskViews.activeView.viewType === "board" ? "board" : taskViews.activeView.viewType === "timeline" ? "timeline" : undefined;
+  const taskGroupModeOptions = taskGroupMode ? taskBoardGroupOptions : taskGroupOptions;
+  const taskResolvedGroupBy =
+    taskGroupMode === "board"
+      ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
+      : taskGroupMode === "timeline"
+      ? resolveTimelineGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS)
+      : taskViews.activeView.groupBy;
+  const taskTimelineGroupOption =
+    taskGroupMode === "timeline" ? taskBoardGroupOptions.find((g) => g.key === taskResolvedGroupBy) : undefined;
+
+  const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView).filter((c) => c.key !== "name");
+  const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter((c) => c.key !== "name");
+
   return (
     <div>
       {confirmDialog}
@@ -2349,12 +2394,8 @@ export default function Projects() {
                     : [...projectViews.activeView.hiddenColumns, key],
                 })
               }
-              groupOptions={projectViews.activeView.viewType === "board" ? projectBoardGroupOptions : projectGroupOptions}
-              groupBy={
-                projectViews.activeView.viewType === "board"
-                  ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
-                  : projectViews.activeView.groupBy
-              }
+              groupOptions={projectGroupModeOptions}
+              groupBy={projectResolvedGroupBy}
               hiddenGroups={projectViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
@@ -2363,8 +2404,7 @@ export default function Projects() {
               sortOptions={projectSortOptions}
               sorts={projectViews.activeView.sorts}
               onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-              isBoard={projectViews.activeView.viewType === "board"}
-              groupByDisabled={projectViews.activeView.viewType === "timeline"}
+              groupMode={projectGroupMode}
               filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
               onFilterAssignedToMeChange={(filterAssignedToMe) => projectViews.updateActiveView({ filterAssignedToMe })}
               statusOptions={PROJECT_STATUS_OPTIONS}
@@ -2382,20 +2422,15 @@ export default function Projects() {
           </div>
         </div>
         <ViewFilterPills
-          groupOptions={projectViews.activeView.viewType === "board" ? projectBoardGroupOptions : projectGroupOptions}
-          groupBy={
-            projectViews.activeView.viewType === "board"
-              ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
-              : projectViews.activeView.groupBy
-          }
+          groupOptions={projectGroupModeOptions}
+          groupBy={projectResolvedGroupBy}
           hiddenGroups={projectViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => projectViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => projectViews.updateActiveView({ hiddenGroups })}
           sortOptions={projectSortOptions}
           sorts={projectViews.activeView.sorts}
           onSortsChange={(sorts) => projectViews.updateActiveView({ sorts })}
-          isBoard={projectViews.activeView.viewType === "board"}
-          groupByDisabled={projectViews.activeView.viewType === "timeline"}
+          groupMode={projectGroupMode}
           filterAssignedToMe={Boolean(projectViews.activeView.filterAssignedToMe)}
           filterStatuses={projectViews.activeView.filterStatuses ?? []}
           onClearFilter={() => projectViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
@@ -2459,6 +2494,11 @@ export default function Projects() {
               getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
               getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
               emptyLabel="No projects yet. Add one below."
+              propertyColumns={projectTimelinePropertyColumns}
+              getProgress={(p) => actualProgress(p.id, tasks)}
+              getGroup={projectTimelineGroupOption ? (p) => projectTimelineGroupOption.getGroup(p) : undefined}
+              getGroupTone={projectTimelineGroupOption?.getTone}
+              hiddenGroups={projectViews.activeView.hiddenGroups}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -2532,12 +2572,8 @@ export default function Projects() {
                     : [...taskViews.activeView.hiddenColumns, key],
                 })
               }
-              groupOptions={taskViews.activeView.viewType === "board" ? taskBoardGroupOptions : taskGroupOptions}
-              groupBy={
-                taskViews.activeView.viewType === "board"
-                  ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
-                  : taskViews.activeView.groupBy
-              }
+              groupOptions={taskGroupModeOptions}
+              groupBy={taskResolvedGroupBy}
               hiddenGroups={taskViews.activeView.hiddenGroups}
               onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
               onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
@@ -2546,8 +2582,7 @@ export default function Projects() {
               sortOptions={taskSortOptions}
               sorts={taskViews.activeView.sorts}
               onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-              isBoard={taskViews.activeView.viewType === "board"}
-              groupByDisabled={taskViews.activeView.viewType === "timeline"}
+              groupMode={taskGroupMode}
               filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
               onFilterAssignedToMeChange={(filterAssignedToMe) => taskViews.updateActiveView({ filterAssignedToMe })}
               statusOptions={TASK_STATUS_OPTIONS}
@@ -2565,20 +2600,15 @@ export default function Projects() {
           </div>
         </div>
         <ViewFilterPills
-          groupOptions={taskViews.activeView.viewType === "board" ? taskBoardGroupOptions : taskGroupOptions}
-          groupBy={
-            taskViews.activeView.viewType === "board"
-              ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
-              : taskViews.activeView.groupBy
-          }
+          groupOptions={taskGroupModeOptions}
+          groupBy={taskResolvedGroupBy}
           hiddenGroups={taskViews.activeView.hiddenGroups}
           onGroupByChange={(groupBy) => taskViews.updateActiveView({ groupBy, hiddenGroups: [] })}
           onHiddenGroupsChange={(hiddenGroups) => taskViews.updateActiveView({ hiddenGroups })}
           sortOptions={taskSortOptions}
           sorts={taskViews.activeView.sorts}
           onSortsChange={(sorts) => taskViews.updateActiveView({ sorts })}
-          isBoard={taskViews.activeView.viewType === "board"}
-          groupByDisabled={taskViews.activeView.viewType === "timeline"}
+          groupMode={taskGroupMode}
           filterAssignedToMe={Boolean(taskViews.activeView.filterAssignedToMe)}
           filterStatuses={taskViews.activeView.filterStatuses ?? []}
           onClearFilter={() => taskViews.updateActiveView({ filterAssignedToMe: false, filterStatuses: [] })}
@@ -2641,6 +2671,10 @@ export default function Projects() {
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
               getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
               emptyLabel="No tasks yet. Add one below."
+              propertyColumns={taskTimelinePropertyColumns}
+              getGroup={taskTimelineGroupOption ? (t) => taskTimelineGroupOption.getGroup(t) : undefined}
+              getGroupTone={taskTimelineGroupOption?.getTone}
+              hiddenGroups={taskViews.activeView.hiddenGroups}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

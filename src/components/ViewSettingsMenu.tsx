@@ -18,15 +18,16 @@ interface ViewControlsProps<T> {
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
-  // True on Board views: a Kanban board can't render without columns, so
-  // "No filter" (ungrouped) is disabled here even though grouping is
-  // otherwise free to be any boardGroupable field -- unlike the old v1
-  // behavior, the field itself is no longer locked to Status.
-  isBoard?: boolean;
-  // True on Timeline views: a Gantt row list has no use for grouping in
-  // this v1, so the whole Group-by control is disabled (greyed out with
-  // a tooltip) rather than just constrained like Board's isBoard above.
-  groupByDisabled?: boolean;
+  // "board": a Kanban board can't render without columns, so "No filter"
+  // (ungrouped) is disabled outright and any option that isn't
+  // boardGroupable shows disabled with a "not available on Board" hint.
+  // "timeline": swimlane sections are optional -- ungrouped stays a valid,
+  // clearable choice (same as Table) -- but the option set is still
+  // locked to the same boardGroupable-flagged fields, shown disabled with
+  // a "not available on Timeline" hint instead. undefined: Table's own
+  // grouped-accordion view, where every listed option is usable and
+  // ungrouped is always allowed.
+  groupMode?: "board" | "timeline";
   // Row-level Filter (assigned-to-me + status multi-select) -- unlike
   // Sort/Group-by/Properties, this isn't view-rendering config: it's
   // applied to the shared row list *before* Table/Board/Timeline ever
@@ -161,8 +162,7 @@ export default function ViewSettingsMenu<T>({
   sortOptions,
   sorts,
   onSortsChange,
-  isBoard,
-  groupByDisabled,
+  groupMode,
   filterAssignedToMe,
   onFilterAssignedToMeChange,
   statusOptions,
@@ -299,16 +299,6 @@ export default function ViewSettingsMenu<T>({
         )}
       </IconPopoverButton>
 
-      {groupByDisabled ? (
-        <button
-          className="toolbar-icon-btn"
-          disabled
-          title="Group-by isn't available for Timeline views"
-          style={{ opacity: 0.4, cursor: "not-allowed" }}
-        >
-          <Layers size={13} />
-        </button>
-      ) : (
       <IconPopoverButton icon={<Layers size={13} />} label="Group by" active={Boolean(groupBy)}>
         {(close) => (
           <>
@@ -328,15 +318,16 @@ export default function ViewSettingsMenu<T>({
                 marginBottom: activeOption ? 8 : 0,
               }}
             >
-              <option value="" disabled={isBoard} title={isBoard ? "A board needs a property to group into columns" : undefined}>
+              <option value="" disabled={groupMode === "board"} title={groupMode === "board" ? "A board needs a property to group into columns" : undefined}>
                 No filter
               </option>
               {groupOptions.map((g) => {
-                const disabled = isBoard && g.boardGroupable === false;
+                const disabled = Boolean(groupMode) && g.boardGroupable === false;
+                const modeLabel = groupMode === "board" ? "Board" : "Timeline";
                 return (
-                  <option key={g.key} value={g.key} disabled={disabled} title={disabled ? "Not available for Board -- values aren't a fixed set of columns" : undefined}>
+                  <option key={g.key} value={g.key} disabled={disabled} title={disabled ? `Not available for ${modeLabel} -- values aren't a fixed set of columns` : undefined}>
                     {g.label}
-                    {disabled ? " (not available on Board)" : ""}
+                    {disabled ? ` (not available on ${modeLabel})` : ""}
                   </option>
                 );
               })}
@@ -377,7 +368,6 @@ export default function ViewSettingsMenu<T>({
           </>
         )}
       </IconPopoverButton>
-      )}
 
       <IconPopoverButton icon={<SlidersHorizontal size={13} />} label="Properties" active={hiddenColumns.length > 0} width={220}>
         {(close) => (
@@ -424,8 +414,7 @@ export function ViewFilterPills<T>({
   sortOptions,
   sorts,
   onSortsChange,
-  isBoard,
-  groupByDisabled,
+  groupMode,
   filterAssignedToMe,
   filterStatuses,
   onClearFilter,
@@ -438,13 +427,12 @@ export function ViewFilterPills<T>({
   sortOptions: SortOption<T>[];
   sorts: SortRule[];
   onSortsChange: (sorts: SortRule[]) => void;
-  isBoard?: boolean;
-  groupByDisabled?: boolean;
+  groupMode?: "board" | "timeline";
   filterAssignedToMe: boolean;
   filterStatuses: string[];
   onClearFilter: () => void;
 }) {
-  const activeOption = groupByDisabled ? undefined : groupOptions.find((g) => g.key === groupBy);
+  const activeOption = groupOptions.find((g) => g.key === groupBy);
   const hasFilter = filterAssignedToMe || filterStatuses.length > 0;
   if (!activeOption && sorts.length === 0 && !hasFilter) return null;
 
@@ -465,7 +453,7 @@ export function ViewFilterPills<T>({
       {activeOption && (
         <span className="filter-pill">
           Grouped by {activeOption.label}
-          {!isBoard && (
+          {groupMode !== "board" && (
             <button
               title="Clear grouping"
               onClick={() => {
