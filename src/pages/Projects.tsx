@@ -604,6 +604,29 @@ function reorderedSortValue(list: { id: string; sort_order: number | null }[], d
   return (beforeVal + afterVal) / 2;
 }
 
+// Tasks are always hard-deleted, never soft-archived-then-purged the way
+// Projects are (see [[project_capaciq_archive_semantics]]) -- but
+// extension_requests rows reference task_id with no ON DELETE CASCADE, so
+// deleting a task that ever had a due-date extension request (approved,
+// rejected, or pending) hits a foreign key violation: "update or delete on
+// table "tasks" violates foreign key constraint
+// "extension_requests_task_id_fkey"". Surfaced to Sandra 2026-07-22 via a
+// raw Postgres error in a bulk-delete's alert() -- she noticed it
+// correlated with having a sort applied, but the real trigger is simpler:
+// sorting/grouping is often exactly how she finds and multi-selects a
+// batch of tasks that share some trait (like extension history) worth
+// cleaning up together, so sorted bulk-deletes are just more likely to
+// include a task that has one. Every hard-delete path for tasks needs its
+// dependent extension_requests rows cleared first -- centralized here so
+// a future delete call site can't forget it and reintroduce the bug.
+async function deleteTasksAndDependents(ids: string[]): Promise<{ error: string | null }> {
+  if (ids.length === 0) return { error: null };
+  const { error: extError } = await supabase.from("extension_requests").delete().in("task_id", ids);
+  if (extError) return { error: extError.message };
+  const { error } = await supabase.from("tasks").delete().in("id", ids);
+  return { error: error?.message ?? null };
+}
+
 export default function Projects() {
   const { person: me } = useSession();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -683,7 +706,12 @@ export default function Projects() {
   // cron for this, so it relies on the app being opened regularly.
   async function purgeExpiredArchives() {
     const cutoff = new Date(Date.now() - ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    await supabase.from("tasks").delete().eq("is_archived", true).lt("archived_at", cutoff);
+    // Fetch ids first rather than a direct filtered .delete() -- expired
+    // tasks need their extension_requests rows cleared first too (see
+    // deleteTasksAndDependents above), which needs a concrete id list to
+    // target.
+    const { data: expiredTasks } = await supabase.from("tasks").select("id").eq("is_archived", true).lt("archived_at", cutoff);
+    await deleteTasksAndDependents((expiredTasks ?? []).map((t) => t.id));
     await supabase.from("projects").delete().eq("is_archived", true).lt("archived_at", cutoff);
   }
 
@@ -1056,7 +1084,8 @@ export default function Projects() {
       danger: true,
     });
     if (!ok) return;
-    await supabase.from("tasks").delete().eq("project_id", p.id);
+    const projectTaskIds = [...tasks, ...archivedTasks].filter((t) => t.project_id === p.id).map((t) => t.id);
+    await deleteTasksAndDependents(projectTaskIds);
     const { error } = await supabase.from("projects").delete().eq("id", p.id);
     if (error) {
       alert(`Couldn't delete: ${error.message}`);
@@ -1149,9 +1178,9 @@ export default function Projects() {
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("tasks").delete().eq("id", t.id);
+    const { error } = await deleteTasksAndDependents([t.id]);
     if (error) {
-      alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error}`);
       return;
     }
     loadArchived();
@@ -1180,9 +1209,9 @@ export default function Projects() {
       danger: true,
     });
     if (!ok) return;
-    const { error } = await supabase.from("tasks").delete().in("id", allIds);
+    const { error } = await deleteTasksAndDependents(allIds);
     if (error) {
-      alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't delete: ${error}`);
       return;
     }
     setSelectedTaskIds([]);
