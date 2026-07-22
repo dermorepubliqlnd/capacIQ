@@ -16,7 +16,7 @@ import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell"
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
-import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
+import { rollupHoursFor, ownHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { Play, Square } from "lucide-react";
 import {
@@ -104,14 +104,14 @@ interface ExtensionRequestLite {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
 // timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
 // createView) -- per Sandra's curated Timeline-chip spec, Category/Effort/
 // Timelines(lock state)/Days Extended start hidden but stay available to
 // turn on via Properties; Status/Owner/Priority/Health start visible.
-const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "timelines_locked", "days_extended"];
+const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -463,6 +463,46 @@ function hoursVarianceTone(percent: number | null): "success" | "warning" | "dan
   if (percent <= 100) return "success";
   if (percent <= 125) return "warning";
   return "danger";
+}
+
+// Project-level rollup of Estimated/Spent hours, mirroring the Task-level
+// Est. hrs / Spent hrs / Hrs Variance / Hrs Variance % columns (Sandra,
+// 2026-07-22: "roll up total estimated hours and spent hours... show same
+// variances as how it's done in task level"). "Days +/-" is deliberately
+// NOT rolled up here -- it's a signed day count vs one specific due date,
+// which doesn't have a meaningful "sum" the way hours do; flagged to
+// Sandra as an open question rather than guessed at.
+//
+// Estimated Hours is a flat, independently-set field on every task row
+// (top-level or sub-task, no rollup relationship between them), so summing
+// it across every task in the project is safe and complete on its own.
+function projectEstimatedHoursTotal(projectId: string, allTasks: TaskRow[]): number | null {
+  const withEstimate = allTasks.filter((t) => t.project_id === projectId && !t.is_archived && t.estimated_hours !== null && t.estimated_hours !== undefined);
+  if (withEstimate.length === 0) return null;
+  return Math.round(withEstimate.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100) / 100;
+}
+
+// Spent Hours can't be summed via spentHoursFor(taskId) the same way --
+// that function already rolls a parent task's own entries together with
+// its direct children's, so calling it once per task and summing the
+// results would double-count any task whose parent is also being summed
+// in the same loop. ownHoursFor only counts a task's own direct entries
+// (no rollup), so summing it over every task in the project -- parent and
+// child alike -- gives the true total exactly once, regardless of nesting
+// depth.
+function projectSpentHoursTotal(projectId: string, allTasks: TaskRow[], entries: TimeEntryRow[]): number {
+  const projectTasks = allTasks.filter((t) => t.project_id === projectId && !t.is_archived);
+  return Math.round(projectTasks.reduce((sum, t) => sum + ownHoursFor(entries, t.id), 0) * 100) / 100;
+}
+
+// Same shape as hoursVarianceOf, just fed project-level totals instead of
+// one task's own estimated_hours/spentHours.
+function projectHoursVarianceOf(estimatedTotal: number | null, spentTotal: number): { hours: number; percent: number } | null {
+  if (!estimatedTotal) return null;
+  return {
+    hours: Math.round((spentTotal - estimatedTotal) * 100) / 100,
+    percent: Math.round((spentTotal / estimatedTotal) * 100),
+  };
 }
 
 function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
@@ -1347,6 +1387,54 @@ export default function Projects() {
         },
       },
       {
+        key: "estimated_hours",
+        label: "Est. hrs",
+        defaultWidth: 90,
+        maxWidth: 120,
+        render: (p) => {
+          const total = projectEstimatedHoursTotal(p.id, tasks);
+          return <span style={{ fontVariantNumeric: "tabular-nums" }}>{total === null ? "—" : formatHours(total)}</span>;
+        },
+      },
+      {
+        key: "time_spent_hours",
+        label: "Spent hrs",
+        defaultWidth: 100,
+        maxWidth: 130,
+        render: (p) => {
+          const total = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          return <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(total)}</span>;
+        },
+      },
+      {
+        key: "hours_variance",
+        label: "Hrs Variance",
+        defaultWidth: 100,
+        maxWidth: 130,
+        render: (p) => {
+          const estimated = projectEstimatedHoursTotal(p.id, tasks);
+          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          const variance = projectHoursVarianceOf(estimated, spent);
+          if (!variance) return <span style={{ color: "var(--muted)" }}>—</span>;
+          const tone = hoursVarianceTone(variance.percent);
+          const sign = variance.hours > 0 ? "+" : "";
+          return <span className={`status-pill ${tone}`}>{sign}{variance.hours}h</span>;
+        },
+      },
+      {
+        key: "hours_variance_pct",
+        label: "Hrs Variance %",
+        defaultWidth: 120,
+        maxWidth: 150,
+        render: (p) => {
+          const estimated = projectEstimatedHoursTotal(p.id, tasks);
+          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          const variance = projectHoursVarianceOf(estimated, spent);
+          const tone = hoursVarianceTone(variance?.percent ?? null);
+          return <ProgressCell percent={variance?.percent ?? null} tone={tone} display="bar" />;
+        },
+      },
+      {
         key: "category",
         label: "Category",
         defaultWidth: 190,
@@ -1675,6 +1763,18 @@ export default function Projects() {
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
+    { key: "estimated_hours", label: "Est. hrs", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
+    { key: "time_spent_hours", label: "Spent hrs", getValue: (p) => projectSpentHoursTotal(p.id, tasks, timeEntries) },
+    {
+      key: "hours_variance",
+      label: "Hrs Variance",
+      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries))?.hours ?? -Infinity,
+    },
+    {
+      key: "hours_variance_pct",
+      label: "Hrs Variance %",
+      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries))?.percent ?? -1,
+    },
     { key: "timelines_locked", label: "Timelines", getValue: (p) => (p.timelines_locked ? 1 : 0) },
   ];
 
@@ -2383,7 +2483,7 @@ export default function Projects() {
   // NOT the same left-to-right order as PROJECT_COLUMN_ORDER (which drives
   // Table view and lists Owner before Status), so Table's own column order
   // is untouched by this Timeline-only preference.
-  const PROJECT_TIMELINE_CHIP_ORDER = ["project_status", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended"];
+  const PROJECT_TIMELINE_CHIP_ORDER = ["project_status", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
   const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView)
     .filter((c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key))
     .slice()
