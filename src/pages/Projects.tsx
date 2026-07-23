@@ -6,6 +6,7 @@ import { useTableViews } from "../lib/useTableViews";
 import DataTable from "../components/DataTable";
 import BoardView, { type BoardColumnDef } from "../components/BoardView";
 import TimelineView, { TimelineControls } from "../components/TimelineView";
+import CalendarView from "../components/CalendarView";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
@@ -789,6 +790,19 @@ export default function Projects() {
   const taskName = (id: string | null) => tasks.find((t) => t.id === id)?.name ?? "—";
   const isProjectOwner = (projectId: string) => projects.find((p) => p.id === projectId)?.owner_id === me?.id;
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
+  // Same reasoning as canRescheduleTask below -- only draggable on the
+  // Calendar when a person could also edit Start/Due by hand: has edit
+  // rights, timelines aren't locked, and the dates aren't themselves
+  // computed from the project's own tasks (see projectDatesFromTasks).
+  function canRescheduleProject(p: ProjectRow): boolean {
+    return canEditProject(p) && !p.timelines_locked && !projectDatesFromTasks(p.id);
+  }
+  function rescheduleProject(p: ProjectRow, newStart: string | null, newDue: string | null) {
+    const patch: Partial<ProjectRow> = {};
+    if (newStart !== null) patch.start_date = newStart;
+    if (newDue !== null) patch.end_date = newDue;
+    if (Object.keys(patch).length > 0) updateProject(p.id, patch);
+  }
 
   // Should we show the "Mark as Done?" suggestion chip for this project?
   // Deliberately a suggestion, not an auto-set of project_status -- see the
@@ -817,6 +831,28 @@ export default function Projects() {
   // action restricted to Full Access only -- see the Reopen button in the
   // validated_completion_date column.
   const isTaskLocked = (t: TaskRow) => Boolean(t.validated_completion_date);
+  // Calendar drag-to-reschedule moves Start and Due together, so a task
+  // is only draggable when every gate that would let a person edit BOTH
+  // fields by hand also passes: not a parent whose dates are computed
+  // from its own sub-tasks (see taskDatesFromSubtasks below), has edit
+  // rights, isn't validated-and-locked, and its project's timelines
+  // aren't locked (that's what makes current_due_date DB-locked -- see
+  // the Due column's own comment further down).
+  function canRescheduleTask(t: TaskWithDepth): boolean {
+    const isParent = t._depth === 0 && hasChildren(t.id);
+    return !isParent && canEditTask(t) && !isTaskLocked(t) && !isProjectLocked(t.project_id);
+  }
+  function rescheduleTask(t: TaskWithDepth, newStart: string | null, newDue: string | null) {
+    const patch: Partial<TaskRow> = {};
+    if (newStart !== null) patch.start_date = newStart;
+    // Mirrors the Due column's own onCommit -- original_due_date tracks
+    // alongside current_due_date while the project is still in scoping.
+    if (newDue !== null) {
+      patch.current_due_date = newDue;
+      patch.original_due_date = newDue;
+    }
+    if (Object.keys(patch).length > 0) updateTask(t.id, patch);
+  }
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
@@ -2784,6 +2820,27 @@ export default function Projects() {
               </div>
             )}
           </>
+        ) : projectViews.activeView.viewType === "calendar" ? (
+          <>
+            <CalendarView
+              rows={sortRows(filteredProjects, projectViews.activeView.sorts, projectSortOptions)}
+              rowKey={(p) => p.id}
+              renderLabel={(p) => projectColumns.find((c) => c.key === "name")?.render(p)}
+              getStart={(p) => p.start_date}
+              getDue={(p) => p.end_date}
+              getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
+              getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
+              emptyLabel="No projects yet. Add one below."
+              canDrag={canRescheduleProject}
+              onReschedule={rescheduleProject}
+            />
+            {canCreateProject && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
+                <Plus size={12} />
+                New project
+              </div>
+            )}
+          </>
         ) : (
           <div className="data-table-dense">
             <DataTable
@@ -2958,6 +3015,27 @@ export default function Projects() {
               hiddenGroups={taskViews.activeView.hiddenGroups}
               labelWidth={taskViews.activeView.timelineLabelWidth ?? 460}
               onLabelWidthChange={(timelineLabelWidth) => taskViews.updateActiveView({ timelineLabelWidth })}
+            />
+            {canCreateTask && (
+              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
+                <Plus size={12} />
+                New task
+              </div>
+            )}
+          </>
+        ) : taskViews.activeView.viewType === "calendar" ? (
+          <>
+            <CalendarView
+              rows={sortRowsHierarchical(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions, (t) => t.id, (t) => t.parent_task_id)}
+              rowKey={(t) => t.id}
+              renderLabel={(t) => taskColumns.find((c) => c.key === "name")?.render(t)}
+              getStart={(t) => t.start_date}
+              getDue={(t) => t.current_due_date}
+              getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
+              getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
+              emptyLabel="No tasks yet. Add one below."
+              canDrag={canRescheduleTask}
+              onReschedule={rescheduleTask}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

@@ -40,9 +40,8 @@ export const TAB_COLORS: Record<string, string> = {
   pink: "#c1447e",
 };
 
-// One icon per view type -- only "table" is a real, selectable layout right
-// now, but views already carry a viewType so tabs are ready the moment
-// Board/Calendar/Timeline become real (see VIEW_TYPE_TILES below).
+// One icon per view type -- Table/Board/Timeline/Calendar are all real,
+// selectable layouts now (see VIEW_TYPE_TILES below).
 const VIEW_TYPE_ICONS: Record<ViewType, typeof Table2> = {
   table: Table2,
   board: Kanban,
@@ -51,14 +50,12 @@ const VIEW_TYPE_ICONS: Record<ViewType, typeof Table2> = {
 };
 
 // "Start from scratch" tiles shown in the Add-view picker, Notion-style.
-// Only "table" is wired up to actually create a view -- board/calendar/
-// timeline render as visible, disabled placeholders so people can see
-// what's coming without being able to pick a layout that doesn't exist yet.
+// All four layouts are wired up to actually create a view now.
 const VIEW_TYPE_TILES: { type: ViewType; label: string; enabled: boolean }[] = [
   { type: "table", label: "Table", enabled: true },
   { type: "board", label: "Board", enabled: true },
   { type: "timeline", label: "Timeline", enabled: true },
-  { type: "calendar", label: "Calendar", enabled: false },
+  { type: "calendar", label: "Calendar", enabled: true },
 ];
 
 // Count of rows still visible under a given view's own grouping settings
@@ -126,7 +123,7 @@ export default function ViewTabs<T>({
   // view immediately with an auto-generated name the person can rename
   // later via the tab's own "⋯" menu.
   function handleCreateView(viewType: ViewType) {
-    const base = viewType === "board" ? "New board" : viewType === "timeline" ? "New timeline" : "New view";
+    const base = viewType === "board" ? "New board" : viewType === "timeline" ? "New timeline" : viewType === "calendar" ? "New calendar" : "New view";
     const existingUntitled = views.filter((v) => new RegExp(`^${base}( \\d+)?$`).test(v.name)).length;
     const name = existingUntitled === 0 ? base : `${base} ${existingUntitled + 1}`;
     onCreate(

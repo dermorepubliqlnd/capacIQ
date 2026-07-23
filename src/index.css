@@ -1190,3 +1190,126 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   color: var(--text-secondary);
   cursor: pointer;
 }
+
+/* ---------- Calendar view (month grid, Tasks + Projects) ---------- */
+.calendar-view {
+  padding: 8px 12px 14px;
+  font-family: var(--font);
+}
+.calendar-view-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.calendar-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--navy);
+  cursor: pointer;
+}
+.calendar-nav-btn:hover { background: var(--hover-bg); }
+.calendar-month-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--navy);
+  min-width: 130px;
+}
+.calendar-today-btn {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.calendar-today-btn:hover { background: var(--hover-bg); }
+.calendar-weekday-row {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+.calendar-weekday-cell {
+  flex: 1 1 0;
+  padding: 4px 6px;
+  font-size: var(--font-caption);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-align: left;
+}
+/* One week per row -- day-number cells are absolutely positioned across
+   the row's full width/height (so a drop anywhere in a day's column
+   registers, even below where any bars currently sit), event bars are a
+   second layer of absolutely positioned strips on top, each one spanning
+   from its clipped-to-this-week start column to its end column. Lane
+   stacking (see CalendarView.tsx's layoutWeek) keeps overlapping items on
+   separate rows within the same week instead of overlapping visually. */
+.calendar-week-row {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+}
+.calendar-day-cell {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-right: 1px solid var(--border);
+  padding: 3px 4px;
+  box-sizing: border-box;
+}
+.calendar-day-cell.is-outside {
+  background: var(--hover-bg);
+  opacity: 0.55;
+}
+.calendar-day-number {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: inline-block;
+}
+.calendar-day-number.is-today {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+.calendar-day-overflow {
+  position: absolute;
+  bottom: 3px;
+  left: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.calendar-bar {
+  position: absolute;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+  margin: 0 2px;
+}
+.calendar-bar:hover { filter: brightness(0.96); }
+.calendar-empty {
+  padding: 24px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+}
