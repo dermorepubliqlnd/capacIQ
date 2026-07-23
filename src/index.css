@@ -1268,6 +1268,17 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
    for .calendar-week-bg-stripes (negative z-index background layer). */
 .calendar-week-row-wrap {
   position: relative;
+  /* z-index:0 (not the default "auto") is required here, not cosmetic:
+     it's what makes this element establish its OWN stacking context.
+     Without it, position:relative + z-index:auto does NOT create a
+     stacking context, so .calendar-week-bg-stripes' z-index:-1 escapes
+     past this element entirely and gets painted behind the nearest
+     actual stacking-context ancestor instead (e.g. the page's white
+     background) -- invisible even though the DOM/computed styles all
+     look correct. Confirmed live: stripe elements existed with the
+     right background color and the right getBoundingClientRect, but
+     nothing showed on screen until this was added. */
+  z-index: 0;
 }
 /* Full-height weekend/holiday background stripes for this week, painted
    BEHIND everything else in the wrapper via a negative z-index -- see
