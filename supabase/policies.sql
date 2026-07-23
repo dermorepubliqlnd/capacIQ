@@ -1246,3 +1246,60 @@ end;
 alter table projects drop constraint if exists projects_status_check;
 alter table projects add constraint projects_status_check
   check (status is null or status in ('Not Started','In Progress','Completed','Paused','Cancelled'));
+
+-- Migration 2026-07-23d: task_planning_snapshots (WBS duration-planning
+-- feature, phase 2)
+--
+-- Design (agreed live with Sandra): the new WBS planning page computes,
+-- per task, what its Due date would be under three modes -- Full Capacity
+-- (7.5h/day), Standard (4h/day), Capacity-Based (a specific person's real
+-- daily availability). She finalizes by picking ONE mode for the whole
+-- project, which writes real Start/Due dates onto the tasks and locks
+-- timelines through the existing performTimelinesLock/RPC path -- but she
+-- also wants the OTHER two modes' numbers retained for reporting, not
+-- discarded once one is chosen. This table is that audit trail: every
+-- Finalize click writes one row per mode per task (grouped by a shared
+-- finalize_batch_id), and the row matching the mode actually applied is
+-- flagged `applied = true`. Re-planning later just adds a new batch --
+-- rows are never overwritten, so historical finalizes stay reportable.
+
+create table if not exists task_planning_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid references tasks(id) not null,
+  finalize_batch_id uuid not null,
+  mode text not null check (mode in ('full_capacity', 'standard', 'capacity_based')),
+  applied boolean not null default false,
+  target_start_date date not null,
+  person_id uuid references people(id), -- only set for capacity_based rows
+  raw_days numeric,
+  whole_days numeric,
+  computed_due_date date not null,
+  computed_by uuid references people(id),
+  computed_at timestamptz not null default now()
+);
+
+create index if not exists task_planning_snapshots_task_idx on task_planning_snapshots(task_id);
+create index if not exists task_planning_snapshots_batch_idx on task_planning_snapshots(finalize_batch_id);
+
+alter table task_planning_snapshots enable row level security;
+
+-- Same visibility rule already used for tasks themselves (tasks_select) --
+-- anyone who can see the task's project can see its planning history.
+create policy task_planning_snapshots_select on task_planning_snapshots for select
+  using (exists (select 1 from tasks t where t.id = task_id and can_see_project(t.project_id)));
+
+-- Written only by whoever could edit the task's dates in the first place
+-- (mirrors tasks_update's owner/full-access rule) -- a snapshot batch is
+-- part of the same governed action as locking timelines.
+create policy task_planning_snapshots_insert on task_planning_snapshots for insert
+  with check (
+    exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = task_id
+        and (my_access_level() = 'full' or pr.owner_id = my_person_id())
+    )
+  );
+
+-- Snapshots are an immutable audit trail -- no update/delete policy is
+-- defined, so both are denied by default (RLS with no matching policy
+-- silently blocks the operation rather than erroring).
