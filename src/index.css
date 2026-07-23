@@ -1296,7 +1296,11 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   grid-template-columns: repeat(7, 1fr);
 }
 .calendar-week-bg-stripe {
-  background: var(--hover-bg);
+  /* 20% lighter than the shared --hover-bg tint (Sandra: "make the
+     weekends and holidays shade like 20% lighter") -- mixed toward white
+     rather than changing --hover-bg itself, since that variable is also
+     used for hover states and neutral pills elsewhere in the app. */
+  background: color-mix(in srgb, var(--hover-bg) 80%, white);
 }
 /* Multi-day spanning bars for Start-and-Due mode rows whose Start/Due
    differ by more than a day (see CalendarView's `spans` + `packWeekSpans`)

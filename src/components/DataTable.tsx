@@ -205,6 +205,31 @@ export default function DataTable<T>({
       : sortRows(rows, view.sorts, sortOptions);
   }, [rows, sortOptions, view.sorts, getParentId, rowKey]);
 
+  // Names of every group section actually rendered right now (mirrors the
+  // group-building logic in the `activeGroupOption` render branch below,
+  // kept separate so the Collapse all/Expand all control -- Sandra:
+  // "put a collapse all and expand all quick button somewhere in each
+  // section when grouping are applied... helpful in case it's a long list
+  // already" -- can know the full set of group names without needing the
+  // render branch to run first. Excludes hidden groups (Show/Hide-all in
+  // the Group-by popover), since there's nothing to collapse/expand there.
+  const visibleGroupNames = useMemo(() => {
+    if (!activeGroupOption) return [];
+    const names = new Set<string>();
+    activeGroupOption.allGroups?.().forEach((g) => names.add(g));
+    sortedRows.forEach((row) => names.add(activeGroupOption.getGroup(row) || "—"));
+    const hiddenGroups = view.hiddenGroups ?? [];
+    return Array.from(names).filter((n) => !hiddenGroups.includes(n));
+  }, [activeGroupOption, sortedRows, view.hiddenGroups]);
+
+  const allGroupsCollapsed = visibleGroupNames.length > 0 && visibleGroupNames.every((n) => collapsedGroups.includes(n));
+
+  function toggleAllGroups() {
+    setCollapsedGroups((prev) =>
+      allGroupsCollapsed ? prev.filter((g) => !visibleGroupNames.includes(g)) : Array.from(new Set([...prev, ...visibleGroupNames]))
+    );
+  }
+
   const colSpanTotal = (visibleColumns.length || 1) + (hasGutter ? 1 : 0);
 
   const header = (
@@ -393,16 +418,28 @@ export default function DataTable<T>({
   const footerContent = footerRow ? footerRow(colSpanTotal) : null;
 
   return (
-    <div style={{ width: "100%", overflowX: "auto", overflowY: "visible" }}>
-      <table className="data-table" style={{ tableLayout: "fixed", width: totalWidth }}>
-        {header}
-        {body}
-        {footerContent != null && (
-          <tfoot>
-            <tr>{footerContent}</tr>
-          </tfoot>
-        )}
-      </table>
+    <div>
+      {activeGroupOption && visibleGroupNames.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 2px 4px" }}>
+          <button
+            onClick={toggleAllGroups}
+            style={{ fontSize: 11, fontWeight: 500, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: "2px 4px" }}
+          >
+            {allGroupsCollapsed ? "Expand all" : "Collapse all"}
+          </button>
+        </div>
+      )}
+      <div style={{ width: "100%", overflowX: "auto", overflowY: "visible" }}>
+        <table className="data-table" style={{ tableLayout: "fixed", width: totalWidth }}>
+          {header}
+          {body}
+          {footerContent != null && (
+            <tfoot>
+              <tr>{footerContent}</tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
     </div>
   );
 }
