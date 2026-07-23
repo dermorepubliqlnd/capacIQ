@@ -556,7 +556,7 @@ export function ViewFilterPills<T>({
         <span className="filter-pill">
           Filtered: {filterParts.join(" \u00b7 ")}
           <button title="Clear filter" onClick={onClearFilter}>
-            <X size={10} />
+            <X size={11} />
           </button>
         </span>
       )}
@@ -571,7 +571,7 @@ export function ViewFilterPills<T>({
                 onHiddenGroupsChange([]);
               }}
             >
-              <X size={10} />
+              <X size={11} />
             </button>
           )}
         </span>
@@ -580,7 +580,7 @@ export function ViewFilterPills<T>({
         <span className="filter-pill">
           {hiddenGroups.length} {activeOption.label.toLowerCase()} value{hiddenGroups.length === 1 ? "" : "s"} hidden
           <button title="Show all" onClick={() => onHiddenGroupsChange([])}>
-            <X size={10} />
+            <X size={11} />
           </button>
         </span>
       )}
@@ -588,9 +588,16 @@ export function ViewFilterPills<T>({
         const option = sortOptions.find((o) => o.key === s.key);
         return (
           <span className="filter-pill" key={`${s.key}_${idx}`}>
-            Sorted by {option?.label ?? s.key} {s.direction === "asc" ? "↑" : "↓"}
+            Sorted by {option?.label ?? s.key}
+            <button
+              className="filter-pill-arrow-btn"
+              title={s.direction === "asc" ? "Switch to descending" : "Switch to ascending"}
+              onClick={() => onSortsChange(sorts.map((r, i) => (i === idx ? { ...r, direction: r.direction === "asc" ? "desc" : "asc" } : r)))}
+            >
+              {s.direction === "asc" ? "↑" : "↓"}
+            </button>
             <button title="Remove sort" onClick={() => onSortsChange(sorts.filter((_, i) => i !== idx))}>
-              <X size={10} />
+              <X size={11} />
             </button>
           </span>
         );

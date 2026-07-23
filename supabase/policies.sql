@@ -1204,3 +1204,45 @@ end;
 $$;
 
 grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;
+
+-- Migration 2026-07-23c: split project_status into Status + Phase
+--
+-- Sandra: the old project_status field conflated two different questions
+-- in one 11-value dropdown -- "is this project moving" (lifecycle) and
+-- "where in the production pipeline is it" (phase) -- which is why
+-- Paused sat awkwardly next to Design in the same list. Design agreed
+-- live: `status` is now a small fixed lifecycle set (Not Started/In
+-- Progress/Completed/Paused/Cancelled); `phase` is the pipeline stage
+-- (Backlog/Queued under Not Started, Planning/Design/Development/
+-- Evaluation/Delivery under In Progress, Done under Completed). Paused
+-- and Cancelled deliberately do NOT get their own phase value -- phase
+-- simply freezes at whatever it already was when a project is paused or
+-- cancelled, so you can see both that it stopped and where it stopped,
+-- without inventing a phase that doesn't mean anything on its own.
+-- "Merged" is retired entirely (Sandra: delete it, no replacement) --
+-- existing Merged rows are treated as Completed/Done on migration since
+-- it was already a done-equivalent under the old Health bucket logic.
+--
+-- Order matters: phase must be backfilled from the OLD project_status
+-- value before that same column gets overwritten with the new Status
+-- value in the next statement.
+
+alter table projects rename column project_status to status;
+alter table projects add column if not exists phase text;
+
+update projects set phase = status
+  where status in ('Backlog','Queued','Planning','Design','Development','Evaluation','Delivery','Done');
+update projects set phase = 'Done' where status = 'Merged';
+
+update projects set status = case
+  when status in ('Backlog','Queued') then 'Not Started'
+  when status in ('Planning','Design','Development','Evaluation','Delivery') then 'In Progress'
+  when status = 'Paused' then 'Paused'
+  when status = 'Canceled' then 'Cancelled'
+  when status in ('Done','Merged') then 'Completed'
+  else status
+end;
+
+alter table projects drop constraint if exists projects_status_check;
+alter table projects add constraint projects_status_check
+  check (status is null or status in ('Not Started','In Progress','Completed','Paused','Cancelled'));

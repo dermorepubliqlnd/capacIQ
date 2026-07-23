@@ -47,13 +47,18 @@ interface InlineSelectProps extends BaseProps {
   options: string[] | OptionGroup[];
   allowEmpty?: boolean;
   renderReadOnly?: (value: string) => React.ReactNode;
+  // Optional display-text mapper for each <option> in the edit dropdown
+  // (e.g. Priority prefixing "Low" -> "↓ Low") -- the underlying stored
+  // value/onCommit argument is always the raw option string, only the
+  // visible label changes.
+  labelFor?: (value: string) => string;
 }
 
 function isGrouped(options: string[] | OptionGroup[]): options is OptionGroup[] {
   return options.length > 0 && typeof options[0] !== "string";
 }
 
-export function InlineSelect({ value, onCommit, options, editable, allowEmpty, emptyLabel = "—", renderReadOnly }: InlineSelectProps) {
+export function InlineSelect({ value, onCommit, options, editable, allowEmpty, emptyLabel = "—", renderReadOnly, labelFor }: InlineSelectProps) {
   const [isEditing, setIsEditing] = useState(false);
   const selectRef = useRef<HTMLSelectElement>(null);
 
@@ -101,14 +106,14 @@ export function InlineSelect({ value, onCommit, options, editable, allowEmpty, e
             <optgroup key={g.label} label={g.label}>
               {g.options.map((o) => (
                 <option key={o} value={o}>
-                  {o}
+                  {labelFor ? labelFor(o) : o}
                 </option>
               ))}
             </optgroup>
           ))
         : (options as string[]).map((o) => (
             <option key={o} value={o}>
-              {o}
+              {labelFor ? labelFor(o) : o}
             </option>
           ))}
     </select>

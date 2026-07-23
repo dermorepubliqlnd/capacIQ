@@ -9,8 +9,8 @@ interface ViewTabsProps<T> {
   groupOptions: GroupOption<T>[];
   onSelect: (id: string) => void;
   onCreate: (name: string, viewType?: ViewType, initialGroupBy?: string, initialHiddenColumns?: string[]) => void;
-  // Field a new Board view should group by out of the box (e.g.
-  // "project_status" / "status") -- Board can't render without some
+  // Field a new Board view should group by out of the box (e.g. "phase"
+  // for Projects, "status" for Tasks) -- Board can't render without some
   // grouping, so this seeds a sensible default the user is then free to
   // change via the Group-by picker.
   boardDefaultGroupBy?: string;

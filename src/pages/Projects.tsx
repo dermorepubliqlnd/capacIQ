@@ -26,9 +26,16 @@ import {
   PROJECT_EFFORT_LEVEL_OPTIONS,
   PROJECT_EFFORT_LEVEL_TONES,
   PROJECT_PRIORITY_OPTIONS,
-  PROJECT_STATUS_GROUPED,
+  priorityLabel,
   PROJECT_STATUS_OPTIONS,
   PROJECT_STATUS_TONES,
+  PROJECT_PHASE_OPTIONS_BY_STATUS,
+  PROJECT_PHASE_TONES,
+  PROJECT_PHASE_ALL,
+  PROJECT_PHASE_NOT_STARTED,
+  PROJECT_PHASE_IN_PROGRESS,
+  PROJECT_PHASE_COMPLETED,
+  nextPhaseForStatus,
   TASK_STATUS_GROUPED,
   TASK_STATUS_OPTIONS,
   PROJECT_CATEGORY_ICONS,
@@ -50,7 +57,8 @@ interface ProjectRow {
   owner_id: string | null;
   category: string | null;
   priority: "Low" | "Medium" | "High" | null;
-  project_status: string | null;
+  status: string | null;
+  phase: string | null;
   effort_level: string | null;
   start_date: string | null;
   end_date: string | null;
@@ -105,7 +113,7 @@ interface ExtensionRequestLite {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "project_status", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
 // timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
@@ -180,7 +188,7 @@ function countWorkingDays(start: Date, end: Date, holidayDates: Set<string>): nu
 
 // "Mark as Done?" suggestion dismissals (see healthOf's rule 1 below and
 // project_capaciq_view_types memory): when actual progress hits 100% we
-// SUGGEST closing the project out rather than auto-flipping project_status,
+// SUGGEST closing the project out rather than auto-flipping status,
 // so a PM/owner keeps control of exactly when a project is formally done.
 // Dismissals are per-person, stored in localStorage (same convention as
 // useTableViews.ts) -- not persisted server-side since this is just a UI
@@ -206,11 +214,19 @@ function loadDismissedDoneSuggestions(storageKey: string): Set<string> {
 // Project Health compares actual weighted task progress against how far
 // along the project *should* be, given how much of its working-day
 // timeline has elapsed. Rules (in order -- first match wins):
-//   0. Manually marked Done/Canceled/Merged -- echo that status verbatim
-//      at neutral tone. A closed-out project never gets second-guessed by
-//      the formula below (confirmed with Sandra 2026-07-17: a project
-//      cancelled at 30% actual progress should read "Canceled", not
-//      "Off track").
+//   0a. Status is Completed or Cancelled -- echo that status verbatim at
+//       neutral tone. A closed-out project never gets second-guessed by
+//       the formula below (confirmed with Sandra 2026-07-17: a project
+//       cancelled at 30% actual progress should read "Cancelled", not
+//       "Off track"). Redesigned 2026-07-23: this used to be a derived
+//       3-bucket check (statusGroupOf's "complete" bucket, which lumped
+//       Done/Canceled/Merged together) -- now that Status is its own
+//       small lifecycle field, it's a direct equality check, no bucket
+//       derivation needed.
+//   0b. Status is Paused -- echo "Paused" at its own tone. New rule as of
+//       the Status/Phase split: a paused project shouldn't be silently
+//       judged On track/Overdue by the formula below while work on it
+//       isn't actually happening.
 //   1. Actual progress is 100% -- Completed (green), regardless of dates.
 //   2. Missing start or due date -- Health Unavailable (gray): rules 3-6
 //      all need both dates to mean anything.
@@ -231,9 +247,9 @@ function healthOf(
   p: ProjectRow,
   allTasks: TaskRow[],
   holidayDates: Set<string>
-): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
-  const group = statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status);
-  if (group === "complete") return { label: p.project_status ?? "Completed", tone: "neutral" };
+): { label: string; tone: "success" | "warning" | "danger" | "neutral" | "purple" } {
+  if (p.status === "Completed" || p.status === "Cancelled") return { label: p.status, tone: "neutral" };
+  if (p.status === "Paused") return { label: "Paused", tone: "purple" };
 
   const actual = actualProgress(p.id, allTasks);
   if (actual === 100) return { label: "Completed", tone: "success" };
@@ -346,19 +362,26 @@ function statusTone(group: "to_do" | "in_progress" | "complete" | null): "succes
 
 // Board view (v1) always groups by Status specifically -- it doesn't yet
 // generalize to grouping by any field the way Table view's "Group by" does.
-// Every exact status value gets its own column (not just the 3 To-do/In
-// Progress/Complete buckets), matching Table view's Status pill exactly so
-// dropping a card into a column sets an unambiguous, real status value.
-// clusterLabel groups adjacent columns under one small section label so an
-// 11-wide Projects board still reads with some structure.
-const PROJECT_BOARD_COLUMNS: BoardColumnDef[] = PROJECT_STATUS_GROUPED.flatMap((group) =>
-  group.options.map((value) => ({
-    value,
-    label: value,
-    clusterLabel: group.label,
-    tone: PROJECT_STATUS_TONES[value] ?? "neutral",
-  }))
-);
+// Redesigned 2026-07-23 alongside the Status/Phase split: rather than one
+// 11-wide board clustered under 3 super-labels, there are now two board
+// column sets -- a small 5-column Status board (the lifecycle view), and
+// an 8-column Phase board (the real pipeline view, clustered under Not
+// Started/In Progress/Completed the same way the old combined field was,
+// so it still reads with structure). Phase is the more natural default
+// for a Kanban-style board (it's literally "where in production is this"),
+// but Status stays available too since it's still a real, board-groupable
+// field.
+const PROJECT_BOARD_STATUS_COLUMNS: BoardColumnDef[] = PROJECT_STATUS_OPTIONS.map((value) => ({
+  value,
+  label: value,
+  tone: PROJECT_STATUS_TONES[value] ?? "neutral",
+}));
+
+const PROJECT_BOARD_PHASE_COLUMNS: BoardColumnDef[] = [
+  ...PROJECT_PHASE_NOT_STARTED.map((value) => ({ value, label: value, clusterLabel: "Not Started", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
+  ...PROJECT_PHASE_IN_PROGRESS.map((value) => ({ value, label: value, clusterLabel: "In Progress", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
+  ...PROJECT_PHASE_COMPLETED.map((value) => ({ value, label: value, clusterLabel: "Completed", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
+];
 
 const TASK_BOARD_COLUMNS: BoardColumnDef[] = TASK_STATUS_GROUPED.flatMap((group) =>
   group.options.map((value) => ({
@@ -388,7 +411,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // enumerable set of Kanban columns); anything else (free text, dates,
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
-const PROJECT_BOARD_GROUPABLE_KEYS = ["project_status", "priority", "category", "effort_level", "owner", "timelines_locked"];
+const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "effort_level", "owner", "timelines_locked"];
 const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing", "due_date_ext"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
@@ -546,7 +569,17 @@ function buildTaskTree(list: TaskRow[]): TaskWithDepth[] {
 // "Priority" -> Low/Medium/High). Deliberately minimal -- reuses the same
 // .view-tab-dropdown look as other menus in this file rather than
 // introducing a new visual style.
-function FieldPickerButton({ label, options, onPick }: { label: string; options: string[]; onPick: (value: string) => void }) {
+function FieldPickerButton({
+  label,
+  options,
+  onPick,
+  labelFor,
+}: {
+  label: string;
+  options: string[];
+  onPick: (value: string) => void;
+  labelFor?: (value: string) => string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -573,7 +606,7 @@ function FieldPickerButton({ label, options, onPick }: { label: string; options:
                 setOpen(false);
               }}
             >
-              {o}
+              {labelFor ? labelFor(o) : o}
             </button>
           ))}
         </div>
@@ -801,12 +834,20 @@ export default function Projects() {
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
 
   // Should we show the "Mark as Done?" suggestion chip for this project?
-  // Deliberately a suggestion, not an auto-set of project_status -- see the
+  // Deliberately a suggestion, not an auto-set of status -- see the
   // dismissal-helper comment above for why.
   function shouldSuggestDone(p: ProjectRow): boolean {
-    if (statusGroupOf(PROJECT_STATUS_GROUPED, p.project_status) === "complete") return false;
+    if (p.status === "Completed" || p.status === "Cancelled") return false;
     if (dismissedDoneSuggestions.has(p.id)) return false;
     return actualProgress(p.id, tasks) === 100;
+  }
+
+  // Status/Phase are two separate properties but changing Status cascades
+  // into Phase (see nextPhaseForStatus's own doc comment for the exact
+  // rules) -- always go through this helper on a Status change rather than
+  // writing { status } alone, so Phase never drifts out of sync with it.
+  function changeProjectStatus(p: ProjectRow, newStatus: string | null) {
+    updateProject(p.id, { status: newStatus, phase: newStatus ? nextPhaseForStatus(p.phase, newStatus) : p.phase });
   }
 
   function dismissDoneSuggestion(projectId: string) {
@@ -1293,7 +1334,7 @@ export default function Projects() {
     }
     if (view.filterStatuses && view.filterStatuses.length > 0) {
       const statuses = view.filterStatuses;
-      out = out.filter((p) => statuses.includes(p.project_status ?? ""));
+      out = out.filter((p) => statuses.includes(p.status ?? ""));
     }
     return out;
   }, [projects, projectViews.activeView, me?.id]);
@@ -1348,38 +1389,35 @@ export default function Projects() {
             value={p.priority ?? ""}
             editable={canEditProject(p)}
             options={PROJECT_PRIORITY_OPTIONS}
-            renderReadOnly={() => (p.priority ? <span className={`status-pill ${priorityTone(p.priority)}`}>{p.priority}</span> : "—")}
+            labelFor={priorityLabel}
+            renderReadOnly={() => (p.priority ? <span className={`status-pill ${priorityTone(p.priority)}`}>{priorityLabel(p.priority)}</span> : "—")}
             onCommit={(v) => updateProject(p.id, { priority: v as ProjectRow["priority"] })}
           />
         ),
       },
       {
-        key: "project_status",
+        key: "status",
         label: "Status",
         defaultWidth: 140,
         maxWidth: 200,
         render: (p) => (
           <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
             <InlineSelect
-              value={p.project_status ?? ""}
+              value={p.status ?? ""}
               editable={canEditProject(p)}
               allowEmpty
-              options={PROJECT_STATUS_GROUPED}
+              options={PROJECT_STATUS_OPTIONS}
               renderReadOnly={() =>
-                p.project_status ? (
-                  <span className={`status-pill ${PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}`}>{p.project_status}</span>
-                ) : (
-                  "—"
-                )
+                p.status ? <span className={`status-pill ${PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral"}`}>{p.status}</span> : "—"
               }
-              onCommit={(v) => updateProject(p.id, { project_status: v || null })}
+              onCommit={(v) => changeProjectStatus(p, v || null)}
             />
             {shouldSuggestDone(p) && canEditProject(p) && (
               <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    updateProject(p.id, { project_status: "Done" });
+                    changeProjectStatus(p, "Completed");
                   }}
                   title="Mark as Done"
                   style={{
@@ -1407,6 +1445,27 @@ export default function Projects() {
               </span>
             )}
           </div>
+        ),
+      },
+      {
+        // New 2026-07-23: Phase used to be baked into the same field as
+        // Status (11 combined values) -- now its own property, cascading
+        // off Status (see PROJECT_PHASE_OPTIONS_BY_STATUS). Paused/
+        // Cancelled projects get the full pipeline list here since their
+        // Phase is frozen wherever it was, not tied to their Status.
+        key: "phase",
+        label: "Phase",
+        defaultWidth: 130,
+        maxWidth: 180,
+        render: (p) => (
+          <InlineSelect
+            value={p.phase ?? ""}
+            editable={canEditProject(p)}
+            allowEmpty
+            options={PROJECT_PHASE_OPTIONS_BY_STATUS[p.status ?? ""] ?? PROJECT_PHASE_ALL}
+            renderReadOnly={() => (p.phase ? <span className={`status-pill ${PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral"}`}>{p.phase}</span> : "—")}
+            onCommit={(v) => updateProject(p.id, { phase: v || null })}
+          />
         ),
       },
       {
@@ -1677,10 +1736,16 @@ export default function Projects() {
   // some columns impossible to sort on.
   const projectGroupOptions: GroupOption<ProjectRow>[] = [
     {
-      key: "project_status",
+      key: "status",
       label: "Status",
-      getGroup: (p) => p.project_status ?? "No status",
-      getTone: (p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral",
+      getGroup: (p) => p.status ?? "No status",
+      getTone: (p) => PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral",
+    },
+    {
+      key: "phase",
+      label: "Phase",
+      getGroup: (p) => p.phase ?? "No phase",
+      getTone: (p) => PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral",
     },
     {
       key: "priority",
@@ -1732,10 +1797,17 @@ export default function Projects() {
       boardGroupable: true,
     },
     {
-      key: "project_status",
+      key: "status",
       label: "Status",
-      getGroup: (p) => p.project_status ?? "No status",
-      getTone: (p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral",
+      getGroup: (p) => p.status ?? "No status",
+      getTone: (p) => PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral",
+      boardGroupable: true,
+    },
+    {
+      key: "phase",
+      label: "Phase",
+      getGroup: (p) => p.phase ?? "No phase",
+      getTone: (p) => PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral",
       boardGroupable: true,
     },
     {
@@ -1772,24 +1844,25 @@ export default function Projects() {
   ];
 
   // Computes Board's actual columns/getValue/drag-write-handler for
-  // whichever field is currently grouped by. Status keeps the existing
-  // 11-exact-value, clustered PROJECT_BOARD_COLUMNS; Priority/Category/
-  // Effort reuse their own enum option lists; Owner is built from the live
-  // people list (value = person id, so drag-drop writes back an
-  // unambiguous id rather than a display name).
+  // whichever field is currently grouped by. Status/Phase each have their
+  // own column set (PROJECT_BOARD_STATUS_COLUMNS / PROJECT_BOARD_PHASE_
+  // COLUMNS); Priority/Category/Effort reuse their own enum option lists;
+  // Owner is built from the live people list (value = person id, so
+  // drag-drop writes back an unambiguous id rather than a display name).
   const TIMELINES_BOARD_COLUMNS: BoardColumnDef[] = [
     { value: "scoping", label: "Scoping", tone: "warning" },
     { value: "locked", label: "Locked", tone: "neutral" },
   ];
 
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
-    if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: v, tone: priorityTone(v) }));
+    if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: priorityLabel(v), tone: priorityTone(v) }));
     if (groupBy === "category") return PROJECT_CATEGORY_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
     if (groupBy === "effort_level")
       return PROJECT_EFFORT_LEVEL_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_EFFORT_LEVEL_TONES[v] ?? "neutral" }));
     if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
     if (groupBy === "timelines_locked") return TIMELINES_BOARD_COLUMNS;
-    return PROJECT_BOARD_COLUMNS;
+    if (groupBy === "status") return PROJECT_BOARD_STATUS_COLUMNS;
+    return PROJECT_BOARD_PHASE_COLUMNS; // default board grouping is Phase -- the real pipeline view
   }
 
   function getProjectBoardValue(p: ProjectRow, groupBy: string): string | null {
@@ -1798,7 +1871,8 @@ export default function Projects() {
     if (groupBy === "effort_level") return p.effort_level;
     if (groupBy === "owner") return p.owner_id;
     if (groupBy === "timelines_locked") return p.timelines_locked ? "locked" : "scoping";
-    return p.project_status;
+    if (groupBy === "status") return p.status;
+    return p.phase;
   }
 
   function getProjectBoardMoveHandler(groupBy: string): ((p: ProjectRow, newValue: string) => void) | undefined {
@@ -1807,14 +1881,19 @@ export default function Projects() {
     if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
     if (groupBy === "owner") return (p, v) => updateProject(p.id, { owner_id: v || null });
     if (groupBy === "timelines_locked") return undefined; // drag-drop locking skips the confirm/reset ceremony -- use the Timelines column button instead
-    return (p, v) => updateProject(p.id, { project_status: v || null });
+    // Dragging a card between Status columns goes through changeProjectStatus
+    // so Phase cascades correctly (see its own doc comment); dragging
+    // between Phase columns writes phase directly and never touches Status.
+    if (groupBy === "status") return (p, v) => changeProjectStatus(p, v || null);
+    return (p, v) => updateProject(p.id, { phase: v || null });
   }
 
   const projectSortOptions: SortOption<ProjectRow>[] = [
     { key: "name", label: "Project", getValue: (p) => p.name ?? "" },
     { key: "owner", label: "Owner", getValue: (p) => ownerName(p.owner_id) },
     { key: "priority", label: "Priority", getValue: (p) => PROJECT_PRIORITY_OPTIONS.indexOf(p.priority ?? "") },
-    { key: "project_status", label: "Status", getValue: (p) => p.project_status ?? "" },
+    { key: "status", label: "Status", getValue: (p) => PROJECT_STATUS_OPTIONS.indexOf(p.status ?? "") },
+    { key: "phase", label: "Phase", getValue: (p) => PROJECT_PHASE_ALL.indexOf(p.phase ?? "") },
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
     { key: "effort_level", label: "Effort", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
     { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
@@ -2550,7 +2629,7 @@ export default function Projects() {
     projectViews.activeView.viewType === "calendar"
       ? null
       : projectGroupMode === "board"
-      ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
+      ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "phase")
       : projectGroupMode === "timeline"
       ? resolveTimelineGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS)
       : projectViews.activeView.groupBy;
@@ -2590,7 +2669,7 @@ export default function Projects() {
   // NOT the same left-to-right order as PROJECT_COLUMN_ORDER (which drives
   // Table view and lists Owner before Status), so Table's own column order
   // is untouched by this Timeline-only preference.
-  const PROJECT_TIMELINE_CHIP_ORDER = ["project_status", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+  const PROJECT_TIMELINE_CHIP_ORDER = ["status", "phase", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
   const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView)
     .filter((c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key))
     .slice()
@@ -2712,7 +2791,7 @@ export default function Projects() {
             groupOptions={projectGroupOptions}
             onSelect={projectViews.setActiveViewId}
             onCreate={projectViews.createView}
-            boardDefaultGroupBy="project_status"
+            boardDefaultGroupBy="phase"
             timelineDefaultHiddenColumns={PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
             calendarDefaultHiddenColumns={PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
             onRename={projectViews.renameView}
@@ -2787,7 +2866,12 @@ export default function Projects() {
               Clear
             </button>
             <div className="bulk-bar-actions">
-              <FieldPickerButton label="Priority" options={PROJECT_PRIORITY_OPTIONS} onPick={(v) => bulkUpdateProjects({ priority: v as ProjectRow["priority"] })} />
+              <FieldPickerButton
+                label="Priority"
+                options={PROJECT_PRIORITY_OPTIONS}
+                labelFor={priorityLabel}
+                onPick={(v) => bulkUpdateProjects({ priority: v as ProjectRow["priority"] })}
+              />
               <FieldPickerButton
                 label="Owner"
                 options={people.map((x) => x.name)}
@@ -2796,7 +2880,19 @@ export default function Projects() {
                   bulkUpdateProjects({ owner_id: person?.id ?? null });
                 }}
               />
-              <FieldPickerButton label="Status" options={PROJECT_STATUS_OPTIONS} onPick={(v) => bulkUpdateProjects({ project_status: v || null })} />
+              <FieldPickerButton
+                label="Status"
+                options={PROJECT_STATUS_OPTIONS}
+                // Bulk edit can't cascade Phase per-row the way the single-row
+                // Status cell does (changeProjectStatus) -- every selected row
+                // gets the exact same flat patch. Completed is the one case
+                // that's unambiguous regardless of each row's prior phase (it
+                // always means Done), so that's force-set here too; for the
+                // other statuses the bulk action leaves each row's existing
+                // Phase untouched rather than guessing.
+                onPick={(v) => bulkUpdateProjects(v === "Completed" ? { status: v, phase: "Done" } : { status: v || null })}
+              />
+              <FieldPickerButton label="Phase" options={PROJECT_PHASE_ALL} onPick={(v) => bulkUpdateProjects({ phase: v || null })} />
               <button className="bulk-bar-delete" onClick={bulkDeleteProjects}>
                 <Trash2 size={12} />
                 Delete
@@ -2812,11 +2908,11 @@ export default function Projects() {
             <BoardView
               rows={sortRows(filteredProjects, projectViews.activeView.sorts, projectSortOptions)}
               rowKey={(p) => p.id}
-              columns={getProjectBoardColumns(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
-              getValue={(p) => getProjectBoardValue(p, resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
+              columns={getProjectBoardColumns(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "phase"))}
+              getValue={(p) => getProjectBoardValue(p, resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "phase"))}
               hiddenColumns={projectViews.activeView.hiddenGroups}
               renderCard={renderProjectCard}
-              onMoveCard={getProjectBoardMoveHandler(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status"))}
+              onMoveCard={getProjectBoardMoveHandler(resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "phase"))}
               onReorderCard={reorderProjects}
             />
             {canCreateProject && (
@@ -2836,7 +2932,7 @@ export default function Projects() {
               getDue={(p) => p.end_date}
               dateMode={projectViews.activeView.timelineDateMode ?? "range"}
               scale={projectViews.activeView.timelineScale ?? "month"}
-              getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
+              getTone={(p) => PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral"}
               getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
               emptyLabel="No projects yet. Add one below."
               propertyColumns={projectTimelinePropertyColumns}
@@ -2862,7 +2958,7 @@ export default function Projects() {
               renderLabel={(p) => projectColumns.find((c) => c.key === "name")?.render(p)}
               getStart={(p) => p.start_date}
               getDue={(p) => p.end_date}
-              getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
+              getTone={(p) => PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral"}
               getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
               emptyLabel="No projects yet. Add one below."
               dateMode={projectViews.activeView.timelineDateMode ?? "range"}

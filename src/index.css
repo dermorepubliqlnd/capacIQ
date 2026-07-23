@@ -254,13 +254,36 @@ input, select { font-family: var(--font); }
   justify-content: center;
   width: 14px;
   height: 14px;
-  color: var(--muted);
+  /* Was var(--muted) (#8a94a6) on this pill's var(--hover-bg) (#eef2f5)
+     background -- barely any contrast, Sandra: "it's hard to see".
+     var(--text-secondary) is much darker and matches the pill's own text
+     color, so the close icon reads clearly at rest, not just on hover. */
+  color: var(--text-secondary);
   background: none;
   border: none;
   cursor: pointer;
   border-radius: 50%;
 }
 .filter-pill button:hover { background: var(--border); color: var(--navy); }
+/* Sort pill's direction arrow (Sandra: clicking it should flip asc/desc as
+   a quick action, without opening the full Sort popover) -- same hover
+   affordance as the close button above, but auto-width since it wraps a
+   text glyph (↑/↓) rather than a fixed-size icon. */
+.filter-pill-arrow-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  height: 14px;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 600;
+}
+.filter-pill-arrow-btn:hover { background: var(--border); color: var(--navy); }
 
 /* Notion-style view tabs above a data table: flat icon + label list, no
    boxes/borders -- active view is just bolder/darker text, like Notion's own
