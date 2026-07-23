@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
-import { InlineDate, InlineNumber, InlineSelect } from "../components/InlineCell";
-import { buildHolidaySet, toISO } from "../lib/workingDays";
-import { fullCapacityScenario, standardScenario, capacityBasedScenario, type ScenarioResult } from "../lib/taskScheduling";
+import { InlineText, InlineNumber, InlineSelect } from "../components/InlineCell";
+import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
+import { fullCapacityScenario, standardScenario, capacityBasedScenario } from "../lib/taskScheduling";
+import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
 
 interface ProjectRow {
   id: string;
@@ -50,30 +51,46 @@ interface HolidayRow {
 }
 
 type Mode = "full_capacity" | "standard" | "capacity_based";
+// Sandra, 2026-07-23: "Full Capacity / Standard / Capacity-Based" all leaned
+// on the word "capacity" and read as confusing/redundant. Renamed the
+// DISPLAY labels only -- the underlying `mode` values stored in
+// task_planning_snapshots stay as full_capacity/standard/capacity_based so
+// existing rows and code aren't affected, just what's shown on screen.
 const MODE_LABEL: Record<Mode, string> = {
-  full_capacity: "Full Capacity",
-  standard: "Standard",
+  full_capacity: "Full Effort",
+  standard: "Conservative Effort",
   capacity_based: "Capacity-Based",
 };
 
-// WBS planning page (Sandra, 2026-07-23): per task, she sets its own Start
-// date and Estimated hours (both persisted immediately, same autosave
-// convention as everywhere else in the app), and this page computes what
-// the Due date would be under three modes -- Full Capacity (7.5h/day),
-// Standard (4h/day), Capacity-Based (a specific person's real remaining
-// daily hours). No parallel/sequential inference from the task hierarchy
-// -- two tasks sharing a Start date are simply running in parallel, one
-// started after another's Due date is sequential, entirely the planner's
-// own call.
+interface ChainEntry {
+  start: string;
+  end: string;
+  durationDays: number;
+  rawDays?: number;
+}
+
+// WBS planning page (Sandra, 2026-07-23, two design rounds):
+// - Per task: Estimated hours and Task name are directly editable (both
+//   autosave immediately, same convention as the rest of the app).
+// - Start/End dates are NOT typed per task -- they're computed by chaining:
+//   the Target start date anchors the very first task in the list, and
+//   every following task's Start is the moment the one before it finishes.
+//   Sub-tasks chain within their own parent's block (first sub-task starts
+//   when the parent's slot begins, the parent's own span is simply the
+//   first sub-task's start through the last sub-task's end); the top-level
+//   chain then resumes right after that whole block. This runs completely
+//   independently per mode (Full Effort / Conservative Effort /
+//   Capacity-Based), since each mode's task durations differ, so the same
+//   task can land on different real dates in each column.
 //
-// "Finalize" picks ONE mode for the whole project: writes that mode's Due
-// date onto every task, snapshots all three modes' numbers per task into
-// task_planning_snapshots for later reporting (never overwritten -- a new
-// batch each time this is run), then locks timelines through the same
-// underlying gate/RPC/phase-cascade the Projects table's own Lock button
-// and the Design-phase guardrail use (duplicated here deliberately rather
-// than importing from Projects.tsx, to avoid touching that already-shipped,
-// live-verified code path in the same pass).
+// "Finalize" picks ONE mode for the whole project: writes that mode's
+// computed Start/Due date onto every task, snapshots all three modes'
+// numbers per task into task_planning_snapshots for later reporting (never
+// overwritten -- a new batch each time this is run), then locks timelines
+// through the same underlying RPC/phase-cascade the Projects table's own
+// Lock button and the Design-phase guardrail use (duplicated here
+// deliberately rather than imported from Projects.tsx, to avoid touching
+// that already-shipped, live-verified code path in the same pass).
 export default function WbsPlanning() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -118,11 +135,12 @@ export default function WbsPlanning() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  const holidaySet = useMemo(() => buildHolidaySet(holidays.map((h) => h.date)), [holidays]);
+  const holidaySet = buildHolidaySet(holidays.map((h) => h.date));
 
-  // Sort parent tasks first, each followed immediately by its own
-  // sub-tasks -- same 2-level nesting the Projects table uses elsewhere.
-  const orderedTasks = useMemo(() => {
+  // Parent tasks first, each followed immediately by its own sub-tasks --
+  // same 2-level nesting the Projects table uses elsewhere, and the order
+  // the chain below walks in.
+  function computeOrderedTasks(): (TaskRow & { depth: number })[] {
     const roots = tasks.filter((t) => !t.parent_task_id);
     const out: (TaskRow & { depth: number })[] = [];
     for (const r of roots) {
@@ -130,7 +148,8 @@ export default function WbsPlanning() {
       for (const c of tasks.filter((t) => t.parent_task_id === r.id)) out.push({ ...c, depth: 1 });
     }
     return out;
-  }, [tasks]);
+  }
+  const orderedTasks = computeOrderedTasks();
 
   function hasChildren(taskId: string): boolean {
     return tasks.some((t) => t.parent_task_id === taskId);
@@ -201,10 +220,6 @@ export default function WbsPlanning() {
     loadAll();
   }
 
-  function startFor(t: TaskRow): string {
-    return (t.start_date ?? targetStartDate).slice(0, 10);
-  }
-
   function personCapacityOn(p: PersonRow, dateStr: string): number {
     const av = availability.find((a) => a.person_id === p.id && a.date === dateStr);
     if (av?.status === "off") return 0;
@@ -218,16 +233,88 @@ export default function WbsPlanning() {
     return Math.max(0, personCapacityOn(p, dateStr) - personCommittedOn(p.id, dateStr));
   }
 
-  function scenariosFor(t: TaskRow): { full: ScenarioResult; standard: ScenarioResult; capacity: ScenarioResult | null; person: PersonRow | null } {
-    const hours = t.estimated_hours ?? 0;
-    const start = startFor(t);
-    const full = fullCapacityScenario(hours, start, holidaySet);
-    const standard = standardScenario(hours, start, holidaySet);
-    const personId = taskPersonDrafts[t.id] ?? t.assignee_id ?? "";
-    const person = people.find((p) => p.id === personId) ?? null;
-    const capacity = person ? capacityBasedScenario(hours, start, holidaySet, (d) => remainingHoursOnDate(person, d)) : null;
-    return { full, standard, capacity, person };
+  function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
+    let d = addDays(parseLocalDate(dateStr), 1);
+    while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
+    return toISO(d);
   }
+
+  function personFor(t: TaskRow): PersonRow | null {
+    const personId = taskPersonDrafts[t.id] ?? t.assignee_id ?? "";
+    return people.find((p) => p.id === personId) ?? null;
+  }
+
+  function computeEntry(t: TaskRow, start: string, mode: Mode): ChainEntry | null {
+    const hours = t.estimated_hours;
+    if (hours === null || hours === undefined) return null;
+    if (mode === "full_capacity") {
+      const r = fullCapacityScenario(hours, start, holidaySet);
+      return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+    }
+    if (mode === "standard") {
+      const r = standardScenario(hours, start, holidaySet);
+      return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+    }
+    const person = personFor(t);
+    if (!person) return null;
+    const r = capacityBasedScenario(hours, start, holidaySet, (d) => remainingHoursOnDate(person, d));
+    return { start, end: r.dueDate, durationDays: r.wholeDays };
+  }
+
+  // Builds this mode's full chained schedule in one pass: the Target start
+  // date anchors the first top-level task, each following top-level task
+  // starts the working day after the one before it ends, and any task's
+  // own sub-tasks chain the same way within that task's slot (the parent's
+  // span is simply its first sub-task's start through its last sub-task's
+  // end). A task with no Estimated hours yet (or, for Capacity-Based, no
+  // person picked yet) can't be scheduled -- its entry is null, and the
+  // chain can't confidently continue past it, so everything after also
+  // comes back null until it's resolved.
+  function buildChain(mode: Mode): Map<string, ChainEntry | null> {
+    const result = new Map<string, ChainEntry | null>();
+    let cursor = targetStartDate;
+    const roots = orderedTasks.filter((t) => t.depth === 0);
+    for (const root of roots) {
+      const children = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === root.id);
+      if (children.length > 0) {
+        let childCursor: string | null = cursor;
+        let firstStart: string | null = null;
+        let lastEnd: string | null = null;
+        for (const child of children) {
+          const entry = childCursor ? computeEntry(child, childCursor, mode) : null;
+          result.set(child.id, entry);
+          if (entry) {
+            if (!firstStart) firstStart = entry.start;
+            lastEnd = entry.end;
+            childCursor = nextWorkingDayAfter(entry.end, holidaySet);
+          } else {
+            childCursor = null; // can't confidently place anything after a gap
+          }
+        }
+        if (firstStart && lastEnd) {
+          const durationDays = workingDaysBetween(parseLocalDate(firstStart), parseLocalDate(lastEnd), holidaySet).length;
+          result.set(root.id, { start: firstStart, end: lastEnd, durationDays });
+          cursor = nextWorkingDayAfter(lastEnd, holidaySet);
+        } else {
+          result.set(root.id, null);
+        }
+      } else {
+        const entry = computeEntry(root, cursor, mode);
+        result.set(root.id, entry);
+        if (entry) cursor = nextWorkingDayAfter(entry.end, holidaySet);
+      }
+    }
+    return result;
+  }
+
+  const fullChain = buildChain("full_capacity");
+  const standardChain = buildChain("standard");
+  const capacityChain = buildChain("capacity_based");
+  const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
+    full_capacity: fullChain,
+    standard: standardChain,
+    capacity_based: capacityChain,
+  };
 
   async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
@@ -238,28 +325,35 @@ export default function WbsPlanning() {
     }
   }
 
-  // Same completeness gate the Projects table's Lock button and Design-
-  // phase guardrail use (see performTimelinesLock in Projects.tsx) --
-  // duplicated rather than imported to avoid touching that already-live
-  // code path. A task with no Estimated hours can't be scheduled at all,
-  // so it's called out separately from the rest of the missing-field list.
-  function readinessIssues(): string[] {
+  // Soft completeness gate -- mirrors the Task name / Effort part of the
+  // Projects table's own Lock policy (incompleteTasksFor in Projects.tsx).
+  // Estimated hours (and, for Capacity-Based, a picked person) are NOT
+  // included here -- those are hard blockers checked separately below,
+  // since without them there's literally no schedule to compute at all.
+  function softIssues(): string[] {
     const issues: string[] = [];
-    const noHours = orderedTasks.filter((t) => t.estimated_hours === null || t.estimated_hours === undefined);
-    if (noHours.length) issues.push(`${noHours.length} task(s) still need Estimated hours before they can be scheduled.`);
+    const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
+    const noEffort = orderedTasks.filter((t) => !t.effort);
+    if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
+    if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
     return issues;
   }
 
   async function finalize(mode: Mode) {
     if (!project || !projectId) return;
-    if (mode === "capacity_based") {
-      const missingPerson = orderedTasks.filter((t) => !(taskPersonDrafts[t.id] ?? t.assignee_id));
-      if (missingPerson.length) {
-        alert(`Pick a person for every task first -- ${missingPerson.length} task(s) don't have one yet.`);
-        return;
-      }
+
+    const chosenChain = chainByMode[mode];
+    const unresolved = orderedTasks.filter((t) => !chosenChain.get(t.id));
+    if (unresolved.length) {
+      alert(
+        `Can't finalize with ${MODE_LABEL[mode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add Estimated hours${
+          mode === "capacity_based" ? ", and pick a person," : ""
+        } for every task first.`
+      );
+      return;
     }
-    const issues = readinessIssues();
+
+    const issues = softIssues();
     if (issues.length && !isFullAccess) {
       alert(`Can't finalize yet:\n\n${issues.join("\n")}`);
       return;
@@ -267,10 +361,11 @@ export default function WbsPlanning() {
     if (issues.length && isFullAccess) {
       if (!(await confirm(`${issues.join("\n")}\n\nFull Access override: finalize anyway?`))) return;
     }
+
     const verb = MODE_LABEL[mode];
     if (
       !(await confirm(
-        `Finalize this project's timelines using ${verb}?\n\nThis writes every task's computed Start/Due date, records all three scenarios for reporting, and locks timelines -- same as the Timelines column's own Lock action.`
+        `Finalize this project's timelines using ${verb}?\n\nThis writes every task's computed Start/Due date, records all three modes for reporting, and locks timelines -- same as the Timelines column's own Lock action.`
       ))
     )
       return;
@@ -279,33 +374,28 @@ export default function WbsPlanning() {
     try {
       const batchId = crypto.randomUUID();
       for (const t of orderedTasks) {
-        const { full, standard, capacity, person } = scenariosFor(t);
-        const start = startFor(t);
-        const chosen = mode === "full_capacity" ? full : mode === "standard" ? standard : capacity;
+        const chosen = chosenChain.get(t.id);
         if (!chosen) continue;
 
-        await supabase.from("tasks").update({ start_date: start, current_due_date: chosen.dueDate }).eq("id", t.id);
-        setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, start_date: start, current_due_date: chosen.dueDate } : x)));
+        await supabase.from("tasks").update({ start_date: chosen.start, current_due_date: chosen.end }).eq("id", t.id);
+        setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, start_date: chosen.start, current_due_date: chosen.end } : x)));
 
-        const rows = [
-          { scenarioMode: "full_capacity" as Mode, r: full, personId: null as string | null },
-          { scenarioMode: "standard" as Mode, r: standard, personId: null as string | null },
-          ...(capacity ? [{ scenarioMode: "capacity_based" as Mode, r: capacity, personId: person?.id ?? null }] : []),
-        ];
-        await supabase.from("task_planning_snapshots").insert(
-          rows.map(({ scenarioMode, r, personId }) => ({
+        const snapshotRows = (["full_capacity", "standard", "capacity_based"] as Mode[])
+          .map((m) => ({ m, entry: chainByMode[m].get(t.id) }))
+          .filter((x): x is { m: Mode; entry: ChainEntry } => !!x.entry)
+          .map(({ m, entry }) => ({
             task_id: t.id,
             finalize_batch_id: batchId,
-            mode: scenarioMode,
-            applied: scenarioMode === mode,
-            target_start_date: start,
-            person_id: personId,
-            raw_days: r.rawDays,
-            whole_days: r.wholeDays,
-            computed_due_date: r.dueDate,
+            mode: m,
+            applied: m === mode,
+            target_start_date: entry.start,
+            person_id: m === "capacity_based" ? personFor(t)?.id ?? null : null,
+            raw_days: entry.rawDays ?? null,
+            whole_days: entry.durationDays,
+            computed_due_date: entry.end,
             computed_by: me?.id ?? null,
-          }))
-        );
+          }));
+        if (snapshotRows.length) await supabase.from("task_planning_snapshots").insert(snapshotRows);
       }
 
       // Same lock policy as performTimelinesLock in Projects.tsx.
@@ -324,6 +414,26 @@ export default function WbsPlanning() {
   if (loading) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>;
   if (!project) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Project not found.</div>;
 
+  function renderScenarioCells(t: TaskRow, mode: Mode) {
+    const entry = chainByMode[mode].get(t.id);
+    if (!entry) {
+      return (
+        <>
+          <td style={{ fontSize: 12, color: "var(--muted)" }}>—</td>
+          <td style={{ fontSize: 12, color: "var(--muted)" }}>—</td>
+          <td style={{ fontSize: 12, color: "var(--muted)" }}>—</td>
+        </>
+      );
+    }
+    return (
+      <>
+        <td style={{ fontSize: 12 }}>{entry.start}</td>
+        <td style={{ fontSize: 12 }}>{entry.end}</td>
+        <td style={{ fontSize: 12 }}>{entry.durationDays}</td>
+      </>
+    );
+  }
+
   return (
     <div>
       {dialog}
@@ -332,9 +442,9 @@ export default function WbsPlanning() {
       </Link>
       <h1>WBS Planning — {project.name}</h1>
       <p className="subtitle">
-        Set each task's own Start date and Estimated hours below (both save immediately). See what the Due date would be under Full Capacity, Standard, and
-        Capacity-Based, then Finalize to apply one mode's dates to the whole project and lock timelines. All three modes' numbers stay on record for
-        reporting either way.
+        Set each task's Estimated hours below (saves immediately). The Target start date anchors the very first task; every task after it starts right
+        after the one before it finishes -- computed independently for Full Effort, Conservative Effort, and Capacity-Based. Finalize applies one mode's
+        dates to the whole project and locks timelines; all three modes' numbers stay on record for reporting either way.
       </p>
 
       {project.timelines_locked ? (
@@ -352,46 +462,69 @@ export default function WbsPlanning() {
               onChange={(e) => setTargetStartDate(e.target.value)}
               style={{ width: 150 }}
             />
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Default Start date for any task that doesn't have its own yet.</span>
+            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Start date for the first task -- every task after it chains from there.</span>
           </div>
 
           <div className="card" style={{ padding: 0, overflowX: "auto" }}>
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
                 <tr>
-                  <th style={{ minWidth: 200 }}>Task</th>
-                  <th style={{ width: 120 }}>Start date</th>
-                  <th style={{ width: 90 }}>Est. hrs</th>
-                  <th style={{ width: 140 }}>Full Capacity</th>
-                  <th style={{ width: 140 }}>Standard</th>
-                  <th style={{ width: 190 }}>Capacity-Based</th>
+                  <th rowSpan={2} style={{ minWidth: 200 }}>
+                    Task
+                  </th>
+                  <th rowSpan={2} style={{ width: 90 }}>
+                    Est. hrs
+                  </th>
+                  <th rowSpan={2} style={{ width: 90 }}>
+                    Effort
+                  </th>
+                  <th colSpan={3} style={{ textAlign: "center" }}>
+                    Full Effort
+                  </th>
+                  <th colSpan={3} style={{ textAlign: "center" }}>
+                    Conservative Effort
+                  </th>
+                  <th colSpan={4} style={{ textAlign: "center" }}>
+                    Capacity-Based
+                  </th>
+                </tr>
+                <tr>
+                  <th style={{ width: 100 }}>Start Date</th>
+                  <th style={{ width: 100 }}>End Date</th>
+                  <th style={{ width: 90 }}>Duration (days)</th>
+                  <th style={{ width: 100 }}>Start Date</th>
+                  <th style={{ width: 100 }}>End Date</th>
+                  <th style={{ width: 90 }}>Duration (days)</th>
+                  <th style={{ width: 150 }}>Person</th>
+                  <th style={{ width: 100 }}>Start Date</th>
+                  <th style={{ width: 100 }}>End Date</th>
+                  <th style={{ width: 90 }}>Duration (days)</th>
                 </tr>
               </thead>
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={6} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={13} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
                 )}
                 {orderedTasks.map((t) => {
-                  const { full, standard, capacity, person } = scenariosFor(t);
                   const isParent = t.depth === 0 && hasChildren(t.id);
+                  const person = personFor(t);
                   return (
                     <tr key={t.id}>
                       <td>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
-                          <span style={{ flex: 1 }}>{t.name || "Untitled task"}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <InlineText value={t.name} editable bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
+                          </div>
                           {t.depth === 0 && (
                             <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
                               <Plus size={14} />
                             </button>
                           )}
                         </div>
-                      </td>
-                      <td>
-                        <InlineDate value={startFor(t)} editable onCommit={(v) => v && saveTaskField(t.id, { start_date: v })} />
                       </td>
                       <td>
                         <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
@@ -402,49 +535,38 @@ export default function WbsPlanning() {
                           />
                         </span>
                       </td>
-                      <td style={{ fontSize: 12 }}>
-                        {t.estimated_hours ? (
-                          <>
-                            {full.rawDays}d <span style={{ color: "var(--muted)" }}>→ {full.dueDate}</span>
-                          </>
-                        ) : (
-                          <span style={{ color: "var(--muted)" }}>—</span>
-                        )}
+                      <td>
+                        <InlineSelect
+                          value={t.effort ?? ""}
+                          editable
+                          allowEmpty
+                          emptyLabel="Pick effort"
+                          options={TASK_EFFORT_OPTIONS}
+                          renderReadOnly={(v) => (v ? <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral"}`}>{v}</span> : "Pick effort")}
+                          onCommit={(v) => saveTaskField(t.id, { effort: v || null })}
+                        />
                       </td>
+                      {renderScenarioCells(t, "full_capacity")}
+                      {renderScenarioCells(t, "standard")}
                       <td style={{ fontSize: 12 }}>
-                        {t.estimated_hours ? (
-                          <>
-                            {standard.rawDays}d <span style={{ color: "var(--muted)" }}>→ {standard.dueDate}</span>
-                          </>
-                        ) : (
-                          <span style={{ color: "var(--muted)" }}>—</span>
-                        )}
+                        <InlineSelect
+                          value={person?.name ?? ""}
+                          editable
+                          allowEmpty
+                          emptyLabel="Pick a person"
+                          options={people.map((p) => p.name)}
+                          onCommit={(name) => {
+                            const p = people.find((pp) => pp.name === name);
+                            setTaskPersonDrafts((prev) => ({ ...prev, [t.id]: p?.id ?? "" }));
+                          }}
+                        />
                       </td>
-                      <td style={{ fontSize: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <InlineSelect
-                            value={person?.name ?? ""}
-                            editable
-                            allowEmpty
-                            emptyLabel="Pick a person"
-                            options={people.map((p) => p.name)}
-                            onCommit={(name) => {
-                              const p = people.find((pp) => pp.name === name);
-                              setTaskPersonDrafts((prev) => ({ ...prev, [t.id]: p?.id ?? "" }));
-                            }}
-                          />
-                          {capacity && t.estimated_hours ? (
-                            <span>
-                              {capacity.wholeDays}d <span style={{ color: "var(--muted)" }}>→ {capacity.dueDate}</span>
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
+                      {renderScenarioCells(t, "capacity_based")}
                     </tr>
                   );
                 })}
                 <tr>
-                  <td colSpan={6} className="add-row-cell">
+                  <td colSpan={13} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task
