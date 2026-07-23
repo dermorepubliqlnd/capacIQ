@@ -515,11 +515,24 @@ function hoursVarianceTone(percent: number | null): "success" | "warning" | "dan
 // which doesn't have a meaningful "sum" the way hours do; flagged to
 // Sandra as an open question rather than guessed at.
 //
-// Estimated Hours is a flat, independently-set field on every task row
-// (top-level or sub-task, no rollup relationship between them), so summing
-// it across every task in the project is safe and complete on its own.
+// Estimated Hours used to be a flat, independently-set field on every task
+// row with no rollup relationship between a parent and its sub-tasks --
+// Sandra (2026-07-23) asked for a parent-task rollup instead (see
+// taskEstimatedHoursFromSubtasks + its sync effect below, same shape as
+// the existing Start/Due date rollup). Once that sync effect writes a
+// parent's own estimated_hours to match the sum of its direct children,
+// counting a parent's own field here too would double it -- so this
+// excludes any task that has children, summing only true leaf tasks
+// (whether top-level with no sub-tasks, or a sub-task itself).
 function projectEstimatedHoursTotal(projectId: string, allTasks: TaskRow[]): number | null {
-  const withEstimate = allTasks.filter((t) => t.project_id === projectId && !t.is_archived && t.estimated_hours !== null && t.estimated_hours !== undefined);
+  const withEstimate = allTasks.filter(
+    (t) =>
+      t.project_id === projectId &&
+      !t.is_archived &&
+      t.estimated_hours !== null &&
+      t.estimated_hours !== undefined &&
+      !allTasks.some((child) => child.parent_task_id === t.id && !child.is_archived)
+  );
   if (withEstimate.length === 0) return null;
   return Math.round(withEstimate.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100) / 100;
 }
@@ -960,6 +973,49 @@ export default function Projects() {
           patch.original_due_date = computed.end;
         }
         if (Object.keys(patch).length > 0) updateTask(parent.id, patch);
+      });
+  }, [tasks]);
+
+  // Estimated Hours rollup (Sandra, 2026-07-23: "I am now add[ing] est
+  // hours in parent, shall this not be locked and just sum what will be
+  // placed in the sub-tasks?") -- same write-back shape as the date
+  // rollup just above: a parent task's own estimated_hours is kept in
+  // sync with the sum of its direct sub-tasks' own estimated_hours, and
+  // its cell becomes read-only so nobody free-types a number that'd just
+  // get overwritten. Returns null (not 0) when none of the sub-tasks have
+  // an estimate yet, same "nothing to show" convention as
+  // projectEstimatedHoursTotal, so an all-blank set of sub-tasks reads as
+  // "—" instead of a misleading "0".
+  //
+  // Deliberately NOT gated on isProjectLocked the way the date rollup is:
+  // locking timelines freezes due dates specifically (the whole point of
+  // Scoping->Locked), but Estimated Hours has no such governance -- an
+  // estimate can still reasonably be refined mid-execution, so this stays
+  // live regardless of lock state.
+  function taskEstimatedHoursFromSubtasks(parentId: string): number | null {
+    const withEstimate = tasks.filter(
+      (t) => t.parent_task_id === parentId && !t.is_archived && t.estimated_hours !== null && t.estimated_hours !== undefined
+    );
+    if (withEstimate.length === 0) return null;
+    return Math.round(withEstimate.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100) / 100;
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    tasks
+      .filter((t) => t.parent_task_id === null && !t.is_archived)
+      .forEach((parent) => {
+        // No sub-tasks at all -- this root task behaves as a normal leaf,
+        // its own estimated_hours stays exactly what was typed into it.
+        const hasSubtasks = tasks.some((t) => t.parent_task_id === parent.id && !t.is_archived);
+        if (!hasSubtasks) return;
+        // Has sub-tasks: always mirror the sum, including clearing back
+        // to null if none of them have an estimate yet -- otherwise a
+        // stale number typed in before this field got locked would sit
+        // there forever, unreachable and wrong, until the first sub-task
+        // got its own estimate.
+        const computed = taskEstimatedHoursFromSubtasks(parent.id);
+        if (computed !== parent.estimated_hours) updateTask(parent.id, { estimated_hours: computed });
       });
   }, [tasks]);
 
@@ -2319,7 +2375,18 @@ export default function Projects() {
         label: "Est. hrs",
         defaultWidth: 90,
         maxWidth: 120,
-        render: (t) => <InlineNumber value={t.estimated_hours} editable={canEditTask(t) && !isTaskLocked(t)} onCommit={(v) => updateTask(t.id, { estimated_hours: v })} />,
+        render: (t) => {
+          const isParent = t._depth === 0 && hasChildren(t.id);
+          return (
+            <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
+              <InlineNumber
+                value={t.estimated_hours}
+                editable={!isParent && canEditTask(t) && !isTaskLocked(t)}
+                onCommit={(v) => updateTask(t.id, { estimated_hours: v })}
+              />
+            </span>
+          );
+        },
       },
       {
         key: "hours_variance",
