@@ -1156,3 +1156,51 @@ end;
 $$;
 
 grant execute on function submit_manual_time_entry(uuid, timestamptz, timestamptz, text, text) to authenticated;
+
+-- Migration 2026-07-23: delete_tasks_and_dependents RPC
+--
+-- Client-side hard-delete of a task previously did separate
+-- supabase.from(table).delete().in("task_id", ids) calls against
+-- extension_requests, task_effort_changes, and time_entries before
+-- deleting the task itself -- but none of those tables have a DELETE
+-- policy defined (extension_requests only has select/update/insert;
+-- task_effort_changes and time_entries only have select;
+-- task_collaborators only has select), so under RLS those client-side
+-- deletes were silent no-ops (0 rows affected, no error) rather than
+-- actually removing the dependent rows. The subsequent `delete from
+-- tasks` then still hit the foreign-key constraint on whichever
+-- dependent table had a real row for that task -- first surfaced as
+-- extension_requests_task_id_fkey (2026-07-22, thought fixed by just
+-- adding a client-side delete call, but that call was quietly a no-op
+-- all along), then task_effort_changes_task_id_fkey for Task 4
+-- (2026-07-23, same root cause). Centralizing this in one
+-- security-definer RPC: authorization is checked explicitly (mirrors
+-- tasks_delete's own policy condition) and then all four dependent
+-- tables are cleared with the function's elevated privileges,
+-- bypassing RLS by design -- the same pattern already used by
+-- set_project_timelines_locked / decide_project_extension_request for
+-- other multi-table writes.
+create or replace function delete_tasks_and_dependents(p_task_ids uuid[]) returns void
+language plpgsql security definer as $$
+begin
+  if exists (
+    select 1 from tasks t
+    left join projects pr on pr.id = t.project_id
+    where t.id = any(p_task_ids)
+      and not (
+        my_access_level() = 'full'
+        or pr.owner_id = my_person_id()
+      )
+  ) then
+    raise exception 'not authorized to delete one or more of these tasks';
+  end if;
+
+  delete from extension_requests where task_id = any(p_task_ids);
+  delete from task_effort_changes where task_id = any(p_task_ids);
+  delete from time_entries where task_id = any(p_task_ids);
+  delete from task_collaborators where task_id = any(p_task_ids);
+  delete from tasks where id = any(p_task_ids);
+end;
+$$;
+
+grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;

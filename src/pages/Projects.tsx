@@ -628,29 +628,21 @@ function reorderedSortValue(list: { id: string; sort_order: number | null }[], d
 // tables reference task_id with no ON DELETE CASCADE, so deleting a task
 // that ever accumulated one of these dependent rows hits a foreign key
 // violation ("update or delete on table "tasks" violates foreign key
-// constraint ..."). First hit for extension_requests (Sandra 2026-07-22,
-// via a raw Postgres error in a bulk-delete's alert() -- she noticed it
-// correlated with having a sort applied, but the real trigger is simpler:
-// sorting/grouping is often exactly how she finds and multi-selects a
-// batch of tasks that share some trait worth cleaning up together, so
-// sorted bulk-deletes are just more likely to include a task that has
-// one). Hit again 2026-07-23 for task_effort_changes (the audit-log
-// trigger writes a row here every time a task's effort level changes, so
-// any task that ever had its effort edited couldn't be deleted). Rather
-// than patch call sites one dependent table at a time as each is
-// discovered, every dependent table is cleared here up front: extension
-// history, effort-change audit log, and time-tracking entries -- so a
-// future delete call site (or a newly added dependent table) can't forget
-// one and reintroduce the same class of bug.
+// constraint ..."). First hit for extension_requests (Sandra 2026-07-22),
+// then task_effort_changes for Task 4 (2026-07-23) -- and the first fix
+// attempt (separate client-side .from(table).delete() calls before the
+// tasks delete) turned out to be a dead end: none of these dependent
+// tables have a DELETE policy defined under RLS, so those client-side
+// deletes were silent no-ops (0 rows affected, no error), and the
+// underlying row was never actually removed. Now delegates to a single
+// security-definer RPC (delete_tasks_and_dependents, supabase/policies.sql)
+// that checks authorization itself (mirrors tasks_delete's own policy
+// condition) and clears extension_requests, task_effort_changes,
+// time_entries, and task_collaborators with elevated privileges before
+// deleting the tasks -- so RLS can't silently swallow the cleanup again.
 async function deleteTasksAndDependents(ids: string[]): Promise<{ error: string | null }> {
   if (ids.length === 0) return { error: null };
-  const { error: extError } = await supabase.from("extension_requests").delete().in("task_id", ids);
-  if (extError) return { error: extError.message };
-  const { error: effortError } = await supabase.from("task_effort_changes").delete().in("task_id", ids);
-  if (effortError) return { error: effortError.message };
-  const { error: timeError } = await supabase.from("time_entries").delete().in("task_id", ids);
-  if (timeError) return { error: timeError.message };
-  const { error } = await supabase.from("tasks").delete().in("id", ids);
+  const { error } = await supabase.rpc("delete_tasks_and_dependents", { p_task_ids: ids });
   return { error: error?.message ?? null };
 }
 
