@@ -2833,6 +2833,8 @@ export default function Projects() {
               emptyLabel="No projects yet. Add one below."
               canDrag={canRescheduleProject}
               onReschedule={rescheduleProject}
+              dateMode={projectViews.activeView.timelineDateMode ?? "range"}
+              onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -3036,6 +3038,8 @@ export default function Projects() {
               emptyLabel="No tasks yet. Add one below."
               canDrag={canRescheduleTask}
               onReschedule={rescheduleTask}
+              dateMode={taskViews.activeView.timelineDateMode ?? "range"}
+              onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

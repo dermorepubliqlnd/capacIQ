@@ -2,6 +2,14 @@ import { useMemo, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { TONE_STYLES } from "../lib/tableTypes";
 
+export type CalendarDateMode = "range" | "start" | "due";
+
+const DATE_MODE_OPTIONS: { value: CalendarDateMode; label: string }[] = [
+  { value: "range", label: "Start and End Date" },
+  { value: "start", label: "Start Date" },
+  { value: "due", label: "End Date" },
+];
+
 interface CalendarViewProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
@@ -14,6 +22,13 @@ interface CalendarViewProps<T> {
   getTone?: (row: T) => string;
   getTooltip?: (row: T) => string;
   emptyLabel?: string;
+  // What a bar represents -- same three modes and same "Dates View"
+  // dropdown as TimelineView/TimelineControls: "range" spans Start->Due,
+  // "start"/"due" render a one-day bar on just that single date (a row
+  // missing that particular date simply doesn't appear). Defaults to
+  // "range" at the call site, same convention as Timeline.
+  dateMode?: CalendarDateMode;
+  onDateModeChange?: (mode: CalendarDateMode) => void;
   // Called on drop -- both dates already shifted by the same day-delta
   // (range items) or with just the single relevant field moved (items
   // that only had a Start or only a Due). Null values are left null.
@@ -83,6 +98,8 @@ export default function CalendarView<T>({
   emptyLabel = "Nothing here yet.",
   onReschedule,
   canDrag,
+  dateMode = "range",
+  onDateModeChange,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
@@ -99,6 +116,19 @@ export default function CalendarView<T>({
       .map((row) => {
         const s = getStart(row);
         const d = getDue(row);
+        // "start"/"due" modes only ever show/drag that one date -- a row
+        // missing it just doesn't render, same as Timeline's own marker
+        // behavior in single-date mode.
+        if (dateMode === "start") {
+          if (!s) return null;
+          const day = parseLocalDate(s);
+          return { row, start: day, due: day, hasStart: true, hasDue: false };
+        }
+        if (dateMode === "due") {
+          if (!d) return null;
+          const day = parseLocalDate(d);
+          return { row, start: day, due: day, hasStart: false, hasDue: true };
+        }
         if (!s && !d) return null;
         const start = s ? parseLocalDate(s) : parseLocalDate(d!);
         const dueRaw = d ? parseLocalDate(d) : parseLocalDate(s!);
@@ -106,7 +136,7 @@ export default function CalendarView<T>({
         return { row, start, due, hasStart: Boolean(s), hasDue: Boolean(d) };
       })
       .filter((r): r is { row: T; start: Date; due: Date; hasStart: boolean; hasDue: boolean } => r !== null);
-  }, [rows, getStart, getDue]);
+  }, [rows, getStart, getDue, dateMode]);
 
   function layoutWeek(weekDates: Date[]) {
     const weekStart = weekDates[0];
@@ -176,6 +206,22 @@ export default function CalendarView<T>({
         >
           Today
         </button>
+        {onDateModeChange && (
+          <div className="timeline-datemode" style={{ marginLeft: "auto" }} title="What a bar represents">
+            <span className="timeline-datemode-label">Dates View</span>
+            <select
+              className="timeline-datemode-select"
+              value={dateMode}
+              onChange={(e) => onDateModeChange(e.target.value as CalendarDateMode)}
+            >
+              {DATE_MODE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="calendar-weekday-row">
