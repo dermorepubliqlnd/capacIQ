@@ -2742,16 +2742,18 @@ export default function Projects() {
               propertyLockInfo={projectTimelinePropertyLockInfo}
               hideGroupBy={projectViews.activeView.viewType === "calendar"}
             />
-            {projectViews.activeView.viewType === "timeline" && (
-              <TimelineControls
-                scale={projectViews.activeView.timelineScale ?? "month"}
-                onScaleChange={(timelineScale) => projectViews.updateActiveView({ timelineScale })}
-                dateMode={projectViews.activeView.timelineDateMode ?? "range"}
-                onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
-              />
-            )}
           </div>
         </div>
+        {projectViews.activeView.viewType === "timeline" && (
+          <div className="timeline-controls-row">
+            <TimelineControls
+              scale={projectViews.activeView.timelineScale ?? "month"}
+              onScaleChange={(timelineScale) => projectViews.updateActiveView({ timelineScale })}
+              dateMode={projectViews.activeView.timelineDateMode ?? "range"}
+              onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
+            />
+          </div>
+        )}
         <ViewFilterPills
           groupOptions={projectGroupModeOptions}
           groupBy={projectResolvedGroupBy}
@@ -2950,16 +2952,18 @@ export default function Projects() {
               propertyLockInfo={taskTimelinePropertyLockInfo}
               hideGroupBy={taskViews.activeView.viewType === "calendar"}
             />
-            {taskViews.activeView.viewType === "timeline" && (
-              <TimelineControls
-                scale={taskViews.activeView.timelineScale ?? "month"}
-                onScaleChange={(timelineScale) => taskViews.updateActiveView({ timelineScale })}
-                dateMode={taskViews.activeView.timelineDateMode ?? "range"}
-                onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
-              />
-            )}
           </div>
         </div>
+        {taskViews.activeView.viewType === "timeline" && (
+          <div className="timeline-controls-row">
+            <TimelineControls
+              scale={taskViews.activeView.timelineScale ?? "month"}
+              onScaleChange={(timelineScale) => taskViews.updateActiveView({ timelineScale })}
+              dateMode={taskViews.activeView.timelineDateMode ?? "range"}
+              onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
+            />
+          </div>
+        )}
         <ViewFilterPills
           groupOptions={taskGroupModeOptions}
           groupBy={taskResolvedGroupBy}

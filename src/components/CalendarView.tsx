@@ -322,13 +322,37 @@ export default function CalendarView<T>({
                         }}
                       >
                         <span className="calendar-span-bar-title">{renderLabel(p.row)}</span>
+                        {/* Same properties a single-day card shows (Project
+                            label + whichever propertyColumns are toggled
+                            visible), just laid out inline instead of
+                            stacked -- Sandra: bars were showing the title
+                            only, missing Project/Owner/Priority/etc that
+                            are checked "visible" in the Properties popover.
+                            Kept on one line (no bar-height increase, per
+                            her call) -- overflow just clips instead of
+                            wrapping. */}
+                        {(getProjectLabel?.(p.row) || (propertyColumns && propertyColumns.length > 0)) && (
+                          <span className="calendar-span-bar-info">
+                            {getProjectLabel?.(p.row) && <span className="calendar-span-bar-info-item">{getProjectLabel(p.row)}</span>}
+                            {propertyColumns?.map((c) => (
+                              <span key={c.key} className="calendar-span-bar-info-item">{c.render(p.row)}</span>
+                            ))}
+                          </span>
+                        )}
                         {titleBadge && <span className="calendar-span-bar-badge">{titleBadge(p.row)}</span>}
                       </div>
                     );
                   })}
                 </div>
               )}
-              <div className="calendar-week-row-cards" style={{ marginTop: spansHeight }}>
+              {/* paddingTop, not marginTop -- a top margin on this flex
+                  container can collapse straight through the
+                  position:relative wrapper above (which has no border/
+                  padding/BFC of its own), landing the day cells back at
+                  the wrapper's own top edge and overlapping the span-bar
+                  overlay instead of sitting below it. Padding never
+                  collapses, so it reliably reserves the space. */}
+              <div className="calendar-week-row-cards" style={{ paddingTop: spansHeight }}>
                 {weekDates.map((d, di) => {
                   const inMonth = d.getMonth() === month.getMonth();
                   const isToday = sameDay(d, today);

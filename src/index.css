@@ -178,6 +178,21 @@ input, select { font-family: var(--font); }
   border-bottom: 1px solid var(--border);
 }
 .toolbar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; flex-shrink: 0; }
+/* Timeline's own scale/Dates-View controls, on their own row below the
+   view-tabs + Filter/Sort/Group/Properties row -- mirrors CalendarView's
+   internal nav row (month-nav on the left, Dates View pinned right via
+   marginLeft:auto on .timeline-datemode) rather than crowding everything
+   into one line. Sandra: "I like how the settings toolbar sits on top of
+   the dates view in the calendar view" -- same two-row split, just without
+   a month-nav equivalent on the left (Timeline scrolls, it doesn't page
+   by month), so the scale segmented control anchors the left side instead. */
+.timeline-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
 .toolbar-icon-btn {
   position: relative;
   display: flex;
@@ -1289,7 +1304,36 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex: 0 1 auto;
+}
+/* Inline stand-in for the card's stacked Project/property lines -- same
+   data, same visibility rules (propertyColumns is already filtered to
+   whatever's checked "visible" in the Properties popover by the caller),
+   just laid out as one truncating line instead of several, so the bar's
+   height doesn't grow. */
+.calendar-span-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 12px;
   flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 9.5px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+.calendar-span-bar-info-item {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+.calendar-span-bar-info-item:not(:first-child)::before {
+  content: "\00b7";
+  margin-right: 5px;
+  opacity: 0.7;
 }
 .calendar-span-bar-badge {
   flex: 0 0 auto;

@@ -597,7 +597,7 @@ export function TimelineControls({
           </button>
         ))}
       </div>
-      <div className="timeline-datemode" title="What a bar represents">
+      <div className="timeline-datemode" title="What a bar represents" style={{ marginLeft: "auto" }}>
         <span className="timeline-datemode-label">Dates View</span>
         <select
           className="timeline-datemode-select"
