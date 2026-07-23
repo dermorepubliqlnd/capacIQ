@@ -60,6 +60,16 @@ interface CalendarViewProps<T> {
   // column from propertyColumns to avoid showing it twice. Also shown
   // inline on multi-day spanning bars, same idea.
   titleBadge?: (row: T) => ReactNode;
+  // Marks a day cell with a very light gray tint -- weekends and, if the
+  // caller passes this, Holiday-calendar non-working days too (Legal PH
+  // Holiday / Local Holiday / Internal Time Off). Sandra: "put a very
+  // light gray only the weekends" + "the same gray shade in a date in
+  // case it is a holiday or non-operational day". CalendarView itself has
+  // no opinion on weekends vs holidays -- it just asks the caller once
+  // per visible day and applies the same class either way; Projects.tsx
+  // wires this to its existing `isWorkingDay(date, holidayDates)` helper
+  // (already used for Health/Timing math elsewhere) negated.
+  isNonWorkingDay?: (date: Date) => boolean;
 }
 
 const MAX_VISIBLE_PER_DAY = 3;
@@ -181,6 +191,7 @@ export default function CalendarView<T>({
   getParentLabel,
   getProjectLabel,
   titleBadge,
+  isNonWorkingDay,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
@@ -294,14 +305,14 @@ export default function CalendarView<T>({
           const { placements, laneCount } = weekSpanData[wi];
           const maxCount = Math.max(...weekDates.map((d) => itemsForDay(d).length));
           const visibleCount = Math.min(maxCount, MAX_VISIBLE_PER_DAY);
-          // Weeks with zero single-day items this row stay compact (just
-          // the day number, no reserved card space) instead of always
-          // padding out to at least one card's height -- Sandra: "for days
-          // that have no task just keep it blank and white", pointing at
-          // Notion's own calendar where empty weeks/days don't reserve
-          // phantom card space. Weeks that DO have at least one item keep
-          // the existing per-card height budget unchanged.
-          const rowMinHeight = visibleCount > 0 ? 26 + visibleCount * 58 : 30;
+          // Empty weeks default to the same height as a single-card week
+          // rather than an ultra-compact bare-numbers row -- an earlier
+          // pass made empty weeks much shorter ("keep it blank and
+          // white"), but that made the grid look uneven next to weeks
+          // with even one card; Sandra: "let's have the default cell
+          // height be the same as if there is one card in." Weeks with
+          // MORE than one card still grow taller to fit them.
+          const rowMinHeight = 26 + Math.max(visibleCount, 1) * 58;
           return (
             <div key={wi} className="calendar-week-row-wrap">
               <div className="calendar-week-row-cards">
@@ -314,7 +325,7 @@ export default function CalendarView<T>({
                   return (
                     <div
                       key={di}
-                      className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}`}
+                      className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}${isNonWorkingDay?.(d) ? " is-nonworking" : ""}`}
                       style={{ minHeight: rowMinHeight }}
                     >
                       <span className={`calendar-day-number${isToday ? " is-today" : ""}`}>{d.getDate()}</span>

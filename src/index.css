@@ -1342,6 +1342,19 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   background: var(--hover-bg);
   opacity: 0.55;
 }
+/* Very light gray tint for weekends and (if the caller wires
+   isNonWorkingDay) Holiday-calendar non-working days -- Sandra: "put a
+   very light gray only the weekends" + "the same gray shade in a date
+   in case it is a holiday or non-operational day". Deliberately lighter
+   than .is-outside's 0.55 opacity dim (that's for days outside the
+   visible month entirely, a stronger de-emphasis) -- this is meant to
+   read as a subtle background tint on an otherwise fully legible,
+   in-month day, not a faded one. If a day is both is-outside AND
+   is-nonworking (e.g. a weekend in the leading/trailing days), is-
+   outside's opacity still applies on top. */
+.calendar-day-card-cell.is-nonworking {
+  background: var(--hover-bg);
+}
 /* Notion puts the day number in the day cell's top-right corner, not
    top-left -- Sandra: "the dates should also be shown in all cells. in
    the upper right corner of the cell." Using align-self on a flex-column

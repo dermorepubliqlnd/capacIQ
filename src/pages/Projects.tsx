@@ -2874,6 +2874,7 @@ export default function Projects() {
                   {projectColumns.find((c) => c.key === "effort_level")?.render(p)}
                 </div>
               )}
+              isNonWorkingDay={(d) => !isWorkingDay(d, holidayDates)}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -3087,6 +3088,7 @@ export default function Projects() {
               dateMode={taskViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
               propertyColumns={taskCalendarPropertyColumns}
+              isNonWorkingDay={(d) => !isWorkingDay(d, holidayDates)}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
