@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock, X, RotateCcw } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
@@ -693,6 +694,7 @@ async function deleteTasksAndDependents(ids: string[]): Promise<{ error: string 
 }
 
 export default function Projects() {
+  const navigate = useNavigate();
   const { person: me } = useSession();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -1754,51 +1756,79 @@ export default function Projects() {
       {
         key: "timelines_locked",
         label: "Timelines",
-        defaultWidth: 130,
-        maxWidth: 160,
+        defaultWidth: 200,
+        maxWidth: 240,
         render: (p) => (
-          <button
-            onClick={() => {
-              if (!canEditProject(p)) return;
-              // Locked + not Full Access: there's no self-service unlock
-              // any more (see set_project_timelines_locked's governance
-              // change) -- clicking opens a Request Timeline Change
-              // instead of a bare toggle.
-              if (p.timelines_locked && !isFullAccess) {
-                setExtensionProject(p);
-                return;
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <button
+              onClick={() => {
+                if (!canEditProject(p)) return;
+                // Locked + not Full Access: there's no self-service unlock
+                // any more (see set_project_timelines_locked's governance
+                // change) -- clicking opens a Request Timeline Change
+                // instead of a bare toggle.
+                if (p.timelines_locked && !isFullAccess) {
+                  setExtensionProject(p);
+                  return;
+                }
+                lockProjectTimelines(p, !p.timelines_locked);
+              }}
+              disabled={!canEditProject(p)}
+              title={
+                canEditProject(p)
+                  ? p.timelines_locked
+                    ? isFullAccess
+                      ? "Timelines locked -- click to unlock (Full Access override)"
+                      : "Timelines locked -- click to request a timeline change (goes to your manager for approval)"
+                    : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
+                  : p.timelines_locked
+                  ? "Timelines locked"
+                  : "Timelines unlocked (scoping)"
               }
-              lockProjectTimelines(p, !p.timelines_locked);
-            }}
-            disabled={!canEditProject(p)}
-            title={
-              canEditProject(p)
-                ? p.timelines_locked
-                  ? isFullAccess
-                    ? "Timelines locked -- click to unlock (Full Access override)"
-                    : "Timelines locked -- click to request a timeline change (goes to your manager for approval)"
-                  : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
-                : p.timelines_locked
-                ? "Timelines locked"
-                : "Timelines unlocked (scoping)"
-            }
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              padding: "2px 8px",
-              fontSize: 11,
-              fontWeight: 500,
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              background: p.timelines_locked ? "var(--surface)" : "var(--surface-hover, var(--surface))",
-              color: p.timelines_locked ? "var(--text-secondary)" : "#9A6B00",
-              cursor: canEditProject(p) ? "pointer" : "default",
-            }}
-          >
-            {p.timelines_locked ? <Lock size={11} /> : <Unlock size={11} />}
-            {p.timelines_locked ? "Locked" : "Scoping"}
-          </button>
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 8px",
+                fontSize: 11,
+                fontWeight: 500,
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border)",
+                background: p.timelines_locked ? "var(--surface)" : "var(--surface-hover, var(--surface))",
+                color: p.timelines_locked ? "var(--text-secondary)" : "#9A6B00",
+                cursor: canEditProject(p) ? "pointer" : "default",
+              }}
+            >
+              {p.timelines_locked ? <Lock size={11} /> : <Unlock size={11} />}
+              {p.timelines_locked ? "Locked" : "Scoping"}
+            </button>
+            {/* Sandra, 2026-07-23: an entry point into the new WBS planning
+                page, alongside (not replacing) the direct Lock button above
+                -- only makes sense before timelines are locked, since the
+                WBS page's own Finalize action is itself the other route to
+                the exact same locked state. */}
+            {!p.timelines_locked && canEditProject(p) && (
+              <button
+                onClick={() => navigate(`/projects/${p.id}/wbs`)}
+                title="Plan this project's timelines on the WBS page (Full Capacity / Standard / Capacity-Based)"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--accent, #2563eb)",
+                  cursor: "pointer",
+                }}
+              >
+                WBS
+              </button>
+            )}
+          </div>
         ),
       },
       {
