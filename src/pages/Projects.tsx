@@ -1071,6 +1071,23 @@ export default function Projects() {
       alert(`Couldn't ${locked ? "lock" : "unlock"} timelines: ${error.message}`);
       return false;
     }
+    // Sandra, 2026-07-23: locking timelines through ANY entry point (the
+    // manual Lock button below, or guardDesignPhaseLock via the Phase
+    // dropdown) advances Phase from Scoping to Design by default -- the
+    // mirror image of the Design-phase guardrail's own forward direction,
+    // so "Timelines locked" and "Phase: Design" stay paired regardless of
+    // which side someone changes first. Only fires when Phase is exactly
+    // "Scoping": a project already further along (Development/Evaluation/
+    // Delivery) that gets re-locked after an approved mid-stream change
+    // keeps its real phase, and Paused/Cancelled are deliberately skipped
+    // so this can't fight the "Phase freezes while stopped" rule from the
+    // original Status/Phase split. Unlocking does NOT auto-revert Phase
+    // back to Scoping -- an unlock is normally a temporary, approved
+    // exception for one edit, not an undo of design work already done;
+    // flag it if that assumption doesn't hold up in practice.
+    if (locked && p.phase === "Scoping" && p.status !== "Paused" && p.status !== "Cancelled") {
+      await updateProject(p.id, { phase: "Design" });
+    }
     loadAll();
     return true;
   }
