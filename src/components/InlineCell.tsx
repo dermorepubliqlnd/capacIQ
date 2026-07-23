@@ -126,7 +126,15 @@ interface InlineDateProps extends BaseProps {
 }
 
 export function InlineDate({ value, onCommit, editable, emptyLabel = "—" }: InlineDateProps) {
-  if (!editable) return <>{formatDate(value, emptyLabel)}</>;
+  // Same box (padding + transparent 1px border) as the editable <input>
+  // below, via the shared .inline-cell.readonly class -- otherwise the
+  // read-only rendering (a locked parent task's computed date, or a
+  // Locked project's frozen due date) sits flush against the cell edge
+  // while an editable sibling row's <input> sits ~5px further in, and the
+  // whole column visibly zig-zags between rows (Sandra, 2026-07-23:
+  // sub-task dates "kind of not good in the eye to see them misaligned"
+  // next to their locked parent row).
+  if (!editable) return <span className="inline-cell readonly">{formatDate(value, emptyLabel)}</span>;
   return (
     <input
       className="inline-cell"
@@ -146,7 +154,10 @@ interface InlineNumberProps extends BaseProps {
 
 export function InlineNumber({ value, onCommit, editable, step = 0.5, emptyLabel = "—" }: InlineNumberProps) {
   const [draft, setDraft] = useState(value === null ? "" : String(value));
-  if (!editable) return <>{value ?? emptyLabel}</>;
+  // Same alignment fix as InlineDate above -- a locked parent task's
+  // computed Est. hrs rollup needs to sit in the exact same box as its
+  // freely-editable sub-tasks' own <input> cells in the same column.
+  if (!editable) return <span className="inline-cell readonly">{value ?? emptyLabel}</span>;
   return (
     <input
       className="inline-cell"
