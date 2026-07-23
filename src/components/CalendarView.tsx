@@ -315,6 +315,26 @@ export default function CalendarView<T>({
           const rowMinHeight = 26 + Math.max(visibleCount, 1) * 58;
           return (
             <div key={wi} className="calendar-week-row-wrap">
+              {/* Full-height background stripes for weekend/holiday
+                  columns, painted BEHIND everything in this week (both
+                  the date row and the span-bar cards) via a negative
+                  z-index -- Sandra: "the weekend shade should be
+                  consistent even if there are tasks or projects running
+                  through those days... it should be behind the cards."
+                  Previously the tint only lived on .calendar-day-card-
+                  cell itself, so it vanished for any part of a weekend
+                  column covered by a continuous span bar's own row (the
+                  bar's background legitimately painted over it) AND
+                  simply never appeared at all in the empty portions of
+                  the spans area that weren't covered by any bar. This
+                  stripe spans the whole wrapper height once, so a card
+                  sitting on top still covers it exactly where a task
+                  exists, and the tint shows through everywhere else. */}
+              <div className="calendar-week-bg-stripes">
+                {weekDates.map((d, di) =>
+                  isNonWorkingDay?.(d) ? <div key={di} className="calendar-week-bg-stripe" style={{ gridColumn: di + 1 }} /> : null
+                )}
+              </div>
               <div className="calendar-week-row-cards">
                 {weekDates.map((d, di) => {
                   const inMonth = d.getMonth() === month.getMonth();
@@ -325,7 +345,7 @@ export default function CalendarView<T>({
                   return (
                     <div
                       key={di}
-                      className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}${isNonWorkingDay?.(d) ? " is-nonworking" : ""}`}
+                      className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}`}
                       style={{ minHeight: rowMinHeight }}
                     >
                       <span className={`calendar-day-number${isToday ? " is-today" : ""}`}>{d.getDate()}</span>

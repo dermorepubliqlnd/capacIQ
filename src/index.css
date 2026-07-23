@@ -1264,9 +1264,28 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 }
 /* Wraps one week's multi-day span block + its per-day cell row, stacked
    in plain normal document flow (no position:absolute/fixed heights --
-   see .calendar-week-spans below for why). */
+   see .calendar-week-spans below for why). Also the positioned ancestor
+   for .calendar-week-bg-stripes (negative z-index background layer). */
 .calendar-week-row-wrap {
   position: relative;
+}
+/* Full-height weekend/holiday background stripes for this week, painted
+   BEHIND everything else in the wrapper via a negative z-index -- see
+   the render-order comment in CalendarView.tsx for why this replaced an
+   earlier per-.calendar-day-card-cell-only tint (it vanished under
+   continuous span bars and never showed in the spans area's empty
+   space). inset:0 sizes it to the wrapper's full natural height without
+   itself affecting that height (negative z-index content doesn't
+   participate in layout the way normal-flow content does). */
+.calendar-week-bg-stripes {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+.calendar-week-bg-stripe {
+  background: var(--hover-bg);
 }
 /* Multi-day spanning bars for Start-and-Due mode rows whose Start/Due
    differ by more than a day (see CalendarView's `spans` + `packWeekSpans`)
@@ -1341,19 +1360,6 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .calendar-day-card-cell.is-outside {
   background: var(--hover-bg);
   opacity: 0.55;
-}
-/* Very light gray tint for weekends and (if the caller wires
-   isNonWorkingDay) Holiday-calendar non-working days -- Sandra: "put a
-   very light gray only the weekends" + "the same gray shade in a date
-   in case it is a holiday or non-operational day". Deliberately lighter
-   than .is-outside's 0.55 opacity dim (that's for days outside the
-   visible month entirely, a stronger de-emphasis) -- this is meant to
-   read as a subtle background tint on an otherwise fully legible,
-   in-month day, not a faded one. If a day is both is-outside AND
-   is-nonworking (e.g. a weekend in the leading/trailing days), is-
-   outside's opacity still applies on top. */
-.calendar-day-card-cell.is-nonworking {
-  background: var(--hover-bg);
 }
 /* Notion puts the day number in the day cell's top-right corner, not
    top-left -- Sandra: "the dates should also be shown in all cells. in
