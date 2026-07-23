@@ -2610,7 +2610,7 @@ export default function Projects() {
   // also means normal hiddenColumns toggling can't suppress it, and its
   // render includes a live Start/Stop timer button that has no business
   // being clickable on a small calendar card.
-  const TASK_CALENDAR_EXCLUDED_KEYS = ["name", "project", "start_date", "current_due_date", "time_spent_hours"];
+  const TASK_CALENDAR_EXCLUDED_KEYS = ["name", "project", "start_date", "current_due_date", "time_spent_hours", "effort"];
   const taskCalendarPropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
     (c) => !TASK_CALENDAR_EXCLUDED_KEYS.includes(c.key)
   );
@@ -3047,6 +3047,7 @@ export default function Projects() {
               )}
               getParentLabel={(t) => (t.parent_task_id ? tasks.find((pt) => pt.id === t.parent_task_id)?.name ?? null : null)}
               getProjectLabel={(t) => projectName(t.project_id)}
+              titleBadge={(t) => taskColumns.find((c) => c.key === "effort")?.render(t)}
               getStart={(t) => t.start_date}
               getDue={(t) => t.current_due_date}
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}

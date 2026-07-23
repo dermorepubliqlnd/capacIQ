@@ -47,6 +47,12 @@ interface CalendarViewProps<T> {
   // render() same as Timeline's chips, just laid out as stacked lines
   // (Notion's calendar cards) instead of inline pills.
   propertyColumns?: ColumnDef<T>[];
+  // A single small badge rendered inline on the SAME line as the title,
+  // right-aligned (e.g. the Effort icon-pill) -- per Sandra's annotated
+  // mockup, Effort sits next to the task name instead of on its own
+  // stacked line below. Callers that pass this should exclude that same
+  // column from propertyColumns to avoid showing it twice.
+  titleBadge?: (row: T) => ReactNode;
 }
 
 const MAX_VISIBLE_PER_DAY = 3;
@@ -113,45 +119,56 @@ export default function CalendarView<T>({
   propertyColumns,
   getParentLabel,
   getProjectLabel,
+  titleBadge,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
 
   const weeks = useMemo(() => getMonthGrid(month), [month]);
 
-  const anchored = useMemo(() => {
-    return rows
-      .map((row) => {
-        const s = getStart(row);
-        const d = getDue(row);
-        if (dateMode === "start") {
-          if (!s) return null;
-          return { row, anchor: parseLocalDate(s), start: parseLocalDate(s), due: parseLocalDate(s), hasStart: true, hasDue: false };
-        }
-        if (dateMode === "due") {
-          if (!d) return null;
-          return { row, anchor: parseLocalDate(d), start: parseLocalDate(d), due: parseLocalDate(d), hasStart: false, hasDue: true };
-        }
-        if (!s && !d) return null;
-        const start = s ? parseLocalDate(s) : parseLocalDate(d!);
-        const dueRaw = d ? parseLocalDate(d) : parseLocalDate(s!);
-        const due = dueRaw < start ? start : dueRaw;
-        // Anchor on Due (matches Notion's own behavior in the reference
-        // screenshot -- a multi-day item shows once, on its end date),
-        // falling back to Start for a start-only row.
-        const anchor = d ? due : start;
-        return { row, anchor, start, due, hasStart: Boolean(s), hasDue: Boolean(d) };
-      })
-      .filter(
-        (r): r is { row: T; anchor: Date; start: Date; due: Date; hasStart: boolean; hasDue: boolean } => r !== null
-      );
+  type AnchorEntry = { row: T; anchor: Date; start: Date; due: Date; hasStart: boolean; hasDue: boolean };
+
+  const anchored = useMemo((): AnchorEntry[] => {
+    return rows.flatMap((row): AnchorEntry[] => {
+      const s = getStart(row);
+      const d = getDue(row);
+      if (dateMode === "start") {
+        if (!s) return [];
+        const start = parseLocalDate(s);
+        return [{ row, anchor: start, start, due: start, hasStart: true, hasDue: false }];
+      }
+      if (dateMode === "due") {
+        if (!d) return [];
+        const due = parseLocalDate(d);
+        return [{ row, anchor: due, start: due, due, hasStart: false, hasDue: true }];
+      }
+      if (!s && !d) return [];
+      const start = s ? parseLocalDate(s) : parseLocalDate(d!);
+      const dueRaw = d ? parseLocalDate(d) : parseLocalDate(s!);
+      const due = dueRaw < start ? start : dueRaw;
+      const hasStart = Boolean(s);
+      const hasDue = Boolean(d);
+      // "Start and End Date" mode: when a row has both dates and they
+      // differ, show it twice -- once on its start day, once on its due
+      // day (same full "Start -> Due" text on each card) -- so this mode
+      // actually reflects both dates on the grid instead of collapsing
+      // to the same single due-day anchor as "End Date" mode. A row with
+      // only one of the two dates still renders just once.
+      if (hasStart && hasDue && !sameDay(start, due)) {
+        return [
+          { row, anchor: start, start, due, hasStart, hasDue },
+          { row, anchor: due, start, due, hasStart, hasDue },
+        ];
+      }
+      return [{ row, anchor: hasDue ? due : start, start, due, hasStart, hasDue }];
+    });
   }, [rows, getStart, getDue, dateMode]);
 
   function itemsForDay(day: Date) {
     return anchored.filter((e) => sameDay(e.anchor, day));
   }
 
-  function dateText(e: (typeof anchored)[number]): string {
+  function dateText(e: AnchorEntry): string {
     if (e.hasStart && e.hasDue && !sameDay(e.start, e.due)) return `${formatShort(e.start)} → ${formatShort(e.due)}`;
     return formatShort(e.anchor);
   }
@@ -234,7 +251,10 @@ export default function CalendarView<T>({
                             style={{ background: tone.bg, borderLeftColor: tone.text }}
                           >
                             {parentLabel && <div className="calendar-card-parent">{parentLabel}</div>}
-                            <div className="calendar-card-title">{renderLabel(e.row)}</div>
+                            <div className="calendar-card-title-row">
+                              <div className="calendar-card-title">{renderLabel(e.row)}</div>
+                              {titleBadge && <div className="calendar-card-title-badge">{titleBadge(e.row)}</div>}
+                            </div>
                             {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
                             {propertyColumns?.map((c) => (
                               <div key={c.key} className="calendar-card-prop">{c.render(e.row)}</div>
