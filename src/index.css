@@ -1247,11 +1247,62 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   color: var(--muted);
   text-align: left;
 }
+/* Wraps one week's multi-day span overlay + its per-day cell row.
+   position:relative so the overlay (position:absolute) lays out on top
+   of, not inline with, the day cells below it. */
+.calendar-week-row-wrap {
+  position: relative;
+}
+/* Multi-day spanning bars for Start-and-Due mode rows whose Start/Due
+   differ by more than a day (see CalendarView's `spans` + `packWeekSpans`)
+   -- a continuous colored bar across every day between them, clipped to
+   this week row, per Sandra: "the block should be continuous" instead of
+   two disconnected single-day cards. Still view-only -- no drag/resize,
+   see the earlier note below about that being explicitly walked back.
+   Grid matches the 7 flex columns in .calendar-week-row-cards immediately
+   below it so bars land on the correct day columns. */
+.calendar-week-spans {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  pointer-events: none;
+}
+.calendar-span-bar {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+  margin: 1px 2px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.calendar-span-bar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.calendar-span-bar-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
 /* One week per row, plain flex (not absolute-positioned) -- each day is
-   its own static cell since cards no longer span across days (Notion-
-   style: an item renders once, on a single anchor day, per Sandra's
-   "see here in notion" reference + "let this be view only", replacing
-   the earlier Gantt-style spanning-bar/drag-to-reschedule design). */
+   its own static cell. Single-date (or same-day) rows still render as
+   Notion-style stacked cards on one anchor day (per Sandra's "see here
+   in notion" reference + "let this be view only", replacing the earlier
+   Gantt-style spanning-bar/drag-to-reschedule design); rows spanning
+   more than a day now render via the .calendar-week-spans overlay above
+   instead. */
 .calendar-week-row-cards {
   display: flex;
   border-bottom: 1px solid var(--border);

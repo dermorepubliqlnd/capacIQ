@@ -57,6 +57,14 @@ interface ViewControlsProps<T> {
   // why it's locked and whether it should read as always-shown or
   // always-hidden.
   propertyLockInfo?: Record<string, { reason: string; forcedVisible: boolean }>;
+  // Calendar view has no swimlane/group-by concept (Notion's own Calendar
+  // doesn't support grouping either -- confirmed, see CalendarView.tsx),
+  // so its toolbar drops the "Group by" icon entirely rather than showing
+  // a control that can't do anything there. Filter/Sort/Properties are
+  // unaffected -- Sandra: "only sorting and filtering allowed" was about
+  // grouping specifically, she wants Properties (which lines show on a
+  // calendar card) kept.
+  hideGroupBy?: boolean;
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -190,6 +198,7 @@ export default function ViewSettingsMenu<T>({
   filterStatuses,
   onFilterStatusesChange,
   propertyLockInfo,
+  hideGroupBy,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -386,6 +395,7 @@ export default function ViewSettingsMenu<T>({
         )}
       </IconPopoverButton>
 
+      {!hideGroupBy && (
       <IconPopoverButton icon={<Layers size={13} />} label="Group by" active={Boolean(groupBy)}>
         {(close) => (
           <>
@@ -455,6 +465,7 @@ export default function ViewSettingsMenu<T>({
           </>
         )}
       </IconPopoverButton>
+      )}
 
       <IconPopoverButton icon={<SlidersHorizontal size={13} />} label="Properties" active={hiddenColumns.length > 0} width={220}>
         {(close) => (

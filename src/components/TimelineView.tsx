@@ -559,9 +559,9 @@ const SCALE_TILES: { value: TimelineScale; label: string }[] = [
 ];
 
 const DATE_MODE_OPTIONS: { value: TimelineDateMode; label: string }[] = [
-  { value: "range", label: "Start and End Date" },
+  { value: "range", label: "Start and Due Date" },
   { value: "start", label: "Start Date" },
-  { value: "due", label: "End Date" },
+  { value: "due", label: "Due Date" },
 ];
 
 // Small toolbar controls for Timeline: scale stays a 4-way segmented
@@ -569,9 +569,10 @@ const DATE_MODE_OPTIONS: { value: TimelineDateMode; label: string }[] = [
 // represents) is a labeled "Dates View" dropdown rather than a 3-way
 // segmented control -- Sandra asked for a dropdown with an explicit
 // header label instead of Range/Start/Due tiles, with wordier option text
-// ("Start and End Date" / "Start Date" / "End Date"). The underlying
-// TimelineDateMode values (range/start/due) are unchanged; only the label
-// and control type differ.
+// matching the actual property names ("Start and Due Date" / "Start Date"
+// / "Due Date" -- previously said "End Date", which didn't match the Due
+// Date property). The underlying TimelineDateMode values (range/start/due)
+// are unchanged; only the label and control type differ.
 export function TimelineControls({
   scale,
   onScaleChange,

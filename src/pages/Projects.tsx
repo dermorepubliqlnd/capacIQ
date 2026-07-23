@@ -2542,8 +2542,14 @@ export default function Projects() {
   const projectGroupMode: "board" | "timeline" | undefined =
     projectViews.activeView.viewType === "board" ? "board" : projectViews.activeView.viewType === "timeline" ? "timeline" : undefined;
   const projectGroupModeOptions = projectGroupMode ? projectBoardGroupOptions : projectGroupOptions;
+  // Calendar never groups (see CalendarView.tsx / ViewSettingsMenu's
+  // hideGroupBy) -- force null here too so a groupBy value left over from
+  // this view's Table-shaped default doesn't silently surface as a stale
+  // "Grouped by X" filter pill while on the Calendar tab.
   const projectResolvedGroupBy =
-    projectGroupMode === "board"
+    projectViews.activeView.viewType === "calendar"
+      ? null
+      : projectGroupMode === "board"
       ? resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "project_status")
       : projectGroupMode === "timeline"
       ? resolveTimelineGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS)
@@ -2555,7 +2561,9 @@ export default function Projects() {
     taskViews.activeView.viewType === "board" ? "board" : taskViews.activeView.viewType === "timeline" ? "timeline" : undefined;
   const taskGroupModeOptions = taskGroupMode ? taskBoardGroupOptions : taskGroupOptions;
   const taskResolvedGroupBy =
-    taskGroupMode === "board"
+    taskViews.activeView.viewType === "calendar"
+      ? null
+      : taskGroupMode === "board"
       ? resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status")
       : taskGroupMode === "timeline"
       ? resolveTimelineGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS)
@@ -2732,6 +2740,7 @@ export default function Projects() {
               filterStatuses={projectViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => projectViews.updateActiveView({ filterStatuses })}
               propertyLockInfo={projectTimelinePropertyLockInfo}
+              hideGroupBy={projectViews.activeView.viewType === "calendar"}
             />
             {projectViews.activeView.viewType === "timeline" && (
               <TimelineControls
@@ -2939,6 +2948,7 @@ export default function Projects() {
               filterStatuses={taskViews.activeView.filterStatuses ?? []}
               onFilterStatusesChange={(filterStatuses) => taskViews.updateActiveView({ filterStatuses })}
               propertyLockInfo={taskTimelinePropertyLockInfo}
+              hideGroupBy={taskViews.activeView.viewType === "calendar"}
             />
             {taskViews.activeView.viewType === "timeline" && (
               <TimelineControls
