@@ -105,7 +105,7 @@ export const TASK_STATUS_OPTIONS = flatten(TASK_STATUS_GROUPED);
 // subset (a project can be cancelled before it ever left Backlog/Queued,
 // or even after reaching Done in rare cases).
 export const PROJECT_PHASE_NOT_STARTED = ["Backlog", "Queued"];
-export const PROJECT_PHASE_IN_PROGRESS = ["Planning", "Design", "Development", "Evaluation", "Delivery"];
+export const PROJECT_PHASE_IN_PROGRESS = ["Scoping", "Design", "Development", "Evaluation", "Delivery"];
 export const PROJECT_PHASE_COMPLETED = ["Done"];
 export const PROJECT_PHASE_ALL = [...PROJECT_PHASE_NOT_STARTED, ...PROJECT_PHASE_IN_PROGRESS, ...PROJECT_PHASE_COMPLETED];
 
@@ -126,7 +126,7 @@ export const PROJECT_PHASE_OPTIONS_BY_STATUS: Record<string, string[]> = {
 export function nextPhaseForStatus(currentPhase: string | null, newStatus: string): string | null {
   if (newStatus === "Completed") return "Done";
   if (newStatus === "Not Started") return PROJECT_PHASE_NOT_STARTED.includes(currentPhase ?? "") ? currentPhase : "Queued";
-  if (newStatus === "In Progress") return PROJECT_PHASE_IN_PROGRESS.includes(currentPhase ?? "") ? currentPhase : "Planning";
+  if (newStatus === "In Progress") return PROJECT_PHASE_IN_PROGRESS.includes(currentPhase ?? "") ? currentPhase : "Scoping";
   return currentPhase; // Paused / Cancelled: frozen, unchanged
 }
 
@@ -143,16 +143,16 @@ export const PROJECT_STATUS_TONES: Record<string, string> = {
 };
 
 // Phase tones: unchanged from the old per-exact-value Status colors for
-// every value that carries over (Backlog/Queued/Planning/Design/
+// every value that carries over (Backlog/Queued/Scoping/Design/
 // Development/Evaluation/Delivery/Done) -- same rationale as before,
 // matches the team's existing Notion color coding. "warning" (orange) is
-// shared by Planning/Evaluation and "pink" only by Design, since the
+// shared by Scoping/Evaluation and "pink" only by Design, since the
 // app's tone palette doesn't have as many distinct hues as Notion's full
 // color picker -- flag to Sandra if tighter differentiation is wanted.
 export const PROJECT_PHASE_TONES: Record<string, string> = {
   Backlog: "neutral",
   Queued: "neutral",
-  Planning: "warning",
+  Scoping: "warning",
   Design: "pink",
   Development: "gold",
   Delivery: "accent",

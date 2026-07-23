@@ -1028,18 +1028,28 @@ export default function Projects() {
       .join("\n");
   }
 
-  async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
-    const verb = locked ? "Lock" : "Unlock";
-
+  // Shared by the manual Lock/Unlock button (lockProjectTimelines, below --
+  // asks its own generic "Lock/Unlock timelines for X?" confirm) and the
+  // Design-phase guardrail (guardDesignPhaseLock, below -- asks a
+  // differently-worded, context-specific confirm instead). Both need the
+  // exact same underlying policy (incomplete-task gate, then the RPC call)
+  // per Sandra's instruction that the guardrail should "still follow our
+  // policies set before locking scoping" rather than invent a separate
+  // check -- so the policy itself lives here once, and only the
+  // confirmation wording differs per caller. Returns true only if the
+  // lock/unlock actually went through (false if blocked or declined),
+  // so callers that gate a second action on it (the guardrail gates the
+  // Phase change itself) know whether to proceed.
+  async function performTimelinesLock(p: ProjectRow, locked: boolean, confirmMessage: string): Promise<boolean> {
     if (locked) {
       const incomplete = incompleteTasksFor(p.id);
       if (incomplete.length > 0) {
         const summary = missingFieldSummary(incomplete);
         if (!isFullAccess) {
           alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}`);
-          return;
+          return false;
         }
-        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}\n\nFull Access override: lock anyway?`))) return;
+        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}\n\nFull Access override: lock anyway?`))) return false;
       }
     }
 
@@ -1052,19 +1062,47 @@ export default function Projects() {
       alert(
         'This project\'s timelines are locked. Ask your manager or Full Access to unlock it, or file a "Request timeline change" once that\'s available from the Extension Requests page.'
       );
-      return;
+      return false;
     }
 
+    if (!(await confirm(confirmMessage))) return false;
+    const { error } = await supabase.rpc("set_project_timelines_locked", { p_project_id: p.id, p_locked: locked });
+    if (error) {
+      alert(`Couldn't ${locked ? "lock" : "unlock"} timelines: ${error.message}`);
+      return false;
+    }
+    loadAll();
+    return true;
+  }
+
+  async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
+    const verb = locked ? "Lock" : "Unlock";
     const detail = locked
       ? "This freezes every task's current due date as the committed baseline. After this, due dates can only change via an approved Extension Request."
       : "This re-opens every task's due date for free editing during planning, until locked again.";
-    if (!(await confirm(`${verb} timelines for "${p.name}"?\n\n${detail}`))) return;
-    const { error } = await supabase.rpc("set_project_timelines_locked", { p_project_id: p.id, p_locked: locked });
-    if (error) {
-      alert(`Couldn't ${verb.toLowerCase()} timelines: ${error.message}`);
-      return;
-    }
-    loadAll();
+    await performTimelinesLock(p, locked, `${verb} timelines for "${p.name}"?\n\n${detail}`);
+  }
+
+  // Guardrail (Sandra, 2026-07-23): moving a project's Phase to Design
+  // while its Timelines are still in Scoping (unlocked) prompts to lock
+  // first, using the exact same policy as the manual Lock button above --
+  // not a new/separate date-presence check. Declining the prompt, or
+  // getting blocked by the incomplete-task gate, blocks the Phase change
+  // itself (her answer: "Block the Phase change"), leaving Phase
+  // untouched. Already-locked projects skip the prompt entirely. Scoped to
+  // the single-row Phase cell only, not the bulk-edit toolbar or Board
+  // drag-to-Design -- bulk Status edits already can't cascade Phase
+  // per-row (see changeProjectStatus's bulk-edit note elsewhere in this
+  // file), and gating a multi-card Board drag felt like a separate,
+  // riskier decision to make without her sign-off, so it's left alone for
+  // now.
+  async function guardDesignPhaseLock(p: ProjectRow): Promise<boolean> {
+    if (p.timelines_locked) return true;
+    return performTimelinesLock(
+      p,
+      true,
+      `Moving "${p.name}" to Design locks its timelines first -- this freezes every task's current due date as the committed baseline, same as the Timelines column's own Lock action.\n\nLock timelines now and move to Design?`
+    );
   }
 
   async function updateProject(id: string, patch: Partial<ProjectRow>) {
@@ -1464,7 +1502,10 @@ export default function Projects() {
             allowEmpty
             options={PROJECT_PHASE_OPTIONS_BY_STATUS[p.status ?? ""] ?? PROJECT_PHASE_ALL}
             renderReadOnly={() => (p.phase ? <span className={`status-pill ${PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral"}`}>{p.phase}</span> : "—")}
-            onCommit={(v) => updateProject(p.id, { phase: v || null })}
+            onCommit={async (v) => {
+              if (v === "Design" && p.phase !== "Design" && !(await guardDesignPhaseLock(p))) return;
+              updateProject(p.id, { phase: v || null });
+            }}
           />
         ),
       },
@@ -2805,13 +2846,9 @@ export default function Projects() {
               rows={filteredProjects}
               columns={projectColumns}
               hiddenColumns={projectViews.activeView.hiddenColumns}
-              onToggleColumn={(key) =>
-                projectViews.updateActiveView({
-                  hiddenColumns: projectViews.activeView.hiddenColumns.includes(key)
-                    ? projectViews.activeView.hiddenColumns.filter((k) => k !== key)
-                    : [...projectViews.activeView.hiddenColumns, key],
-                })
-              }
+              onHiddenColumnsChange={(hiddenColumns) => projectViews.updateActiveView({ hiddenColumns })}
+              columnOrder={projectViews.activeView.columnOrder}
+              onColumnOrderChange={(columnOrder) => projectViews.updateActiveView({ columnOrder })}
               groupOptions={projectGroupModeOptions}
               groupBy={projectResolvedGroupBy}
               hiddenGroups={projectViews.activeView.hiddenGroups}
@@ -3039,13 +3076,9 @@ export default function Projects() {
               rows={filteredVisibleTasks}
               columns={taskColumns}
               hiddenColumns={taskViews.activeView.hiddenColumns}
-              onToggleColumn={(key) =>
-                taskViews.updateActiveView({
-                  hiddenColumns: taskViews.activeView.hiddenColumns.includes(key)
-                    ? taskViews.activeView.hiddenColumns.filter((k) => k !== key)
-                    : [...taskViews.activeView.hiddenColumns, key],
-                })
-              }
+              onHiddenColumnsChange={(hiddenColumns) => taskViews.updateActiveView({ hiddenColumns })}
+              columnOrder={taskViews.activeView.columnOrder}
+              onColumnOrderChange={(columnOrder) => taskViews.updateActiveView({ columnOrder })}
               groupOptions={taskGroupModeOptions}
               groupBy={taskResolvedGroupBy}
               hiddenGroups={taskViews.activeView.hiddenGroups}

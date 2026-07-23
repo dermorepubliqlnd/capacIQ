@@ -265,6 +265,13 @@ input, select { font-family: var(--font); }
   border-radius: 50%;
 }
 .filter-pill button:hover { background: var(--border); color: var(--navy); }
+/* Chrome flexbox bug: an <svg> as a direct flex child (this button is
+   display:flex, centering a lucide <X> icon) can get shrunk down to ~2px
+   wide even though it has explicit width/height="11" attributes, because
+   flex items default to a min-width based on content rather than their
+   intrinsic replaced size. Sandra: "still not visible" -- this was the
+   real cause, not just contrast. flex-shrink:0 pins it at its real size. */
+.filter-pill button svg { flex-shrink: 0; width: 11px; height: 11px; }
 /* Sort pill's direction arrow (Sandra: clicking it should flip asc/desc as
    a quick action, without opening the full Sort popover) -- same hover
    affordance as the close button above, but auto-width since it wraps a

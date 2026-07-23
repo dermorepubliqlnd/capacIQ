@@ -7,7 +7,14 @@ interface ViewControlsProps<T> {
   rows: T[];
   columns: ColumnDef<T>[];
   hiddenColumns: string[];
-  onToggleColumn: (key: string) => void;
+  onHiddenColumnsChange: (hidden: string[]) => void;
+  // Same ordering array DataTable itself reads (view.columnOrder) -- the
+  // Properties popover's drag handles reorder columns the identical way
+  // dragging a <th> in the table header already does (Sandra: "ordering
+  // columns can be done by dragging the page itself and here"), just via
+  // a list instead of the header row.
+  columnOrder: string[];
+  onColumnOrderChange: (order: string[]) => void;
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
   hiddenGroups: string[];
@@ -179,7 +186,9 @@ export default function ViewSettingsMenu<T>({
   rows,
   columns,
   hiddenColumns,
-  onToggleColumn,
+  onHiddenColumnsChange,
+  columnOrder,
+  onColumnOrderChange,
   groupOptions,
   groupBy,
   hiddenGroups,
@@ -241,6 +250,14 @@ export default function ViewSettingsMenu<T>({
   // position (an array move, not a swap, so dragging rule 1 down past
   // rules 2 and 3 lands it at position 3 in one drag, not just one slot).
   const [draggedSortIdx, setDraggedSortIdx] = useState<number | null>(null);
+  // Properties popover: search filter + grip-handle drag-to-reorder,
+  // matching Notion's own property-visibility panel (Sandra: "in notion
+  // all hidden are shown below those shown are above" + a grip bar to
+  // reorder). State lives here (not inside the popover's render-prop)
+  // because IconPopoverButton only invokes `children` while open, so a
+  // hook called in there would violate the rules of hooks.
+  const [propertySearch, setPropertySearch] = useState("");
+  const [draggedPropertyKey, setDraggedPropertyKey] = useState<string | null>(null);
   function reorderSort(from: number, to: number) {
     if (from === to) return;
     const next = [...sorts];
@@ -467,38 +484,170 @@ export default function ViewSettingsMenu<T>({
       </IconPopoverButton>
       )}
 
-      <IconPopoverButton icon={<SlidersHorizontal size={13} />} label="Properties" active={hiddenColumns.length > 0} width={220}>
-        {(close) => (
-          <>
-            <PopoverHeader label="Properties" onClose={close} />
-            {columns.map((c) => {
-              const lock = propertyLockInfo?.[c.key];
-              const locked = Boolean(c.alwaysVisible) || Boolean(lock);
-              const visible = lock ? lock.forcedVisible : c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
-              const lockTooltip = lock?.reason ?? (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined);
-              return (
-                <div
-                  key={c.key}
-                  onClick={() => !locked && onToggleColumn(c.key)}
-                  title={lockTooltip}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 6,
-                    fontSize: 12,
-                    padding: "3px 2px",
-                    cursor: locked ? "default" : "pointer",
-                    color: locked ? "var(--muted)" : visible ? "var(--text)" : "var(--muted)",
-                  }}
+      <IconPopoverButton icon={<SlidersHorizontal size={13} />} label="Properties" active={hiddenColumns.length > 0} width={240}>
+        {(close) => {
+          const known = columns.map((c) => c.key);
+          // Same "stored order, then anything new tacked on the end" logic
+          // as DataTable's own orderedKeys -- keeps this list's order
+          // identical to the table header's, so dragging here and dragging
+          // the header itself stay in sync with each other.
+          const ordered = [...columnOrder.filter((k) => known.includes(k)), ...known.filter((k) => !columnOrder.includes(k))];
+          const query = propertySearch.trim().toLowerCase();
+          const isLocked = (c: ColumnDef<T>) => Boolean(c.alwaysVisible) || Boolean(propertyLockInfo?.[c.key]);
+          const isVisible = (c: ColumnDef<T>) => {
+            const lock = propertyLockInfo?.[c.key];
+            return lock ? lock.forcedVisible : c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
+          };
+
+          // label is ReactNode (icon + text for some columns); plainLabel is
+          // the text-only fallback meant for exactly this kind of string
+          // search -- when neither gives a plain string, the column just
+          // never matches a non-empty search rather than crashing.
+          const searchText = (c: ColumnDef<T>) => (c.plainLabel ?? (typeof c.label === "string" ? c.label : "")).toLowerCase();
+          const matched = ordered.map((k) => columns.find((c) => c.key === k)!).filter((c) => searchText(c).includes(query));
+          const shown = matched.filter(isVisible);
+          const hidden = matched.filter((c) => !isVisible(c));
+
+          function setColumnVisible(c: ColumnDef<T>, visible: boolean) {
+            if (isLocked(c)) return;
+            onHiddenColumnsChange(visible ? hiddenColumns.filter((k) => k !== c.key) : [...hiddenColumns, c.key]);
+          }
+          function hideAll() {
+            const keys = shown.filter((c) => !isLocked(c)).map((c) => c.key);
+            onHiddenColumnsChange(Array.from(new Set([...hiddenColumns, ...keys])));
+          }
+          function showAll() {
+            const keys = new Set(hidden.map((c) => c.key));
+            onHiddenColumnsChange(hiddenColumns.filter((k) => !keys.has(k)));
+          }
+          function reorderProperty(draggedKey: string, targetKey: string) {
+            if (draggedKey === targetKey) return;
+            const next = ordered.map((c) => c).filter((k) => k !== draggedKey);
+            next.splice(next.indexOf(targetKey), 0, draggedKey);
+            onColumnOrderChange(next);
+          }
+
+          function renderRow(c: ColumnDef<T>) {
+            const locked = isLocked(c);
+            const visible = isVisible(c);
+            const lock = propertyLockInfo?.[c.key];
+            const lockTooltip = lock?.reason ?? (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined);
+            return (
+              <div
+                key={c.key}
+                draggable={!locked}
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  setDraggedPropertyKey(c.key);
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.stopPropagation();
+                  if (draggedPropertyKey) reorderProperty(draggedPropertyKey, c.key);
+                  setDraggedPropertyKey(null);
+                }}
+                title={lockTooltip}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  padding: "3px 2px",
+                  color: locked ? "var(--muted)" : "var(--text)",
+                }}
+              >
+                <span style={{ display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked ? "default" : "grab" }}>
+                  <GripVertical size={12} />
+                </span>
+                <span
+                  onClick={() => setColumnVisible(c, !visible)}
+                  style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: locked ? "default" : "pointer" }}
                 >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.plainLabel ?? c.label}</span>
+                  {c.plainLabel ?? c.label}
+                </span>
+                <button
+                  onClick={() => setColumnVisible(c, !visible)}
+                  disabled={locked}
+                  title={visible ? "Hide property" : "Show property"}
+                  style={{ background: "none", border: "none", padding: 2, display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked ? "default" : "pointer" }}
+                >
                   {visible ? <Eye size={13} /> : <EyeOff size={13} />}
-                </div>
-              );
-            })}
-          </>
-        )}
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <>
+              <PopoverHeader label="Properties" onClose={close} />
+              <input
+                type="text"
+                value={propertySearch}
+                onChange={(e) => setPropertySearch(e.target.value)}
+                placeholder="Search for a property..."
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  fontSize: 12,
+                  padding: "5px 8px",
+                  marginBottom: 8,
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  fontFamily: "inherit",
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.3,
+                  color: "var(--muted)",
+                  margin: "4px 0",
+                }}
+              >
+                <span>Shown in table</span>
+                {shown.some((c) => !isLocked(c)) && (
+                  <button
+                    onClick={hideAll}
+                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 10.5, fontWeight: 600, cursor: "pointer", textTransform: "none", letterSpacing: 0, padding: 0 }}
+                  >
+                    Hide all
+                  </button>
+                )}
+              </div>
+              {shown.length === 0 ? <div style={{ fontSize: 11.5, color: "var(--muted)", padding: "3px 2px" }}>None</div> : shown.map(renderRow)}
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.3,
+                  color: "var(--muted)",
+                  margin: "10px 0 4px",
+                }}
+              >
+                <span>Hidden in table</span>
+                {hidden.length > 0 && (
+                  <button
+                    onClick={showAll}
+                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 10.5, fontWeight: 600, cursor: "pointer", textTransform: "none", letterSpacing: 0, padding: 0 }}
+                  >
+                    Show all
+                  </button>
+                )}
+              </div>
+              {hidden.length === 0 ? <div style={{ fontSize: 11.5, color: "var(--muted)", padding: "3px 2px" }}>None</div> : hidden.map(renderRow)}
+            </>
+          );
+        }}
       </IconPopoverButton>
     </>
   );
