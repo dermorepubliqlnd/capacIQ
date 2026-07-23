@@ -2599,6 +2599,15 @@ export default function Projects() {
   const taskTimelinePropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
     (c) => !TASK_TIMELINE_EXCLUDED_KEYS.includes(c.key)
   );
+  // Calendar's card structure treats Project the same way Timeline treats
+  // Name -- always shown as its own dedicated line (see getProjectLabel
+  // below), not a togglable chip -- so it's excluded here on top of the
+  // Timeline exclusions, leaving Assignee/Effort/etc. as the remaining
+  // optional property lines a person can toggle via Properties.
+  const TASK_CALENDAR_EXCLUDED_KEYS = ["name", "project", "start_date", "current_due_date"];
+  const taskCalendarPropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
+    (c) => !TASK_CALENDAR_EXCLUDED_KEYS.includes(c.key)
+  );
 
   // Explains to the Properties popover why toggling Name/Actual
   // Progress/Start/Due does nothing on a Timeline view -- see
@@ -2632,6 +2641,13 @@ export default function Projects() {
           name: { reason: "Always shown as the row/card title, not a separate property", forcedVisible: true },
           start_date: { reason: `Shown via ${taskDatesShownStructurally}, not as a separate property`, forcedVisible: false },
           current_due_date: { reason: `Shown via ${taskDatesShownStructurally}, not as a separate property`, forcedVisible: false },
+          // Calendar-only: Project is a fixed line in the card (right
+          // under the title, see getProjectLabel), same structural
+          // treatment as Name -- not a togglable chip the way it is on
+          // Timeline (hidden-by-default there, but still a normal chip).
+          ...(taskViews.activeView.viewType === "calendar"
+            ? { project: { reason: "Always shown as its own line under the task title", forcedVisible: true } }
+            : {}),
         }
       : undefined;
 
@@ -3017,7 +3033,11 @@ export default function Projects() {
             <CalendarView
               rows={sortRowsHierarchical(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions, (t) => t.id, (t) => t.parent_task_id)}
               rowKey={(t) => t.id}
-              renderLabel={(t) => taskColumns.find((c) => c.key === "name")?.render(t)}
+              renderLabel={(t) => (
+                <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+              )}
+              getParentLabel={(t) => (t.parent_task_id ? tasks.find((pt) => pt.id === t.parent_task_id)?.name ?? null : null)}
+              getProjectLabel={(t) => projectName(t.project_id)}
               getStart={(t) => t.start_date}
               getDue={(t) => t.current_due_date}
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
@@ -3025,7 +3045,7 @@ export default function Projects() {
               emptyLabel="No tasks yet. Add one below."
               dateMode={taskViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
-              propertyColumns={taskTimelinePropertyColumns}
+              propertyColumns={taskCalendarPropertyColumns}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>

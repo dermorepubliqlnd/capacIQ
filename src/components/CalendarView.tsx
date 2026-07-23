@@ -13,15 +13,26 @@ const DATE_MODE_OPTIONS: { value: CalendarDateMode; label: string }[] = [
 interface CalendarViewProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
-  // Same idea as TimelineView's renderLabel -- reuses the caller's own
-  // column render() (e.g. the Name column) so a card's title looks and
-  // edits exactly like its Table/Board/Timeline counterparts.
+  // Plain editable title only (no Table-chrome like collapse
+  // chevrons/connectors/add-sub-task buttons -- those belong in the
+  // Table row, not a small calendar card).
   renderLabel: (row: T) => ReactNode;
   getStart: (row: T) => string | null;
   getDue: (row: T) => string | null;
   getTone?: (row: T) => string;
   getTooltip?: (row: T) => string;
   emptyLabel?: string;
+  // Sandra's card spec (annotated over a Notion screenshot): a small
+  // muted line ABOVE the title showing the parent task's name, only when
+  // this row actually has a parent (a sub-task) -- omitted/undefined for
+  // a top-level row so nothing renders. Tasks-only; Projects has no
+  // parent concept and simply won't pass this.
+  getParentLabel?: (row: T) => string | null | undefined;
+  // Same spec: Project name shown as its own line right under the title,
+  // in a smaller size -- always shown (not part of the togglable
+  // propertyColumns list) since it's structural card identity, same
+  // treatment as the title itself. Tasks-only.
+  getProjectLabel?: (row: T) => string | null | undefined;
   // Which single date a card is anchored to (Notion-style: a card renders
   // once, on one day, with its date range shown as text inside the card
   // rather than visually spanning multiple day cells). "range" anchors on
@@ -32,7 +43,7 @@ interface CalendarViewProps<T> {
   dateMode?: CalendarDateMode;
   onDateModeChange?: (mode: CalendarDateMode) => void;
   // Extra properties shown as their own line inside each card, below the
-  // title -- e.g. Project / Assignee / Effort. Reuses each column's own
+  // Project line -- e.g. Assignee / Effort. Reuses each column's own
   // render() same as Timeline's chips, just laid out as stacked lines
   // (Notion's calendar cards) instead of inline pills.
   propertyColumns?: ColumnDef<T>[];
@@ -100,6 +111,8 @@ export default function CalendarView<T>({
   dateMode = "range",
   onDateModeChange,
   propertyColumns,
+  getParentLabel,
+  getProjectLabel,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
@@ -211,6 +224,8 @@ export default function CalendarView<T>({
                     <div className="calendar-day-cards">
                       {visible.map((e) => {
                         const tone = TONE_STYLES[getTone?.(e.row) ?? "neutral"] ?? TONE_STYLES.neutral;
+                        const parentLabel = getParentLabel?.(e.row);
+                        const projectLabel = getProjectLabel?.(e.row);
                         return (
                           <div
                             key={rowKey(e.row)}
@@ -218,7 +233,9 @@ export default function CalendarView<T>({
                             title={getTooltip?.(e.row)}
                             style={{ background: tone.bg, borderLeftColor: tone.text }}
                           >
+                            {parentLabel && <div className="calendar-card-parent">{parentLabel}</div>}
                             <div className="calendar-card-title">{renderLabel(e.row)}</div>
+                            {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
                             {propertyColumns?.map((c) => (
                               <div key={c.key} className="calendar-card-prop">{c.render(e.row)}</div>
                             ))}
