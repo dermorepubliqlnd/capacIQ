@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { TONE_STYLES } from "../lib/tableTypes";
+import { TONE_STYLES, type ColumnDef } from "../lib/tableTypes";
 
 export type CalendarDateMode = "range" | "start" | "due";
 
@@ -14,7 +14,7 @@ interface CalendarViewProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
   // Same idea as TimelineView's renderLabel -- reuses the caller's own
-  // column render() (e.g. the Name column) so a calendar bar looks and
+  // column render() (e.g. the Name column) so a card's title looks and
   // edits exactly like its Table/Board/Timeline counterparts.
   renderLabel: (row: T) => ReactNode;
   getStart: (row: T) => string | null;
@@ -22,37 +22,28 @@ interface CalendarViewProps<T> {
   getTone?: (row: T) => string;
   getTooltip?: (row: T) => string;
   emptyLabel?: string;
-  // What a bar represents -- same three modes and same "Dates View"
-  // dropdown as TimelineView/TimelineControls: "range" spans Start->Due,
-  // "start"/"due" render a one-day bar on just that single date (a row
-  // missing that particular date simply doesn't appear). Defaults to
-  // "range" at the call site, same convention as Timeline.
+  // Which single date a card is anchored to (Notion-style: a card renders
+  // once, on one day, with its date range shown as text inside the card
+  // rather than visually spanning multiple day cells). "range" anchors on
+  // Due (falling back to Start) and shows the full "Start -> Due" text
+  // when they differ; "start"/"due" anchor on just that one date and skip
+  // rows missing it. Same three modes/labels as Timeline's own "Dates
+  // View" dropdown for consistency.
   dateMode?: CalendarDateMode;
   onDateModeChange?: (mode: CalendarDateMode) => void;
-  // Called on drop -- both dates already shifted by the same day-delta
-  // (range items) or with just the single relevant field moved (items
-  // that only had a Start or only a Due). Null values are left null.
-  onReschedule?: (row: T, newStart: string | null, newDue: string | null) => void;
-  // Per-row gate on top of onReschedule -- e.g. a locked task/project, or
-  // one whose dates are themselves computed from its own sub-tasks/tasks
-  // rather than stored directly, shouldn't be draggable even though
-  // onReschedule exists for other rows. Defaults to "always draggable"
-  // when omitted.
-  canDrag?: (row: T) => boolean;
+  // Extra properties shown as their own line inside each card, below the
+  // title -- e.g. Project / Assignee / Effort. Reuses each column's own
+  // render() same as Timeline's chips, just laid out as stacked lines
+  // (Notion's calendar cards) instead of inline pills.
+  propertyColumns?: ColumnDef<T>[];
 }
 
-const MAX_LANES = 4;
+const MAX_VISIBLE_PER_DAY = 3;
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function parseLocalDate(dateStr: string): Date {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   return new Date(y, m - 1, d);
-}
-function toISO(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 function addDays(d: Date, n: number): Date {
   const r = new Date(d);
@@ -64,6 +55,9 @@ function diffDays(a: Date, b: Date): number {
 }
 function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+function formatShort(d: Date): string {
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function getMonthGrid(month: Date): Date[][] {
@@ -87,6 +81,13 @@ function getMonthGrid(month: Date): Date[][] {
   return weeks;
 }
 
+// Read-only, Notion-style month calendar: each item renders as a small
+// stacked card on a single anchor day (not a spanning Gantt bar) --
+// title, then each property column as its own line, then the date/date
+// range as text. Sandra: "let this be view only" -- no drag-to-reschedule
+// here, that idea was tried and explicitly walked back in favor of this
+// simpler, information-dense card layout matching Notion's own Calendar
+// view.
 export default function CalendarView<T>({
   rows,
   rowKey,
@@ -96,97 +97,53 @@ export default function CalendarView<T>({
   getTone,
   getTooltip,
   emptyLabel = "Nothing here yet.",
-  onReschedule,
-  canDrag,
   dateMode = "range",
   onDateModeChange,
+  propertyColumns,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
-  const [dragKey, setDragKey] = useState<string | null>(null);
 
   const weeks = useMemo(() => getMonthGrid(month), [month]);
 
-  // Every row that has at least a Start or a Due date, resolved to a
-  // {start, due} pair -- a row with only one date renders as a one-day
-  // bar on that date (no separate "marker" look; a 1-day bar already
-  // reads as a single-day event).
-  const ranged = useMemo(() => {
+  const anchored = useMemo(() => {
     return rows
       .map((row) => {
         const s = getStart(row);
         const d = getDue(row);
-        // "start"/"due" modes only ever show/drag that one date -- a row
-        // missing it just doesn't render, same as Timeline's own marker
-        // behavior in single-date mode.
         if (dateMode === "start") {
           if (!s) return null;
-          const day = parseLocalDate(s);
-          return { row, start: day, due: day, hasStart: true, hasDue: false };
+          return { row, anchor: parseLocalDate(s), start: parseLocalDate(s), due: parseLocalDate(s), hasStart: true, hasDue: false };
         }
         if (dateMode === "due") {
           if (!d) return null;
-          const day = parseLocalDate(d);
-          return { row, start: day, due: day, hasStart: false, hasDue: true };
+          return { row, anchor: parseLocalDate(d), start: parseLocalDate(d), due: parseLocalDate(d), hasStart: false, hasDue: true };
         }
         if (!s && !d) return null;
         const start = s ? parseLocalDate(s) : parseLocalDate(d!);
         const dueRaw = d ? parseLocalDate(d) : parseLocalDate(s!);
         const due = dueRaw < start ? start : dueRaw;
-        return { row, start, due, hasStart: Boolean(s), hasDue: Boolean(d) };
+        // Anchor on Due (matches Notion's own behavior in the reference
+        // screenshot -- a multi-day item shows once, on its end date),
+        // falling back to Start for a start-only row.
+        const anchor = d ? due : start;
+        return { row, anchor, start, due, hasStart: Boolean(s), hasDue: Boolean(d) };
       })
-      .filter((r): r is { row: T; start: Date; due: Date; hasStart: boolean; hasDue: boolean } => r !== null);
+      .filter(
+        (r): r is { row: T; anchor: Date; start: Date; due: Date; hasStart: boolean; hasDue: boolean } => r !== null
+      );
   }, [rows, getStart, getDue, dateMode]);
 
-  function layoutWeek(weekDates: Date[]) {
-    const weekStart = weekDates[0];
-    const weekEnd = weekDates[6];
-    const touching = ranged
-      .filter((e) => e.due >= weekStart && e.start <= weekEnd)
-      .map((e) => {
-        const clipStart = e.start < weekStart ? weekStart : e.start;
-        const clipEnd = e.due > weekEnd ? weekEnd : e.due;
-        const colStart = diffDays(clipStart, weekStart);
-        const colSpan = diffDays(clipEnd, clipStart) + 1;
-        return { ...e, colStart, colSpan };
-      })
-      .sort((a, b) => a.colStart - b.colStart || b.colSpan - a.colSpan);
-
-    const laneEnd: number[] = [];
-    const laid: Array<(typeof touching)[number] & { lane: number }> = [];
-    const overflowByCol = new Array(7).fill(0);
-    for (const e of touching) {
-      let lane = 0;
-      while (laneEnd[lane] !== undefined && laneEnd[lane] >= e.colStart) lane++;
-      if (lane >= MAX_LANES) {
-        for (let c = e.colStart; c < e.colStart + e.colSpan; c++) overflowByCol[c]++;
-        continue;
-      }
-      laneEnd[lane] = e.colStart + e.colSpan - 1;
-      laid.push({ ...e, lane });
-    }
-    return { laid, overflowByCol };
+  function itemsForDay(day: Date) {
+    return anchored.filter((e) => sameDay(e.anchor, day));
   }
 
-  function handleDragStart(key: string) {
-    setDragKey(key);
+  function dateText(e: (typeof anchored)[number]): string {
+    if (e.hasStart && e.hasDue && !sameDay(e.start, e.due)) return `${formatShort(e.start)} → ${formatShort(e.due)}`;
+    return formatShort(e.anchor);
   }
 
-  function handleDrop(dropDate: Date) {
-    if (!dragKey || !onReschedule) return;
-    const dragged = ranged.find((e) => rowKey(e.row) === dragKey);
-    setDragKey(null);
-    if (!dragged) return;
-    // Anchor on Start when present (matches how a person would naturally
-    // grab the front of a bar), otherwise Due for a due-only item.
-    const anchor = dragged.hasStart ? dragged.start : dragged.due;
-    const delta = diffDays(dropDate, anchor);
-    const newStart = dragged.hasStart ? toISO(addDays(dragged.start, delta)) : null;
-    const newDue = dragged.hasDue ? toISO(addDays(dragged.due, delta)) : null;
-    onReschedule(dragged.row, newStart, newDue);
-  }
-
-  const hasAnyRows = ranged.length > 0;
+  const hasAnyRows = anchored.length > 0;
 
   return (
     <div className="calendar-view">
@@ -207,7 +164,7 @@ export default function CalendarView<T>({
           Today
         </button>
         {onDateModeChange && (
-          <div className="timeline-datemode" style={{ marginLeft: "auto" }} title="What a bar represents">
+          <div className="timeline-datemode" style={{ marginLeft: "auto" }} title="Which date a card is anchored to">
             <span className="timeline-datemode-label">Dates View</span>
             <select
               className="timeline-datemode-select"
@@ -234,52 +191,43 @@ export default function CalendarView<T>({
         <div className="calendar-empty">{emptyLabel}</div>
       ) : (
         weeks.map((weekDates, wi) => {
-          const { laid, overflowByCol } = layoutWeek(weekDates);
-          const laneCount = Math.max(1, ...laid.map((e) => e.lane + 1));
-          const rowHeight = 22 + laneCount * 24 + 4;
+          const maxCount = Math.max(...weekDates.map((d) => itemsForDay(d).length));
+          const visibleCount = Math.min(maxCount, MAX_VISIBLE_PER_DAY);
           return (
-            <div key={wi} className="calendar-week-row" style={{ height: rowHeight }}>
+            <div key={wi} className="calendar-week-row-cards">
               {weekDates.map((d, di) => {
                 const inMonth = d.getMonth() === month.getMonth();
                 const isToday = sameDay(d, today);
+                const items = itemsForDay(d);
+                const visible = items.slice(0, MAX_VISIBLE_PER_DAY);
+                const overflow = items.length - visible.length;
                 return (
                   <div
                     key={di}
-                    className={`calendar-day-cell${inMonth ? "" : " is-outside"}`}
-                    style={{ left: `${(di / 7) * 100}%`, width: `${(1 / 7) * 100}%` }}
-                    onDragOver={onReschedule ? (e) => e.preventDefault() : undefined}
-                    onDrop={onReschedule ? () => handleDrop(d) : undefined}
+                    className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}`}
+                    style={{ minHeight: 26 + Math.max(visibleCount, 1) * 58 }}
                   >
                     <span className={`calendar-day-number${isToday ? " is-today" : ""}`}>{d.getDate()}</span>
-                    {overflowByCol[di] > 0 && (
-                      <span className="calendar-day-overflow">+{overflowByCol[di]} more</span>
-                    )}
-                  </div>
-                );
-              })}
-              {laid.map((e) => {
-                const key = rowKey(e.row);
-                const tone = TONE_STYLES[getTone?.(e.row) ?? "neutral"] ?? TONE_STYLES.neutral;
-                const draggableHere = Boolean(onReschedule) && (canDrag ? canDrag(e.row) : true);
-                return (
-                  <div
-                    key={key}
-                    className="calendar-bar"
-                    title={getTooltip?.(e.row)}
-                    draggable={draggableHere}
-                    onDragStart={draggableHere ? () => handleDragStart(key) : undefined}
-                    onDragEnd={draggableHere ? () => setDragKey(null) : undefined}
-                    style={{
-                      left: `${(e.colStart / 7) * 100}%`,
-                      width: `${(e.colSpan / 7) * 100}%`,
-                      top: 22 + e.lane * 24,
-                      background: tone.bg,
-                      color: tone.text,
-                      opacity: dragKey === key ? 0.4 : 1,
-                      cursor: draggableHere ? "grab" : "default",
-                    }}
-                  >
-                    {renderLabel(e.row)}
+                    <div className="calendar-day-cards">
+                      {visible.map((e) => {
+                        const tone = TONE_STYLES[getTone?.(e.row) ?? "neutral"] ?? TONE_STYLES.neutral;
+                        return (
+                          <div
+                            key={rowKey(e.row)}
+                            className="calendar-card"
+                            title={getTooltip?.(e.row)}
+                            style={{ background: tone.bg, borderLeftColor: tone.text }}
+                          >
+                            <div className="calendar-card-title">{renderLabel(e.row)}</div>
+                            {propertyColumns?.map((c) => (
+                              <div key={c.key} className="calendar-card-prop">{c.render(e.row)}</div>
+                            ))}
+                            <div className="calendar-card-dates" style={{ color: tone.text }}>{dateText(e)}</div>
+                          </div>
+                        );
+                      })}
+                      {overflow > 0 && <div className="calendar-day-overflow">+{overflow} more</div>}
+                    </div>
                   </div>
                 );
               })}

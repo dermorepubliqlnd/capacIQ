@@ -21,6 +21,8 @@ interface ViewTabsProps<T> {
   // whatever the table's own default view has hidden" (createView's own
   // fallback), which is what Tasks' Timeline still does today.
   timelineDefaultHiddenColumns?: string[];
+  // Same idea, for a brand-new Calendar view's starting Properties set.
+  calendarDefaultHiddenColumns?: string[];
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
@@ -82,6 +84,7 @@ export default function ViewTabs<T>({
   onCreate,
   boardDefaultGroupBy,
   timelineDefaultHiddenColumns,
+  calendarDefaultHiddenColumns,
   onRename,
   onDelete,
   onColorChange,
@@ -130,7 +133,7 @@ export default function ViewTabs<T>({
       name,
       viewType,
       viewType === "board" ? boardDefaultGroupBy : undefined,
-      viewType === "timeline" ? timelineDefaultHiddenColumns : undefined
+      viewType === "timeline" ? timelineDefaultHiddenColumns : viewType === "calendar" ? calendarDefaultHiddenColumns : undefined
     );
     setAddOpen(false);
     setAddSearch("");

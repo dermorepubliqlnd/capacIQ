@@ -122,6 +122,15 @@ const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "ti
 // All still available via Properties, just not cluttering a fresh
 // Timeline view by default.
 const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date"];
+// Task Calendar cards are much denser than a Timeline row -- Sandra asked
+// specifically for Project/Effort/Assignee to show by default ("main
+// focal point should be the task" -- Name is always the card's title
+// regardless), everything else starts hidden but stays available via
+// Properties. Unlike Timeline, Project stays visible here since Calendar
+// has no swimlane/group-by-project header to make it redundant (Notion's
+// own Calendar view doesn't support grouping either -- confirmed with
+// Sandra, not building it).
+const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct"];
 const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
@@ -790,19 +799,6 @@ export default function Projects() {
   const taskName = (id: string | null) => tasks.find((t) => t.id === id)?.name ?? "—";
   const isProjectOwner = (projectId: string) => projects.find((p) => p.id === projectId)?.owner_id === me?.id;
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
-  // Same reasoning as canRescheduleTask below -- only draggable on the
-  // Calendar when a person could also edit Start/Due by hand: has edit
-  // rights, timelines aren't locked, and the dates aren't themselves
-  // computed from the project's own tasks (see projectDatesFromTasks).
-  function canRescheduleProject(p: ProjectRow): boolean {
-    return canEditProject(p) && !p.timelines_locked && !projectDatesFromTasks(p.id);
-  }
-  function rescheduleProject(p: ProjectRow, newStart: string | null, newDue: string | null) {
-    const patch: Partial<ProjectRow> = {};
-    if (newStart !== null) patch.start_date = newStart;
-    if (newDue !== null) patch.end_date = newDue;
-    if (Object.keys(patch).length > 0) updateProject(p.id, patch);
-  }
 
   // Should we show the "Mark as Done?" suggestion chip for this project?
   // Deliberately a suggestion, not an auto-set of project_status -- see the
@@ -831,28 +827,6 @@ export default function Projects() {
   // action restricted to Full Access only -- see the Reopen button in the
   // validated_completion_date column.
   const isTaskLocked = (t: TaskRow) => Boolean(t.validated_completion_date);
-  // Calendar drag-to-reschedule moves Start and Due together, so a task
-  // is only draggable when every gate that would let a person edit BOTH
-  // fields by hand also passes: not a parent whose dates are computed
-  // from its own sub-tasks (see taskDatesFromSubtasks below), has edit
-  // rights, isn't validated-and-locked, and its project's timelines
-  // aren't locked (that's what makes current_due_date DB-locked -- see
-  // the Due column's own comment further down).
-  function canRescheduleTask(t: TaskWithDepth): boolean {
-    const isParent = t._depth === 0 && hasChildren(t.id);
-    return !isParent && canEditTask(t) && !isTaskLocked(t) && !isProjectLocked(t.project_id);
-  }
-  function rescheduleTask(t: TaskWithDepth, newStart: string | null, newDue: string | null) {
-    const patch: Partial<TaskRow> = {};
-    if (newStart !== null) patch.start_date = newStart;
-    // Mirrors the Due column's own onCommit -- original_due_date tracks
-    // alongside current_due_date while the project is still in scoping.
-    if (newDue !== null) {
-      patch.current_due_date = newDue;
-      patch.original_due_date = newDue;
-    }
-    if (Object.keys(patch).length > 0) updateTask(t.id, patch);
-  }
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
@@ -2631,21 +2605,33 @@ export default function Projects() {
   // PROJECT_TIMELINE_EXCLUDED_KEYS above. Only passed while the active
   // view actually is Timeline (Table/Board's Properties popover keeps
   // full normal toggling for every column).
+  // Same lock-info concept, now shared between Timeline (bar-based) and
+  // Calendar (card-based) -- both structurally show Name as the row/card
+  // title and Start/Due via position (the Gantt bar's placement, or which
+  // day a card sits on) rather than as a separate toggleable chip/line.
+  const projectDatesShownStructurally = projectViews.activeView.viewType === "timeline" ? "the bar's position on the chart" : "which day the card sits on";
   const projectTimelinePropertyLockInfo =
-    projectViews.activeView.viewType === "timeline"
+    projectViews.activeView.viewType === "timeline" || projectViews.activeView.viewType === "calendar"
       ? {
-          name: { reason: "Always shown as the row label, not a chip", forcedVisible: true },
-          actual_progress: { reason: "Always shown as the Gantt bar's own fill, not a chip", forcedVisible: true },
-          start_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
-          end_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+          name: { reason: "Always shown as the row/card title, not a separate property", forcedVisible: true },
+          actual_progress: {
+            reason:
+              projectViews.activeView.viewType === "timeline"
+                ? "Always shown as the Gantt bar's own fill, not a chip"
+                : "Not shown on Calendar cards",
+            forcedVisible: projectViews.activeView.viewType === "timeline",
+          },
+          start_date: { reason: `Shown via ${projectDatesShownStructurally}, not as a separate property`, forcedVisible: false },
+          end_date: { reason: `Shown via ${projectDatesShownStructurally}, not as a separate property`, forcedVisible: false },
         }
       : undefined;
+  const taskDatesShownStructurally = taskViews.activeView.viewType === "timeline" ? "the bar's position on the chart" : "which day the card sits on";
   const taskTimelinePropertyLockInfo =
-    taskViews.activeView.viewType === "timeline"
+    taskViews.activeView.viewType === "timeline" || taskViews.activeView.viewType === "calendar"
       ? {
-          name: { reason: "Always shown as the row label, not a chip", forcedVisible: true },
-          start_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
-          current_due_date: { reason: "Shown via the bar's position on the chart, not as a chip", forcedVisible: false },
+          name: { reason: "Always shown as the row/card title, not a separate property", forcedVisible: true },
+          start_date: { reason: `Shown via ${taskDatesShownStructurally}, not as a separate property`, forcedVisible: false },
+          current_due_date: { reason: `Shown via ${taskDatesShownStructurally}, not as a separate property`, forcedVisible: false },
         }
       : undefined;
 
@@ -2684,6 +2670,7 @@ export default function Projects() {
             onCreate={projectViews.createView}
             boardDefaultGroupBy="project_status"
             timelineDefaultHiddenColumns={PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
+            calendarDefaultHiddenColumns={PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
@@ -2831,10 +2818,9 @@ export default function Projects() {
               getTone={(p) => PROJECT_STATUS_TONES[p.project_status ?? ""] ?? "neutral"}
               getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
               emptyLabel="No projects yet. Add one below."
-              canDrag={canRescheduleProject}
-              onReschedule={rescheduleProject}
               dateMode={projectViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
+              propertyColumns={projectTimelinePropertyColumns}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>
@@ -2891,6 +2877,7 @@ export default function Projects() {
             onCreate={taskViews.createView}
             boardDefaultGroupBy="status"
             timelineDefaultHiddenColumns={TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS}
+            calendarDefaultHiddenColumns={TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS}
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
@@ -3036,10 +3023,9 @@ export default function Projects() {
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
               getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
               emptyLabel="No tasks yet. Add one below."
-              canDrag={canRescheduleTask}
-              onReschedule={rescheduleTask}
               dateMode={taskViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
+              propertyColumns={taskTimelinePropertyColumns}
             />
             {canCreateTask && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
