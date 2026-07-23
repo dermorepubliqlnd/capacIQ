@@ -2599,6 +2599,17 @@ export default function Projects() {
       const bi = PROJECT_TIMELINE_CHIP_ORDER.indexOf(b.key);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
+  // Calendar-only variant: Priority and Effort move up onto the card's
+  // title line as small inline pills (see the Calendar CalendarView call's
+  // titleBadge below) instead of their own stacked lines -- Sandra: "can
+  // the effort and prio be on the same line as the project title", with
+  // an annotated screenshot pointing at empty space to the right of the
+  // title. Excluded here so they don't ALSO render as duplicate stacked
+  // lines; Timeline's own chip layout (projectTimelinePropertyColumns,
+  // above) is unaffected -- she only asked about the Calendar card.
+  const projectCalendarPropertyColumns = projectTimelinePropertyColumns.filter(
+    (c) => c.key !== "priority" && c.key !== "effort_level"
+  );
   // Mirrors PROJECT_TIMELINE_EXCLUDED_KEYS -- Start/Due are already shown via
   // the bar's own position/length on the chart, so repeating them as chips
   // is redundant (Sandra: "remove start and due dates in columns since this
@@ -2856,7 +2867,13 @@ export default function Projects() {
               emptyLabel="No projects yet. Add one below."
               dateMode={projectViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => projectViews.updateActiveView({ timelineDateMode })}
-              propertyColumns={projectTimelinePropertyColumns}
+              propertyColumns={projectCalendarPropertyColumns}
+              titleBadge={(p) => (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  {projectColumns.find((c) => c.key === "priority")?.render(p)}
+                  {projectColumns.find((c) => c.key === "effort_level")?.render(p)}
+                </div>
+              )}
             />
             {canCreateProject && (
               <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={createBlankProject}>

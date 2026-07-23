@@ -294,6 +294,14 @@ export default function CalendarView<T>({
           const { placements, laneCount } = weekSpanData[wi];
           const maxCount = Math.max(...weekDates.map((d) => itemsForDay(d).length));
           const visibleCount = Math.min(maxCount, MAX_VISIBLE_PER_DAY);
+          // Weeks with zero single-day items this row stay compact (just
+          // the day number, no reserved card space) instead of always
+          // padding out to at least one card's height -- Sandra: "for days
+          // that have no task just keep it blank and white", pointing at
+          // Notion's own calendar where empty weeks/days don't reserve
+          // phantom card space. Weeks that DO have at least one item keep
+          // the existing per-card height budget unchanged.
+          const rowMinHeight = visibleCount > 0 ? 26 + visibleCount * 58 : 30;
           return (
             <div key={wi} className="calendar-week-row-wrap">
               {laneCount > 0 && (
@@ -357,7 +365,7 @@ export default function CalendarView<T>({
                     <div
                       key={di}
                       className={`calendar-day-card-cell${inMonth ? "" : " is-outside"}`}
-                      style={{ minHeight: 26 + Math.max(visibleCount, 1) * 58 }}
+                      style={{ minHeight: rowMinHeight }}
                     >
                       <span className={`calendar-day-number${isToday ? " is-today" : ""}`}>{d.getDate()}</span>
                       <div className="calendar-day-cards">
