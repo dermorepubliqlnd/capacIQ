@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Plus } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -131,6 +131,75 @@ export default function WbsPlanning() {
     }
     return out;
   }, [tasks]);
+
+  function hasChildren(taskId: string): boolean {
+    return tasks.some((t) => t.parent_task_id === taskId);
+  }
+
+  // Same rollup rule as the Projects & Tasks page (Sandra, 2026-07-23:
+  // "the parent hours can be edited. This should work the same way as
+  // when in task DB when handling parent sub task relationships") -- a
+  // parent task's own Est. hrs is locked and always mirrors the sum of
+  // its direct sub-tasks' Est. hrs, never typed directly. Duplicated here
+  // (rather than imported from Projects.tsx) since this page has its own
+  // separate `tasks` state/query -- Projects.tsx's own sync effect only
+  // runs while that page is mounted, so without this, editing hours here
+  // wouldn't keep a parent's total correct.
+  function subtaskHoursSum(parentId: string): number | null {
+    const children = tasks.filter((t) => t.parent_task_id === parentId);
+    const withEstimate = children.filter((t) => t.estimated_hours !== null && t.estimated_hours !== undefined);
+    if (withEstimate.length === 0) return null;
+    return Math.round(withEstimate.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100) / 100;
+  }
+
+  useEffect(() => {
+    for (const t of tasks) {
+      if (t.parent_task_id) continue;
+      if (!hasChildren(t.id)) continue;
+      const sum = subtaskHoursSum(t.id);
+      if (sum !== t.estimated_hours) {
+        saveTaskField(t.id, { estimated_hours: sum });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks]);
+
+  async function addTopLevelTask() {
+    if (!project) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultDue = project.end_date ?? today;
+    const { error } = await supabase.from("tasks").insert({
+      project_id: project.id,
+      name: "Untitled task",
+      status: "Not Started",
+      original_due_date: defaultDue,
+      current_due_date: defaultDue,
+      sort_order: Date.now(),
+    });
+    if (error) {
+      alert(`Couldn't create task: ${error.message}`);
+      return;
+    }
+    loadAll();
+  }
+
+  async function addSubtask(parent: TaskRow & { depth: number }) {
+    if (parent.depth > 0) return; // only 2 layers total: parent + 1 sub-task level
+    const { error } = await supabase.from("tasks").insert({
+      project_id: parent.project_id,
+      parent_task_id: parent.id,
+      name: "Untitled sub-task",
+      status: "Not Started",
+      original_due_date: parent.current_due_date,
+      current_due_date: parent.current_due_date,
+      sort_order: Date.now(),
+    });
+    if (error) {
+      alert(`Couldn't add subtask: ${error.message}`);
+      return;
+    }
+    loadAll();
+  }
 
   function startFor(t: TaskRow): string {
     return (t.start_date ?? targetStartDate).slice(0, 10);
@@ -308,16 +377,30 @@ export default function WbsPlanning() {
                 )}
                 {orderedTasks.map((t) => {
                   const { full, standard, capacity, person } = scenariosFor(t);
+                  const isParent = t.depth === 0 && hasChildren(t.id);
                   return (
                     <tr key={t.id}>
                       <td>
-                        <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400 }}>{t.name || "Untitled task"}</div>
+                        <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ flex: 1 }}>{t.name || "Untitled task"}</span>
+                          {t.depth === 0 && (
+                            <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
+                              <Plus size={14} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td>
                         <InlineDate value={startFor(t)} editable onCommit={(v) => v && saveTaskField(t.id, { start_date: v })} />
                       </td>
                       <td>
-                        <InlineNumber value={t.estimated_hours} editable onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })} />
+                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
+                          <InlineNumber
+                            value={t.estimated_hours}
+                            editable={!isParent}
+                            onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })}
+                          />
+                        </span>
                       </td>
                       <td style={{ fontSize: 12 }}>
                         {t.estimated_hours ? (
@@ -360,6 +443,14 @@ export default function WbsPlanning() {
                     </tr>
                   );
                 })}
+                <tr>
+                  <td colSpan={6} className="add-row-cell">
+                    <div className="add-row-trigger" onClick={addTopLevelTask}>
+                      <Plus size={12} />
+                      New task
+                    </div>
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
