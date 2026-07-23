@@ -1306,6 +1306,19 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .calendar-span-bar {
   min-width: 0;
 }
+/* Week separator line moved to the TOP of each week wrapper (except the
+   first, which already sits right under .calendar-weekday-row's own
+   border) instead of a border-bottom on .calendar-week-row-cards --
+   Sandra: "can the calendar border be on top of the dates. the line
+   below the dates kinda makes it confusing." A bottom border on the
+   date row landed directly between the date numbers and that SAME
+   week's own task content (single-day cards + the continuous span bars,
+   which render right after this row -- see .calendar-week-spans), which
+   read as separating the date from its own tasks rather than separating
+   one week from the next. */
+.calendar-week-row-wrap + .calendar-week-row-wrap {
+  border-top: 1px solid var(--border);
+}
 /* One week per row, plain flex (not absolute-positioned) -- each day is
    its own static cell. Single-date (or same-day) rows still render as
    Notion-style stacked cards on one anchor day (per Sandra's "see here
@@ -1315,7 +1328,6 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
    instead. */
 .calendar-week-row-cards {
   display: flex;
-  border-bottom: 1px solid var(--border);
 }
 .calendar-day-card-cell {
   flex: 1 1 0;
