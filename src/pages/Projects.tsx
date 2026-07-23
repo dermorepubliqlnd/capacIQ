@@ -2604,7 +2604,13 @@ export default function Projects() {
   // below), not a togglable chip -- so it's excluded here on top of the
   // Timeline exclusions, leaving Assignee/Effort/etc. as the remaining
   // optional property lines a person can toggle via Properties.
-  const TASK_CALENDAR_EXCLUDED_KEYS = ["name", "project", "start_date", "current_due_date"];
+  // time_spent_hours is hard-excluded (not just hidden-by-default) even
+  // though it's alwaysVisible for Table -- that flag exists so the
+  // computed rollup can't be hidden from the Table column list, but it
+  // also means normal hiddenColumns toggling can't suppress it, and its
+  // render includes a live Start/Stop timer button that has no business
+  // being clickable on a small calendar card.
+  const TASK_CALENDAR_EXCLUDED_KEYS = ["name", "project", "start_date", "current_due_date", "time_spent_hours"];
   const taskCalendarPropertyColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
     (c) => !TASK_CALENDAR_EXCLUDED_KEYS.includes(c.key)
   );
@@ -2646,7 +2652,10 @@ export default function Projects() {
           // treatment as Name -- not a togglable chip the way it is on
           // Timeline (hidden-by-default there, but still a normal chip).
           ...(taskViews.activeView.viewType === "calendar"
-            ? { project: { reason: "Always shown as its own line under the task title", forcedVisible: true } }
+            ? {
+                project: { reason: "Always shown as its own line under the task title", forcedVisible: true },
+                time_spent_hours: { reason: "Not shown on Calendar cards -- its Start/Stop timer control doesn't belong on a small card", forcedVisible: false },
+              }
             : {}),
         }
       : undefined;
