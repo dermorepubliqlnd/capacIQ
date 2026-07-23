@@ -1262,83 +1262,46 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   color: var(--muted);
   text-align: left;
 }
-/* Wraps one week's multi-day span overlay + its per-day cell row.
-   position:relative so the overlay (position:absolute) lays out on top
-   of, not inline with, the day cells below it. */
+/* Wraps one week's multi-day span block + its per-day cell row, stacked
+   in plain normal document flow (no position:absolute/fixed heights --
+   see .calendar-week-spans below for why). */
 .calendar-week-row-wrap {
   position: relative;
 }
 /* Multi-day spanning bars for Start-and-Due mode rows whose Start/Due
    differ by more than a day (see CalendarView's `spans` + `packWeekSpans`)
-   -- a continuous colored bar across every day between them, clipped to
-   this week row, per Sandra: "the block should be continuous" instead of
-   two disconnected single-day cards. Still view-only -- no drag/resize,
-   see the earlier note below about that being explicitly walked back.
+   -- a continuous card across every day between them, clipped to this
+   week row, per Sandra: "the block should be continuous" instead of two
+   disconnected single-day cards. Still view-only -- no drag/resize, see
+   the earlier note below about that being explicitly walked back.
+   Renders in normal flow (not position:absolute) directly above
+   .calendar-week-row-cards -- an earlier version used an absolutely
+   positioned overlay with a hand-computed pixel height, which (a) forced
+   bars down to a cramped one-line height and (b) caused a margin-collapse
+   bug where the day cells below rendered UNDER the overlay instead of
+   below it. Normal flow means each lane's height is just however tall its
+   tallest card is, with zero manual height math and nothing to collapse.
    Grid matches the 7 flex columns in .calendar-week-row-cards immediately
    below it so bars land on the correct day columns. */
 .calendar-week-spans {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  pointer-events: none;
+  row-gap: 4px;
+  margin-bottom: 4px;
 }
+/* Reuses .calendar-card's full stacked layout (parent/title/project/each
+   property/date, same as a single-day card) -- Sandra explicitly rejected
+   the earlier one-line bar ("i don't want the one line height. please
+   follow this", pointing at a single-day card screenshot) in favor of
+   showing exactly the same content, just spanning multiple day columns
+   instead of sitting in one. Only the grid placement + which corners get
+   rounded (true start/due edge only, square where the bar continues into
+   an adjacent week row) come from CalendarView's inline style; everything
+   else -- padding, font sizes, line treatment -- is shared with
+   .calendar-card so the two forms of card look identical in every way
+   except width. */
 .calendar-span-bar {
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 16px;
-  margin: 1px 2px;
-  padding: 0 6px;
-  font-size: 10px;
-  font-weight: 600;
-  overflow: hidden;
-  white-space: nowrap;
-  box-sizing: border-box;
-}
-.calendar-span-bar-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   min-width: 0;
-  flex: 0 1 auto;
-}
-/* Inline stand-in for the card's stacked Project/property lines -- same
-   data, same visibility rules (propertyColumns is already filtered to
-   whatever's checked "visible" in the Properties popover by the caller),
-   just laid out as one truncating line instead of several, so the bar's
-   height doesn't grow. */
-.calendar-span-bar-info {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 12px;
-  flex: 1 1 auto;
-  overflow: hidden;
-  white-space: nowrap;
-  font-size: 9.5px;
-  font-weight: 400;
-  opacity: 0.8;
-}
-.calendar-span-bar-info-item {
-  display: inline-flex;
-  align-items: center;
-  overflow: hidden;
-  white-space: nowrap;
-  flex: 0 1 auto;
-}
-.calendar-span-bar-info-item:not(:first-child)::before {
-  content: "\00b7";
-  margin-right: 5px;
-  opacity: 0.7;
-}
-.calendar-span-bar-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
 }
 /* One week per row, plain flex (not absolute-positioned) -- each day is
    its own static cell. Single-date (or same-day) rows still render as

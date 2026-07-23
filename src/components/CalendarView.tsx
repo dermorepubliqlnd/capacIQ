@@ -64,9 +64,6 @@ interface CalendarViewProps<T> {
 
 const MAX_VISIBLE_PER_DAY = 3;
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-// Height (bar + vertical margin) reserved per lane in the multi-day-span
-// overlay above each week row -- see `packWeekSpans` below.
-const SPAN_LANE_HEIGHT = 18;
 
 function parseLocalDate(dateStr: string): Date {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
@@ -295,64 +292,61 @@ export default function CalendarView<T>({
       ) : (
         weeks.map((weekDates, wi) => {
           const { placements, laneCount } = weekSpanData[wi];
-          const spansHeight = laneCount > 0 ? laneCount * SPAN_LANE_HEIGHT : 0;
           const maxCount = Math.max(...weekDates.map((d) => itemsForDay(d).length));
           const visibleCount = Math.min(maxCount, MAX_VISIBLE_PER_DAY);
           return (
             <div key={wi} className="calendar-week-row-wrap">
               {laneCount > 0 && (
-                <div className="calendar-week-spans" style={{ height: spansHeight }}>
+                // Normal document flow now (not position:absolute) -- Sandra
+                // rejected the thin one-line bar this shipped as first
+                // ("i don't want the one line height. please follow this",
+                // pointing at a single-day card screenshot): span bars now
+                // render the exact same stacked content a single-day card
+                // does (parent/title/project/each property/date), just
+                // spanning multiple grid columns instead of one. Letting
+                // this sit in normal flow (auto height) instead of an
+                // absolutely-positioned fixed-height overlay means the day
+                // cells below it just follow naturally -- no manual height
+                // math, and no repeat of the earlier margin-collapse bug
+                // that came from faking this with position:absolute +
+                // marginTop/paddingTop.
+                <div className="calendar-week-spans">
                   {placements.map((p) => {
                     const tone = TONE_STYLES[getTone?.(p.row) ?? "neutral"] ?? TONE_STYLES.neutral;
+                    const parentLabel = getParentLabel?.(p.row);
+                    const projectLabel = getProjectLabel?.(p.row);
                     return (
                       <div
                         key={`${rowKey(p.row)}_span`}
-                        className="calendar-span-bar"
-                        title={getTooltip?.(p.row) ?? `${formatShort(p.start)} → ${formatShort(p.due)}`}
+                        className="calendar-card calendar-span-bar"
+                        title={getTooltip?.(p.row)}
                         style={{
                           gridColumn: `${p.colStart + 1} / ${p.colEnd + 2}`,
                           gridRow: p.lane + 1,
                           background: tone.bg,
-                          color: tone.text,
-                          borderLeft: p.isStartEdge ? `3px solid ${tone.text}` : "none",
-                          borderTopLeftRadius: p.isStartEdge ? 4 : 0,
-                          borderBottomLeftRadius: p.isStartEdge ? 4 : 0,
-                          borderTopRightRadius: p.isDueEdge ? 4 : 0,
-                          borderBottomRightRadius: p.isDueEdge ? 4 : 0,
+                          borderLeftColor: p.isStartEdge ? tone.text : "transparent",
+                          borderTopLeftRadius: p.isStartEdge ? undefined : 0,
+                          borderBottomLeftRadius: p.isStartEdge ? undefined : 0,
+                          borderTopRightRadius: p.isDueEdge ? undefined : 0,
+                          borderBottomRightRadius: p.isDueEdge ? undefined : 0,
                         }}
                       >
-                        <span className="calendar-span-bar-title">{renderLabel(p.row)}</span>
-                        {/* Same properties a single-day card shows (Project
-                            label + whichever propertyColumns are toggled
-                            visible), just laid out inline instead of
-                            stacked -- Sandra: bars were showing the title
-                            only, missing Project/Owner/Priority/etc that
-                            are checked "visible" in the Properties popover.
-                            Kept on one line (no bar-height increase, per
-                            her call) -- overflow just clips instead of
-                            wrapping. */}
-                        {(getProjectLabel?.(p.row) || (propertyColumns && propertyColumns.length > 0)) && (
-                          <span className="calendar-span-bar-info">
-                            {getProjectLabel?.(p.row) && <span className="calendar-span-bar-info-item">{getProjectLabel(p.row)}</span>}
-                            {propertyColumns?.map((c) => (
-                              <span key={c.key} className="calendar-span-bar-info-item">{c.render(p.row)}</span>
-                            ))}
-                          </span>
-                        )}
-                        {titleBadge && <span className="calendar-span-bar-badge">{titleBadge(p.row)}</span>}
+                        {parentLabel && <div className="calendar-card-parent">{parentLabel}</div>}
+                        <div className="calendar-card-title-row">
+                          <div className="calendar-card-title">{renderLabel(p.row)}</div>
+                          {titleBadge && <div className="calendar-card-title-badge">{titleBadge(p.row)}</div>}
+                        </div>
+                        {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
+                        {propertyColumns?.map((c) => (
+                          <div key={c.key} className="calendar-card-prop">{c.render(p.row)}</div>
+                        ))}
+                        <div className="calendar-card-dates" style={{ color: tone.text }}>{`${formatShort(p.start)} → ${formatShort(p.due)}`}</div>
                       </div>
                     );
                   })}
                 </div>
               )}
-              {/* paddingTop, not marginTop -- a top margin on this flex
-                  container can collapse straight through the
-                  position:relative wrapper above (which has no border/
-                  padding/BFC of its own), landing the day cells back at
-                  the wrapper's own top edge and overlapping the span-bar
-                  overlay instead of sitting below it. Padding never
-                  collapses, so it reliably reserves the space. */}
-              <div className="calendar-week-row-cards" style={{ paddingTop: spansHeight }}>
+              <div className="calendar-week-row-cards">
                 {weekDates.map((d, di) => {
                   const inMonth = d.getMonth() === month.getMonth();
                   const isToday = sameDay(d, today);
