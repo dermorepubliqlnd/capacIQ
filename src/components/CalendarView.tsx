@@ -304,56 +304,6 @@ export default function CalendarView<T>({
           const rowMinHeight = visibleCount > 0 ? 26 + visibleCount * 58 : 30;
           return (
             <div key={wi} className="calendar-week-row-wrap">
-              {laneCount > 0 && (
-                // Normal document flow now (not position:absolute) -- Sandra
-                // rejected the thin one-line bar this shipped as first
-                // ("i don't want the one line height. please follow this",
-                // pointing at a single-day card screenshot): span bars now
-                // render the exact same stacked content a single-day card
-                // does (parent/title/project/each property/date), just
-                // spanning multiple grid columns instead of one. Letting
-                // this sit in normal flow (auto height) instead of an
-                // absolutely-positioned fixed-height overlay means the day
-                // cells below it just follow naturally -- no manual height
-                // math, and no repeat of the earlier margin-collapse bug
-                // that came from faking this with position:absolute +
-                // marginTop/paddingTop.
-                <div className="calendar-week-spans">
-                  {placements.map((p) => {
-                    const tone = TONE_STYLES[getTone?.(p.row) ?? "neutral"] ?? TONE_STYLES.neutral;
-                    const parentLabel = getParentLabel?.(p.row);
-                    const projectLabel = getProjectLabel?.(p.row);
-                    return (
-                      <div
-                        key={`${rowKey(p.row)}_span`}
-                        className="calendar-card calendar-span-bar"
-                        title={getTooltip?.(p.row)}
-                        style={{
-                          gridColumn: `${p.colStart + 1} / ${p.colEnd + 2}`,
-                          gridRow: p.lane + 1,
-                          background: tone.bg,
-                          borderLeftColor: p.isStartEdge ? tone.text : "transparent",
-                          borderTopLeftRadius: p.isStartEdge ? undefined : 0,
-                          borderBottomLeftRadius: p.isStartEdge ? undefined : 0,
-                          borderTopRightRadius: p.isDueEdge ? undefined : 0,
-                          borderBottomRightRadius: p.isDueEdge ? undefined : 0,
-                        }}
-                      >
-                        {parentLabel && <div className="calendar-card-parent">{parentLabel}</div>}
-                        <div className="calendar-card-title-row">
-                          <div className="calendar-card-title">{renderLabel(p.row)}</div>
-                          {titleBadge && <div className="calendar-card-title-badge">{titleBadge(p.row)}</div>}
-                        </div>
-                        {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
-                        {propertyColumns?.map((c) => (
-                          <div key={c.key} className="calendar-card-prop">{c.render(p.row)}</div>
-                        ))}
-                        <div className="calendar-card-dates" style={{ color: tone.text }}>{`${formatShort(p.start)} → ${formatShort(p.due)}`}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
               <div className="calendar-week-row-cards">
                 {weekDates.map((d, di) => {
                   const inMonth = d.getMonth() === month.getMonth();
@@ -399,6 +349,56 @@ export default function CalendarView<T>({
                   );
                 })}
               </div>
+              {laneCount > 0 && (
+                // Normal document flow (not position:absolute) -- span
+                // bars render the exact same stacked content a single-day
+                // card does (parent/title/project/each property/date),
+                // just spanning multiple grid columns instead of one.
+                // Rendered AFTER .calendar-week-row-cards (not before) so
+                // the plain day-number row sits on top and the task
+                // content -- single-day cards above, multi-day spans here
+                // -- follows below it, per Sandra: "the task should be
+                // under the date in the cell" (matching Notion's own
+                // per-cell day-number-then-content order). Letting this
+                // sit in normal flow (auto height) means each lane's
+                // height is just however tall its tallest card is, no
+                // manual height math and nothing to margin-collapse.
+                <div className="calendar-week-spans">
+                  {placements.map((p) => {
+                    const tone = TONE_STYLES[getTone?.(p.row) ?? "neutral"] ?? TONE_STYLES.neutral;
+                    const parentLabel = getParentLabel?.(p.row);
+                    const projectLabel = getProjectLabel?.(p.row);
+                    return (
+                      <div
+                        key={`${rowKey(p.row)}_span`}
+                        className="calendar-card calendar-span-bar"
+                        title={getTooltip?.(p.row)}
+                        style={{
+                          gridColumn: `${p.colStart + 1} / ${p.colEnd + 2}`,
+                          gridRow: p.lane + 1,
+                          background: tone.bg,
+                          borderLeftColor: p.isStartEdge ? tone.text : "transparent",
+                          borderTopLeftRadius: p.isStartEdge ? undefined : 0,
+                          borderBottomLeftRadius: p.isStartEdge ? undefined : 0,
+                          borderTopRightRadius: p.isDueEdge ? undefined : 0,
+                          borderBottomRightRadius: p.isDueEdge ? undefined : 0,
+                        }}
+                      >
+                        {parentLabel && <div className="calendar-card-parent">{parentLabel}</div>}
+                        <div className="calendar-card-title-row">
+                          <div className="calendar-card-title">{renderLabel(p.row)}</div>
+                          {titleBadge && <div className="calendar-card-title-badge">{titleBadge(p.row)}</div>}
+                        </div>
+                        {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
+                        {propertyColumns?.map((c) => (
+                          <div key={c.key} className="calendar-card-prop">{c.render(p.row)}</div>
+                        ))}
+                        <div className="calendar-card-dates" style={{ color: tone.text }}>{`${formatShort(p.start)} → ${formatShort(p.due)}`}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })

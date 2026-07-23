@@ -1274,20 +1274,23 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
    week row, per Sandra: "the block should be continuous" instead of two
    disconnected single-day cards. Still view-only -- no drag/resize, see
    the earlier note below about that being explicitly walked back.
-   Renders in normal flow (not position:absolute) directly above
-   .calendar-week-row-cards -- an earlier version used an absolutely
-   positioned overlay with a hand-computed pixel height, which (a) forced
-   bars down to a cramped one-line height and (b) caused a margin-collapse
-   bug where the day cells below rendered UNDER the overlay instead of
-   below it. Normal flow means each lane's height is just however tall its
-   tallest card is, with zero manual height math and nothing to collapse.
-   Grid matches the 7 flex columns in .calendar-week-row-cards immediately
-   below it so bars land on the correct day columns. */
+   Renders in normal flow (not position:absolute) directly BELOW
+   .calendar-week-row-cards (the plain day-number + single-day-card row)
+   -- Sandra: "the task should be under the date in the cell", matching
+   Notion's own day-number-then-content order. An earlier version put this
+   block first (above the day numbers) using an absolutely positioned
+   overlay with a hand-computed pixel height, which (a) forced bars down
+   to a cramped one-line height and (b) caused a margin-collapse bug where
+   the day cells rendered UNDER the overlay instead of below it. Normal
+   flow means each lane's height is just however tall its tallest card is,
+   with zero manual height math and nothing to collapse. Grid matches the
+   7 flex columns in .calendar-week-row-cards above it so bars land on the
+   correct day columns. */
 .calendar-week-spans {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   row-gap: 4px;
-  margin-bottom: 4px;
+  margin-top: 4px;
 }
 /* Reuses .calendar-card's full stacked layout (parent/title/project/each
    property/date, same as a single-day card) -- Sandra explicitly rejected
