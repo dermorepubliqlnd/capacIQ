@@ -1317,3 +1317,85 @@ create policy task_planning_snapshots_insert on task_planning_snapshots for inse
 -- Snapshots are an immutable audit trail -- no update/delete policy is
 -- defined, so both are denied by default (RLS with no matching policy
 -- silently blocks the operation rather than erroring).
+
+-- Migration 2026-07-24e: task_dependencies (Finish-to-Start only, v1)
+--
+-- Sandra: "let's work on dependency" for the WBS page, right after
+-- confirming live that per-task independent Start dates (Round 7's own
+-- design choice) can silently overlap once a predecessor's End shifts
+-- under a different effort mode (Task 2 manually started the day after
+-- Task 1's Full Effort end, but Task 1's Conservative Effort end is two
+-- days later -- same stored Start, different real conflict per mode).
+-- Scoped deliberately narrow for v1 (all confirmed live in chat):
+-- Finish-to-Start only (no Start-to-Start etc yet); a task's own Start
+-- date STAYS a free, manually-editable field (her choice) -- a dependency
+-- only drives a soft CONFLICT WARNING in the UI (this task's Start falls
+-- before a predecessor's own End under the currently active mode), it
+-- does not lock/compute Start the way parent-task rollups do; same-project
+-- only (no cross-project dependency chains); set via a "Depends on"
+-- dropdown/picker in the WBS table (drag-linking directly on the Gantt
+-- chart deferred as its own later follow-up, not built now).
+create table if not exists task_dependencies (
+  task_id uuid not null references tasks(id) on delete cascade,
+  depends_on_task_id uuid not null references tasks(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (task_id, depends_on_task_id),
+  constraint task_dependencies_no_self_dep check (task_id <> depends_on_task_id)
+);
+alter table task_dependencies enable row level security;
+
+-- Visibility mirrors task_collaborators_select (can_see_project via the
+-- task's own project_id). Write access mirrors tasks_update's own rule
+-- (Full Access, the project's owner, or -- since either side of a
+-- dependency could be edited by either task's own assignee -- anyone who
+-- can update at least the dependent (task_id) side).
+create policy task_dependencies_select on task_dependencies for select
+  using (can_see_project((select project_id from tasks where id = task_id)));
+
+create policy task_dependencies_write on task_dependencies for all
+  using (
+    my_access_level() = 'full'
+    or exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = task_id and (pr.owner_id = my_person_id() or t.assignee_id = my_person_id())
+    )
+  )
+  with check (
+    my_access_level() = 'full'
+    or exists (
+      select 1 from tasks t join projects pr on pr.id = t.project_id
+      where t.id = task_id and (pr.owner_id = my_person_id() or t.assignee_id = my_person_id())
+    )
+  );
+
+-- delete_tasks_and_dependents predates this table -- same recurring
+-- "new FK-child table added after the centralized delete RPC was written"
+-- gotcha as extension_requests/task_effort_changes/time_entries/
+-- task_collaborators/task_planning_snapshots before it. Clear BOTH FK
+-- directions (a deleted task might be the dependent OR the predecessor).
+create or replace function delete_tasks_and_dependents(p_task_ids uuid[]) returns void
+language plpgsql security definer as $$
+begin
+  if exists (
+    select 1 from tasks t
+    left join projects pr on pr.id = t.project_id
+    where t.id = any(p_task_ids)
+      and not (
+        my_access_level() = 'full'
+        or pr.owner_id = my_person_id()
+      )
+  ) then
+    raise exception 'not authorized to delete one or more of these tasks';
+  end if;
+
+  delete from extension_requests where task_id = any(p_task_ids);
+  delete from task_effort_changes where task_id = any(p_task_ids);
+  delete from time_entries where task_id = any(p_task_ids);
+  delete from task_collaborators where task_id = any(p_task_ids);
+  delete from task_planning_snapshots where task_id = any(p_task_ids);
+  delete from task_dependencies where task_id = any(p_task_ids) or depends_on_task_id = any(p_task_ids);
+  delete from tasks where id = any(p_task_ids);
+end;
+$$;
+
+grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;

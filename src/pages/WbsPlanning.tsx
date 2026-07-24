@@ -1,6 +1,6 @@
-import { useState, useEffect, type CSSProperties } from "react";
+import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -56,6 +56,16 @@ interface AvailabilityRow {
 }
 interface HolidayRow {
   date: string;
+}
+// Task dependencies (Finish-to-Start only, v1, same-project only -- see
+// migration 2026-07-24e). A task's own Start date STAYS a free, directly
+// editable field (Sandra's explicit choice) -- a dependency only drives a
+// soft conflict WARNING in the UI when this task's own Start falls on or
+// before a predecessor's own End under the currently active mode. It does
+// NOT lock or auto-compute Start the way parent-task rollups do.
+interface DependencyRow {
+  task_id: string;
+  depends_on_task_id: string;
 }
 
 // Sandra, 2026-07-24: "this is getting complicated ... have a full and
@@ -137,6 +147,8 @@ export default function WbsPlanning() {
   // answered from this project's own tasks alone.
   const [allTasks, setAllTasks] = useState<UtilTaskRow[]>([]);
   const [allProjects, setAllProjects] = useState<UtilProjectRow[]>([]);
+  const [dependencies, setDependencies] = useState<DependencyRow[]>([]);
+  const [depPickerOpenFor, setDepPickerOpenFor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeMode, setActiveMode] = useState<Mode>("full_capacity");
   const [saving, setSaving] = useState(false);
@@ -166,7 +178,71 @@ export default function WbsPlanning() {
     setHolidays((hols as HolidayRow[]) ?? []);
     setAllTasks((allTks as UtilTaskRow[]) ?? []);
     setAllProjects((allProjs as UtilProjectRow[]) ?? []);
+
+    // Dependencies are same-project only (v1), so fetched as a follow-up
+    // query scoped to this project's own task ids, once they're known --
+    // can't be folded into the Promise.all above since it needs the task
+    // id list first.
+    const taskIds = ((tks as TaskRow[]) ?? []).map((t) => t.id);
+    if (taskIds.length) {
+      const { data: deps } = await supabase.from("task_dependencies").select("task_id,depends_on_task_id").in("task_id", taskIds);
+      setDependencies((deps as DependencyRow[]) ?? []);
+    } else {
+      setDependencies([]);
+    }
     setLoading(false);
+  }
+
+  function dependsOnIdsFor(taskId: string): string[] {
+    return dependencies.filter((d) => d.task_id === taskId).map((d) => d.depends_on_task_id);
+  }
+
+  async function addDependency(taskId: string, dependsOnId: string) {
+    // Basic guard against an immediate two-way cycle (A depends on B, which
+    // already depends on A). Longer cycles aren't checked in this v1 --
+    // acceptable given the small task counts these projects run at, but a
+    // real limitation if this ever needs to be bulletproof.
+    if (dependsOnIdsFor(dependsOnId).includes(taskId)) {
+      await alert("Can't add this -- it would create a circular dependency (that task already depends on this one).");
+      return;
+    }
+    setDependencies((prev) => [...prev, { task_id: taskId, depends_on_task_id: dependsOnId }]);
+    const { error } = await supabase.from("task_dependencies").insert({ task_id: taskId, depends_on_task_id: dependsOnId });
+    if (error) {
+      await alert(`Couldn't add dependency: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  async function removeDependency(taskId: string, dependsOnId: string) {
+    setDependencies((prev) => prev.filter((d) => !(d.task_id === taskId && d.depends_on_task_id === dependsOnId)));
+    const { error } = await supabase.from("task_dependencies").delete().eq("task_id", taskId).eq("depends_on_task_id", dependsOnId);
+    if (error) {
+      await alert(`Couldn't remove dependency: ${error.message}`);
+      loadAll();
+    }
+  }
+
+  // Conflict check for the currently active mode: this task's own Start
+  // (as scheduled under `mode`) falls on or before a predecessor's own End
+  // under that SAME mode -- i.e. the predecessor isn't actually finished
+  // yet by the time this task starts. Returns the worst-offending
+  // predecessor (latest End) so the tooltip can name it.
+  function dependencyConflict(t: TaskRow, mode: Mode): { name: string; end: string } | null {
+    const ownEntry = chainByMode[mode].get(t.id);
+    if (!ownEntry) return null;
+    let worst: { name: string; end: string } | null = null;
+    for (const depId of dependsOnIdsFor(t.id)) {
+      const depEntry = chainByMode[mode].get(depId);
+      if (!depEntry) continue;
+      if (ownEntry.start <= depEntry.end) {
+        if (!worst || depEntry.end > worst.end) {
+          const depTask = tasks.find((x) => x.id === depId);
+          worst = { name: depTask?.name ?? "a predecessor", end: depEntry.end };
+        }
+      }
+    }
+    return worst;
   }
 
   useEffect(() => {
@@ -395,8 +471,11 @@ export default function WbsPlanning() {
     const issues: string[] = [];
     const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
     const noEffort = orderedTasks.filter((t) => !t.effort);
+    const conflicted = orderedTasks.filter((t) => dependencyConflict(t, activeMode));
     if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
     if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
+    if (conflicted.length)
+      issues.push(`${conflicted.length} task(s) start on or before a dependency's own End under ${MODE_LABEL[activeMode]} -- double-check those Start dates.`);
     return issues;
   }
 
@@ -649,8 +728,10 @@ export default function WbsPlanning() {
       <p className="subtitle">
         Set each task's own Start date, Estimated hours, Effort, and Assignee below (all save immediately). End date is auto-computed from that Start
         under each mode's own flat daily rate -- Full Effort at 7.5h/day, Conservative Effort at 4h/day -- independently per task, so tasks can freely
-        overlap or run in parallel. The project's own Start date above is auto-pulled from the earliest task's Start date. Save applies the active
-        mode's End dates to every task without locking. The utilization panel below (including the Owner's PM-overhead load) updates live as you plan.
+        overlap or run in parallel. The project's own Start date above is auto-pulled from the earliest task's Start date. Set "Depends on" to flag a
+        task that should follow another -- Start stays yours to set, but a task starting on or before its dependency's own End gets a warning icon.
+        Save applies the active mode's End dates to every task without locking. The utilization panel below (including the Owner's PM-overhead load)
+        updates live as you plan.
       </p>
 
       {project.timelines_locked ? (
@@ -931,6 +1012,9 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 150 }}>
                     Assignee
                   </th>
+                  <th rowSpan={2} style={{ width: 150 }}>
+                    Depends on
+                  </th>
                   <th rowSpan={2} style={{ width: 110 }}>
                     Start
                   </th>
@@ -951,7 +1035,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={9} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={10} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -959,6 +1043,8 @@ export default function WbsPlanning() {
                 {orderedTasks.map((t) => {
                   const isParent = t.depth === 0 && hasChildren(t.id);
                   const assignee = people.find((p) => p.id === t.assignee_id);
+                  const dependsOnIds = dependsOnIdsFor(t.id);
+                  const conflict = dependencyConflict(t, activeMode);
                   return (
                     <tr key={t.id}>
                       <td>
@@ -1024,9 +1110,31 @@ export default function WbsPlanning() {
                           }}
                         />
                       </td>
+                      <td style={{ position: "relative" }}>
+                        <DependsOnPicker
+                          task={t}
+                          allTasks={orderedTasks}
+                          dependsOnIds={dependsOnIds}
+                          isOpen={depPickerOpenFor === t.id}
+                          onToggle={() => setDepPickerOpenFor((prev) => (prev === t.id ? null : t.id))}
+                          onClose={() => setDepPickerOpenFor(null)}
+                          onAdd={(depId) => addDependency(t.id, depId)}
+                          onRemove={(depId) => removeDependency(t.id, depId)}
+                        />
+                      </td>
                       <td>
-                        <span title={isParent ? "Computed from this task's own sub-tasks (earliest Start date)" : undefined}>
+                        <span
+                          title={
+                            isParent
+                              ? "Computed from this task's own sub-tasks (earliest Start date)"
+                              : conflict
+                              ? `Starts on or before "${conflict.name}" finishes (${conflict.end}) under ${MODE_LABEL[activeMode]} -- double-check this Start date.`
+                              : undefined
+                          }
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                        >
                           <InlineDate value={t.start_date} editable={!isParent} onCommit={(v) => saveTaskField(t.id, { start_date: v })} />
+                          {conflict && <AlertTriangle size={13} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
                         </span>
                       </td>
                       {renderScenarioCells(t, "full_capacity")}
@@ -1035,7 +1143,7 @@ export default function WbsPlanning() {
                   );
                 })}
                 <tr>
-                  <td colSpan={9} className="add-row-cell">
+                  <td colSpan={10} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task
@@ -1183,6 +1291,117 @@ export default function WbsPlanning() {
             <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
               Writes {MODE_LABEL[activeMode]}'s End dates onto every task. Nothing is locked -- finalize later from the Tasks page.
             </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// "Depends on" picker -- a lightweight multi-select popover, built local to
+// this file since no shared multi-select component exists yet elsewhere in
+// the app (InlineSelect is single-value only). Round 1 of task dependencies
+// (2026-07-24): Finish-to-Start only, same-project only, set via this
+// dropdown -- drag-linking directly on the Gantt chart is a deferred
+// follow-up, not built here. Selecting a predecessor does NOT lock or
+// compute this task's own Start date; it only feeds the conflict-warning
+// check back in the parent (dependencyConflict), since Sandra chose to
+// keep Start freely editable rather than making it computed like a
+// parent-task rollup.
+function DependsOnPicker({
+  task,
+  allTasks,
+  dependsOnIds,
+  isOpen,
+  onToggle,
+  onClose,
+  onAdd,
+  onRemove,
+}: {
+  task: TaskRow & { depth: number };
+  allTasks: (TaskRow & { depth: number })[];
+  dependsOnIds: string[];
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onAdd: (depId: string) => void;
+  onRemove: (depId: string) => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const candidates = allTasks.filter((t) => t.id !== task.id);
+  const selectedNames = dependsOnIds
+    .map((id) => allTasks.find((t) => t.id === id)?.name)
+    .filter((n): n is string => !!n);
+
+  return (
+    <div ref={panelRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          width: "100%",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          padding: "3px 4px",
+          borderRadius: 4,
+          fontSize: 11.5,
+          color: selectedNames.length ? "var(--text)" : "var(--muted)",
+        }}
+        title={selectedNames.length ? selectedNames.join(", ") : "No dependencies -- click to add"}
+      >
+        <Link2 size={12} style={{ flexShrink: 0, color: "var(--muted)" }} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {selectedNames.length ? selectedNames.join(", ") : "None"}
+        </span>
+      </button>
+
+      {isOpen && (
+        <>
+          {/* Transparent click-outside-to-close backdrop, same trick used
+              elsewhere for lightweight popovers in this app rather than a
+              document-level event listener. */}
+          <div style={{ position: "fixed", inset: 0, zIndex: 20 }} onClick={onClose} />
+          <div
+            className="card"
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: 0,
+              marginTop: 2,
+              width: 240,
+              maxHeight: 220,
+              overflowY: "auto",
+              zIndex: 21,
+              padding: 6,
+              boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
+            }}
+          >
+            {candidates.length === 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", padding: 4 }}>No other tasks yet.</div>}
+            {candidates.map((c) => {
+              const checked = dependsOnIds.includes(c.id);
+              return (
+                <label
+                  key={c.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "4px 4px",
+                    fontSize: 11.5,
+                    cursor: "pointer",
+                    borderRadius: 3,
+                  }}
+                >
+                  <input type="checkbox" checked={checked} onChange={() => (checked ? onRemove(c.id) : onAdd(c.id))} />
+                  <span style={{ paddingLeft: c.depth * 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                </label>
+              );
+            })}
           </div>
         </>
       )}
