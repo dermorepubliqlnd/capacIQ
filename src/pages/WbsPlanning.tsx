@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
+import { formatDate } from "../lib/formatDate";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { standardScenario, fullCapacityScenario } from "../lib/taskScheduling";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
@@ -46,6 +48,18 @@ interface TaskRow {
   // [[project_capaciq_wbs_planning]] Round 11 for the live bug this fixes.
   start_date_full: string | null;
   start_date_standard: string | null;
+  // True while this mode's Start is still "on auto-pilot" -- i.e. still
+  // tracking its dependencies' own End dates live, rather than having been
+  // deliberately typed by hand. Set true whenever a dependency is added
+  // (or a task has no dependencies at all, in which case it's simply
+  // unused), and flipped to false the moment the user directly edits that
+  // mode's Start date themselves. See the sync effect below (migration
+  // 2026-07-24g) -- added because Sandra found that extending a
+  // predecessor's Estimated hours moved ITS OWN End date but did nothing
+  // to a dependent task's already-set Start, leaving only the warning icon
+  // and a manual untick/retick-the-dependency workaround.
+  start_full_auto: boolean;
+  start_standard_auto: boolean;
   current_due_date: string;
   estimated_hours: number | null;
   effort: string | null;
@@ -172,7 +186,7 @@ export default function WbsPlanning() {
       supabase
         .from("tasks")
         .select(
-          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,current_due_date,estimated_hours,effort,is_archived,sort_order"
+          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,current_due_date,estimated_hours,effort,is_archived,sort_order"
         )
         .eq("project_id", projectId)
         .eq("is_archived", false)
@@ -256,9 +270,15 @@ export default function WbsPlanning() {
     const allDeps = [...dependsOnIdsFor(taskId), dependsOnId];
     const patch: Partial<TaskRow> = {};
     const suggestedFull = suggestedStartFor(allDeps, "full_capacity");
-    if (suggestedFull) patch.start_date_full = suggestedFull;
+    if (suggestedFull) {
+      patch.start_date_full = suggestedFull;
+      patch.start_full_auto = true; // fresh dependency -- start tracking it live again
+    }
     const suggestedStandard = suggestedStartFor(allDeps, "standard");
-    if (suggestedStandard) patch.start_date_standard = suggestedStandard;
+    if (suggestedStandard) {
+      patch.start_date_standard = suggestedStandard;
+      patch.start_standard_auto = true;
+    }
     if (Object.keys(patch).length) saveTaskField(taskId, patch);
   }
 
@@ -374,6 +394,41 @@ export default function WbsPlanning() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
+  // Round 12 (Sandra): "when i change the est hours for a task ... the end
+  // date of that task has moved, but the dependency date did not move
+  // though a warning shown. Workaround for now was to manually tick and
+  // untick the task dependency." Round 10/11's auto-move only ever fired
+  // ONCE, at the moment a dependency was added -- editing the predecessor
+  // afterward (more hours, a different Effort, its own Start moved) changed
+  // ITS OWN End but never re-touched the dependent task's already-set
+  // Start. Fixed by keeping each mode's Start "on auto-pilot"
+  // (`start_full_auto`/`start_standard_auto`, migration 2026-07-24g) until
+  // the user directly edits that field themselves (see `renderModeCells`'
+  // onCommit below, which flips the flag off) -- while on auto-pilot, this
+  // effect keeps re-deriving the suggested Start from the live chain (which
+  // already recomputes on every render from current Est. hrs/Effort/Start)
+  // and re-saves it the moment it drifts, no manual untick/retick needed
+  // anymore. A task the user has manually overridden is left alone --
+  // `dependencyConflict`'s existing warning icon is still the only signal
+  // for that case, exactly as Sandra originally asked for.
+  useEffect(() => {
+    for (const t of tasks) {
+      const depIds = dependsOnIdsFor(t.id);
+      if (!depIds.length) continue;
+      for (const mode of MODES) {
+        const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
+        const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
+        if (t[autoField] === false) continue; // manually overridden -- leave it, warning icon covers this
+        const suggested = suggestedStartFor(depIds, mode);
+        const current = t[startField] ? (t[startField] as string).slice(0, 10) : null;
+        if (suggested && suggested !== current) {
+          saveTaskField(t.id, { [startField]: suggested } as Partial<TaskRow>);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, dependencies]);
+
   function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
     let d = addDays(parseLocalDate(dateStr), 1);
     while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
@@ -480,6 +535,8 @@ export default function WbsPlanning() {
       start_date: defaultStartFull, // legacy single field -- convenience placeholder for other pages until Save
       start_date_full: defaultStartFull,
       start_date_standard: defaultStartStandard,
+      start_full_auto: true,
+      start_standard_auto: true,
       original_due_date: defaultDue,
       current_due_date: defaultDue,
       sort_order: Date.now(),
@@ -509,6 +566,8 @@ export default function WbsPlanning() {
       start_date: defaultStartFull,
       start_date_full: defaultStartFull,
       start_date_standard: defaultStartStandard,
+      start_full_auto: true,
+      start_standard_auto: true,
       original_due_date: parent.current_due_date,
       current_due_date: parent.current_due_date,
       sort_order: Date.now(),
@@ -704,6 +763,7 @@ export default function WbsPlanning() {
   // per-mode columns this cell reads/writes.
   function renderModeCells(t: TaskRow & { depth: number }, mode: Mode, isParent: boolean) {
     const field = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
+    const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
     const entry = chainByMode[mode].get(t.id);
     const conflict = dependencyConflict(t, mode);
     const style = { fontSize: 12, ...modeColStyle(mode) };
@@ -715,16 +775,27 @@ export default function WbsPlanning() {
               isParent
                 ? `Computed from this task's own sub-tasks (earliest Start under ${MODE_LABEL[mode]})`
                 : conflict
-                ? `Starts on or before "${conflict.name}" finishes (${conflict.end}) under ${MODE_LABEL[mode]} -- double-check this Start date.`
+                ? `Starts on or before "${conflict.name}" finishes (${formatDate(conflict.end)}) under ${MODE_LABEL[mode]} -- double-check this Start date.`
                 : undefined
             }
             style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
           >
-            <InlineDate value={t[field]} editable={!isParent} onCommit={(v) => saveTaskField(t.id, { [field]: v } as Partial<TaskRow>)} />
+            <InlineDate
+              value={t[field]}
+              editable={!isParent}
+              onCommit={(v) =>
+                // A manual edit here means this Start is no longer "on
+                // auto-pilot" for this mode -- stop the sync effect above
+                // from re-deriving it from the dependency chain from now
+                // on. Re-adding/re-selecting the same dependency (or a new
+                // one) turns auto-pilot back on, same as before (Round 10).
+                saveTaskField(t.id, { [field]: v, [autoField]: false } as Partial<TaskRow>)
+              }
+            />
             {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
           </span>
         </td>
-        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.end : "—"}</td>
+        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? formatDate(entry.end) : "—"}</td>
         <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.durationDays : "—"}</td>
       </>
     );
@@ -988,11 +1059,11 @@ export default function WbsPlanning() {
                     </div>
                     <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
                       <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Start</div>
-                      <div>{s.start ?? "—"}</div>
+                      <div>{formatDate(s.start)}</div>
                     </div>
                     <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
                       <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>End</div>
-                      <div>{s.end ?? "—"}</div>
+                      <div>{formatDate(s.end)}</div>
                     </div>
                     <div style={{ width: 100, fontSize: 11.5, flexShrink: 0 }}>
                       <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Duration</div>
@@ -1038,7 +1109,7 @@ export default function WbsPlanning() {
                   <ChevronLeft size={14} />
                 </button>
                 <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>
-                  {toISO(utilDays[0])} – {toISO(utilDays[utilDays.length - 1])}
+                  {formatDate(toISO(utilDays[0]))} – {formatDate(toISO(utilDays[utilDays.length - 1]))}
                 </span>
                 <button className="planner-nav-btn" title="Next 4 weeks" onClick={() => setUtilWindowOffset((o) => o + 1)}>
                   <ChevronRight size={14} />
@@ -1358,7 +1429,7 @@ export default function WbsPlanning() {
                         })}
                         {entry ? (
                           <div
-                            title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${entry.start} → ${entry.end}`}
+                            title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${formatDate(entry.start)} → ${formatDate(entry.end)}`}
                             style={{
                               position: "absolute",
                               left: ganttDayOffsetPx(entry.start),
@@ -1413,6 +1484,21 @@ export default function WbsPlanning() {
 // check back in the parent (dependencyConflict), since Sandra chose to
 // keep Start freely editable rather than making it computed like a
 // parent-task rollup.
+//
+// Round 12 fix (Sandra: "the dependency list is hidden. Unable to see the
+// rest of the list. Scroll is not working either"): the popover used to be
+// `position: absolute` inside this cell's own `<td>`, which sits inside the
+// table's `overflowX: auto` wrapper card -- any ancestor with `overflow`
+// set clips an absolutely-positioned descendant to its own box once the
+// popover would otherwise extend past it (same class of bug already
+// documented once before for a different table, see
+// [[feedback_table_cell_popover_clipping]]). Fixed by portaling the
+// popover straight to `document.body` with `position: fixed`, positioned
+// from the trigger button's own `getBoundingClientRect()` at open time --
+// nothing about it lives inside the table's DOM subtree anymore, so no
+// ancestor's overflow/clipping rule can touch it. Also flips to render
+// ABOVE the button instead of below when there isn't enough room left in
+// the viewport underneath it.
 function DependsOnPicker({
   task,
   allTasks,
@@ -1432,17 +1518,36 @@ function DependsOnPicker({
   onAdd: (depId: string) => void;
   onRemove: (depId: string) => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null);
   const candidates = allTasks.filter((t) => t.id !== task.id);
   const selectedNames = dependsOnIds
     .map((id) => allTasks.find((t) => t.id === id)?.name)
     .filter((n): n is string => !!n);
 
+  const PANEL_WIDTH = 240;
+  const PANEL_MAX_HEIGHT = 260;
+
+  function handleToggle() {
+    if (!isOpen && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      const roomBelow = window.innerHeight - rect.bottom;
+      const openUp = roomBelow < PANEL_MAX_HEIGHT && rect.top > roomBelow;
+      setPos({
+        top: openUp ? rect.top - 4 : rect.bottom + 4,
+        left: Math.min(rect.left, window.innerWidth - PANEL_WIDTH - 8),
+        openUp,
+      });
+    }
+    onToggle();
+  }
+
   return (
-    <div ref={panelRef} style={{ position: "relative" }}>
+    <div style={{ position: "relative" }}>
       <button
+        ref={btnRef}
         type="button"
-        onClick={onToggle}
+        onClick={handleToggle}
         style={{
           display: "flex",
           alignItems: "center",
@@ -1465,51 +1570,54 @@ function DependsOnPicker({
         </span>
       </button>
 
-      {isOpen && (
-        <>
-          {/* Transparent click-outside-to-close backdrop, same trick used
-              elsewhere for lightweight popovers in this app rather than a
-              document-level event listener. */}
-          <div style={{ position: "fixed", inset: 0, zIndex: 20 }} onClick={onClose} />
-          <div
-            className="card"
-            style={{
-              position: "absolute",
-              top: "100%",
-              left: 0,
-              marginTop: 2,
-              width: 240,
-              maxHeight: 220,
-              overflowY: "auto",
-              zIndex: 21,
-              padding: 6,
-              boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
-            }}
-          >
-            {candidates.length === 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", padding: 4 }}>No other tasks yet.</div>}
-            {candidates.map((c) => {
-              const checked = dependsOnIds.includes(c.id);
-              return (
-                <label
-                  key={c.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "4px 4px",
-                    fontSize: 11.5,
-                    cursor: "pointer",
-                    borderRadius: 3,
-                  }}
-                >
-                  <input type="checkbox" checked={checked} onChange={() => (checked ? onRemove(c.id) : onAdd(c.id))} />
-                  <span style={{ paddingLeft: c.depth * 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
-                </label>
-              );
-            })}
-          </div>
-        </>
-      )}
+      {isOpen &&
+        pos &&
+        createPortal(
+          <>
+            {/* Transparent click-outside-to-close backdrop, same trick used
+                elsewhere for lightweight popovers in this app rather than a
+                document-level event listener. */}
+            <div style={{ position: "fixed", inset: 0, zIndex: 1000 }} onClick={onClose} />
+            <div
+              className="card"
+              style={{
+                position: "fixed",
+                top: pos.openUp ? undefined : pos.top,
+                bottom: pos.openUp ? window.innerHeight - pos.top : undefined,
+                left: pos.left,
+                width: PANEL_WIDTH,
+                maxHeight: PANEL_MAX_HEIGHT,
+                overflowY: "auto",
+                zIndex: 1001,
+                padding: 6,
+                boxShadow: "0 4px 14px rgba(0,0,0,0.18)",
+              }}
+            >
+              {candidates.length === 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", padding: 4 }}>No other tasks yet.</div>}
+              {candidates.map((c) => {
+                const checked = dependsOnIds.includes(c.id);
+                return (
+                  <label
+                    key={c.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 4px",
+                      fontSize: 11.5,
+                      cursor: "pointer",
+                      borderRadius: 3,
+                    }}
+                  >
+                    <input type="checkbox" checked={checked} onChange={() => (checked ? onRemove(c.id) : onAdd(c.id))} />
+                    <span style={{ paddingLeft: c.depth * 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </>,
+          document.body
+        )}
     </div>
   );
 }

@@ -1426,3 +1426,14 @@ alter table tasks add column if not exists start_date_full date;
 alter table tasks add column if not exists start_date_standard date;
 update tasks set start_date_full = start_date where start_date_full is null;
 update tasks set start_date_standard = start_date where start_date_standard is null;
+
+-- Migration 2026-07-24g: per-mode Start "auto-pilot" flags (Round 12).
+-- Sandra: extending a predecessor's Est. hrs moved its own End date but
+-- left a dependent task's already-set Start untouched (only the warning
+-- icon changed) -- the only workaround was manually untick/retick the
+-- dependency. These flags let WbsPlanning.tsx keep tracking a dependency's
+-- own End live (via a sync effect) until the user directly types a Start
+-- themselves, at which point that mode's flag flips to false and the value
+-- is left alone (the existing conflict warning still covers that case).
+alter table tasks add column if not exists start_full_auto boolean not null default true;
+alter table tasks add column if not exists start_standard_auto boolean not null default true;
