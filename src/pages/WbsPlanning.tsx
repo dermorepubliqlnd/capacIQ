@@ -6,7 +6,7 @@ import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
-import { standardScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
+import { standardScenario, fullCapacityScenario } from "../lib/taskScheduling";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
 import {
   dailyPointsFor,
@@ -80,24 +80,43 @@ interface ChainEntry {
 const UTIL_WINDOW_DAYS = 28; // 4 weeks, daily view
 
 // WBS planning page -- see project_capaciq_wbs_planning memory for the
-// full design history across many rounds. Current shape (2026-07-24):
-// - Per task: Estimated hours, Task name, Effort, and Assignee are all
-//   directly editable and autosave immediately, same convention as the
-//   rest of the app.
-// - Start/End dates are NOT typed per task -- they're computed by
-//   chaining from the PROJECT's own Start date, independently for Full
-//   Effort (packed to use leftover same-day capacity) and Conservative
-//   Effort (one task at a time, flat 4h/day rate).
-// - "Save" writes ONE active mode's computed dates onto every task (still
-//   fully editable afterward) and snapshots both modes' numbers into
-//   task_planning_snapshots for reporting. Locking timelines is only ever
-//   done from the Tasks page's own Lock button.
-// - A Utilization snapshot panel (points/tier-based, same formula as the
-//   Utilization page) shows a live "what happens if I assign this"
-//   preview: it factors in every OTHER real task across the whole app for
-//   each person, but for tasks in THIS project it uses whatever the
-//   active mode currently computes for start/due -- so picking an
-//   assignee + effort updates the heat-map instantly, before Save.
+// full design history across many rounds. Current shape (2026-07-24,
+// round 7 -- Project Name/Owner + freely-editable per-task Start dates):
+// - Per task: Estimated hours, Task name, Effort, Assignee, and now Start
+//   date are all directly editable and autosave immediately, same
+//   convention as the rest of the app.
+// - End date is NOT typed -- it's computed from that same task's own
+//   Start date, independently per task (no shared day-capacity ledger
+//   between tasks -- Sandra confirmed this explicitly: two tasks can
+//   freely overlap/run in parallel, the utilization panel below is where
+//   over-allocation actually shows up, not a scheduling constraint here).
+//   Full Effort uses a flat 7.5h/day rate, Conservative Effort a flat
+//   4h/day rate -- both via the same `rateScenario` helper in
+//   taskScheduling.ts.
+// - A parent task's own Start/End/Est.hrs are all locked, computed from
+//   its own sub-tasks (min start / max end / hours sum) -- never typed
+//   directly, same rollup convention throughout.
+// - The project's own Start date (shown at the top, and kept in sync with
+//   `projects.start_date` for the rest of the app) is now DERIVED --
+//   auto-pulled from the earliest top-level task's own Start date --
+//   rather than being the thing tasks chain from. New tasks still default
+//   their own Start to "the day after the previous task ends" purely as a
+//   convenient starting point; it's a one-time seed, fully overridable.
+// - Project Name and Owner are also directly editable here now. Owner
+//   feeds the PM-overhead portion of the utilization heat-map below,
+//   using this project's own (derived) Start-to-End span -- so picking an
+//   Owner, or extending the schedule by adding tasks, fills in that
+//   person's PM-overhead utilization live, before Save.
+// - "Save" writes ONE active mode's computed End dates onto every task
+//   (Start dates are already live/persisted per-task) and snapshots both
+//   modes' numbers into task_planning_snapshots for reporting. Locking
+//   timelines is only ever done from the Tasks page's own Lock button.
+// - The Utilization snapshot panel (points/tier-based, same formula as
+//   the Utilization page) shows a live "what happens if I plan this"
+//   preview: every OTHER real task/project in the app counts as
+//   committed, but for THIS project it uses whatever the active mode
+//   currently computes -- so editing Start/Effort/Assignee/Owner updates
+//   the heat-map instantly, before Save.
 export default function WbsPlanning() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -154,9 +173,9 @@ export default function WbsPlanning() {
   }, [projectId]);
 
   const holidaySet = buildHolidaySet(holidays.map((h) => h.date));
-  // Anchors the whole chain -- always the project's own Start date.
-  // Falls back to today only if the project itself has no Start date yet.
-  const projectStartDate = project?.start_date ? project.start_date.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  // Fallback only -- used to seed the very first task's default Start
+  // (and the header display) before any task has its own Start date yet.
+  const fallbackStartDate = project?.start_date ? project.start_date.slice(0, 10) : new Date().toISOString().slice(0, 10);
 
   // Parent tasks first, each followed immediately by its own sub-tasks --
   // same 2-level nesting the Projects table uses elsewhere. Relies on
@@ -194,26 +213,109 @@ export default function WbsPlanning() {
     return Math.round(withEstimate.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100) / 100;
   }
 
+  // Same idea, for Start date -- a parent's own Start is locked and
+  // mirrors the EARLIEST of its direct sub-tasks' own Start dates (its
+  // End mirrors the latest, computed live in buildChain below since End
+  // isn't a stored field until Save).
+  function subtaskStartMin(parentId: string): string | null {
+    const children = tasks.filter((t) => t.parent_task_id === parentId);
+    const withStart = children.filter((t) => !!t.start_date);
+    if (withStart.length === 0) return null;
+    return withStart.reduce((min, t) => ((t.start_date as string).slice(0, 10) < min ? (t.start_date as string).slice(0, 10) : min), (withStart[0].start_date as string).slice(0, 10));
+  }
+
   useEffect(() => {
     for (const t of tasks) {
       if (t.parent_task_id) continue;
       if (!hasChildren(t.id)) continue;
       const sum = subtaskHoursSum(t.id);
-      if (sum !== t.estimated_hours) {
-        saveTaskField(t.id, { estimated_hours: sum });
-      }
+      const minStart = subtaskStartMin(t.id);
+      const patch: Partial<TaskRow> = {};
+      if (sum !== t.estimated_hours) patch.estimated_hours = sum;
+      if (minStart !== (t.start_date ? t.start_date.slice(0, 10) : null)) patch.start_date = minStart;
+      if (Object.keys(patch).length > 0) saveTaskField(t.id, patch);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
+  function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
+    let d = addDays(parseLocalDate(dateStr), 1);
+    while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
+    return toISO(d);
+  }
+
+  // Per-task, per-mode End-date calculator -- a task's own Start date
+  // (stored, freely editable) plus its Estimated hours, run through
+  // whichever mode's flat daily rate. Deliberately independent of every
+  // other task (Sandra confirmed: simpler, predictable, lets tasks
+  // genuinely overlap/parallelize -- the utilization heat-map below is
+  // where over-allocation actually shows up, not a scheduling
+  // constraint here).
+  function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
+    const hours = t.estimated_hours;
+    const start = t.start_date ? t.start_date.slice(0, 10) : null;
+    if (hours === null || hours === undefined || !start) return null;
+    const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
+    const r = scenario(hours, start, holidaySet);
+    return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+  }
+
+  // Builds the full per-mode map: leaf tasks computed directly from their
+  // own Start date; a parent task's entry is then derived as the
+  // min(start)/max(end) span across its own sub-tasks (never computed
+  // from its own Start field directly, same as Est. hrs).
+  function buildChain(mode: Mode): Map<string, ChainEntry | null> {
+    const result = new Map<string, ChainEntry | null>();
+    for (const t of orderedTasks) {
+      if (t.depth === 0 && hasChildren(t.id)) continue; // parents handled below
+      result.set(t.id, computeEntry(t, mode));
+    }
+    for (const t of orderedTasks) {
+      if (t.depth !== 0 || !hasChildren(t.id)) continue;
+      const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === t.id);
+      const entries = children.map((c) => result.get(c.id)).filter((e): e is ChainEntry => !!e);
+      if (entries.length === children.length && entries.length > 0) {
+        const start = entries.reduce((min, e) => (e.start < min ? e.start : min), entries[0].start);
+        const end = entries.reduce((max, e) => (e.end > max ? e.end : max), entries[0].end);
+        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+        result.set(t.id, { start, end, durationDays });
+      } else {
+        result.set(t.id, null);
+      }
+    }
+    return result;
+  }
+
+  const fullChain = buildChain("full_capacity");
+  const standardChain = buildChain("standard");
+  const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
+    full_capacity: fullChain,
+    standard: standardChain,
+  };
+
+  // The project's own Start date is now DERIVED -- the earliest top-level
+  // task's own Start date -- rather than driving the chain. `null` until
+  // at least one top-level task has a Start date set.
+  const topLevelStarts = orderedTasks.filter((t) => t.depth === 0 && t.start_date).map((t) => (t.start_date as string).slice(0, 10));
+  const derivedProjectStart: string | null = topLevelStarts.length ? topLevelStarts.reduce((min, d) => (d < min ? d : min)) : null;
+  const utilAnchorDate = derivedProjectStart ?? fallbackStartDate;
+
   async function addTopLevelTask() {
     if (!project) return;
     const today = new Date().toISOString().slice(0, 10);
+    const roots = orderedTasks.filter((t) => t.depth === 0);
+    let defaultStart = derivedProjectStart ?? fallbackStartDate;
+    if (roots.length) {
+      const last = roots[roots.length - 1];
+      const entry = fullChain.get(last.id) ?? standardChain.get(last.id);
+      if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
+    }
     const defaultDue = project.end_date ?? today;
     const { error } = await supabase.from("tasks").insert({
       project_id: project.id,
       name: "Untitled task",
       status: "Not Started",
+      start_date: defaultStart,
       original_due_date: defaultDue,
       current_due_date: defaultDue,
       sort_order: Date.now(),
@@ -227,11 +329,19 @@ export default function WbsPlanning() {
 
   async function addSubtask(parent: TaskRow & { depth: number }) {
     if (parent.depth > 0) return; // only 2 layers total: parent + 1 sub-task level
+    const siblings = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === parent.id);
+    let defaultStart = parent.start_date ? parent.start_date.slice(0, 10) : derivedProjectStart ?? fallbackStartDate;
+    if (siblings.length) {
+      const last = siblings[siblings.length - 1];
+      const entry = fullChain.get(last.id) ?? standardChain.get(last.id);
+      if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
+    }
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
       name: "Untitled sub-task",
       status: "Not Started",
+      start_date: defaultStart,
       original_due_date: parent.current_due_date,
       current_due_date: parent.current_due_date,
       sort_order: Date.now(),
@@ -243,152 +353,6 @@ export default function WbsPlanning() {
     loadAll();
   }
 
-  function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
-    let d = addDays(parseLocalDate(dateStr), 1);
-    while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
-    return toISO(d);
-  }
-
-  function computeEntry(t: TaskRow, start: string, mode: Mode): ChainEntry | null {
-    const hours = t.estimated_hours;
-    if (hours === null || hours === undefined) return null;
-    const r = standardScenario(hours, start, holidaySet);
-    return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
-  }
-
-  // Sequential chain -- used for Conservative Effort: the project's Start
-  // date anchors the first top-level task, each following top-level task
-  // starts the working day after the one before it ends, and a task's own
-  // sub-tasks chain the same way within that task's slot. A task with no
-  // Estimated hours can't be scheduled -- its entry is null, and nothing
-  // after it in THAT PARENT's remaining children can be placed either.
-  function buildSequentialChain(mode: Mode): Map<string, ChainEntry | null> {
-    const result = new Map<string, ChainEntry | null>();
-    let cursor = projectStartDate;
-    const roots = orderedTasks.filter((t) => t.depth === 0);
-    for (const root of roots) {
-      const children = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === root.id);
-      if (children.length > 0) {
-        let childCursor: string | null = cursor;
-        let firstStart: string | null = null;
-        let lastEnd: string | null = null;
-        for (const child of children) {
-          const entry = childCursor ? computeEntry(child, childCursor, mode) : null;
-          result.set(child.id, entry);
-          if (entry) {
-            if (!firstStart) firstStart = entry.start;
-            lastEnd = entry.end;
-            childCursor = nextWorkingDayAfter(entry.end, holidaySet);
-          } else {
-            childCursor = null; // can't confidently place anything after a gap
-          }
-        }
-        if (firstStart && lastEnd) {
-          const durationDays = workingDaysBetween(parseLocalDate(firstStart), parseLocalDate(lastEnd), holidaySet).length;
-          result.set(root.id, { start: firstStart, end: lastEnd, durationDays });
-          cursor = nextWorkingDayAfter(lastEnd, holidaySet);
-        } else {
-          result.set(root.id, null);
-        }
-      } else {
-        const entry = computeEntry(root, cursor, mode);
-        result.set(root.id, entry);
-        if (entry) cursor = nextWorkingDayAfter(entry.end, holidaySet);
-      }
-    }
-    return result;
-  }
-
-  // Packed Full Effort chain: instead of every task eating a whole day of
-  // the flat 7.5h/day pool regardless of size, this keeps a running
-  // "usage" ledger of hours already spoken for on each calendar day,
-  // shared across the ENTIRE chain. A task starts on the first working
-  // day that still has spare capacity, consumes from that day (and
-  // however many more it needs), and the cursor is left sitting on the
-  // LAST day touched so the next task's search tries to fill that same
-  // day's leftover capacity first.
-  function buildPackedFullEffortChain(): Map<string, ChainEntry | null> {
-    const result = new Map<string, ChainEntry | null>();
-    const usage = new Map<string, number>(); // dateStr -> hours already used, capped at 7.5
-    let cursorDate = projectStartDate;
-
-    function isDayFull(dateStr: string): boolean {
-      return (usage.get(dateStr) ?? 0) >= FULL_CAPACITY_DAILY_HOURS - 1e-9;
-    }
-    function firstOpenDay(fromStr: string): string {
-      let d = parseLocalDate(fromStr);
-      while (!isWorkingDay(d, holidaySet) || isDayFull(toISO(d))) d = addDays(d, 1);
-      return toISO(d);
-    }
-    function consume(hours: number): ChainEntry {
-      const start = firstOpenDay(cursorDate);
-      let remaining = hours;
-      let d = parseLocalDate(start);
-      let lastDay = start;
-      let guard = 0;
-      while (remaining > 1e-9 && guard < 2000) {
-        guard++;
-        const dISO = toISO(d);
-        if (isWorkingDay(d, holidaySet)) {
-          const used = usage.get(dISO) ?? 0;
-          const free = FULL_CAPACITY_DAILY_HOURS - used;
-          if (free > 1e-9) {
-            const take = Math.min(remaining, free);
-            usage.set(dISO, used + take);
-            remaining -= take;
-            lastDay = dISO;
-          }
-        }
-        if (remaining > 1e-9) d = addDays(d, 1);
-      }
-      cursorDate = lastDay; // stay put -- next task tries this same day's leftover capacity first
-      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(lastDay), holidaySet).length;
-      const rawDays = hours > 0 ? Math.round((hours / FULL_CAPACITY_DAILY_HOURS) * 100) / 100 : 0;
-      return { start, end: lastDay, durationDays, rawDays };
-    }
-
-    const roots = orderedTasks.filter((t) => t.depth === 0);
-    for (const root of roots) {
-      const children = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === root.id);
-      if (children.length > 0) {
-        let firstStart: string | null = null;
-        let lastEnd: string | null = null;
-        for (const child of children) {
-          const hours = child.estimated_hours;
-          if (hours === null || hours === undefined) {
-            result.set(child.id, null);
-            continue; // skip -- shared pool/cursor untouched, next child still tries to schedule
-          }
-          const entry = consume(hours);
-          result.set(child.id, entry);
-          if (!firstStart) firstStart = entry.start;
-          lastEnd = entry.end;
-        }
-        if (firstStart && lastEnd) {
-          const durationDays = workingDaysBetween(parseLocalDate(firstStart), parseLocalDate(lastEnd), holidaySet).length;
-          result.set(root.id, { start: firstStart, end: lastEnd, durationDays });
-        } else {
-          result.set(root.id, null);
-        }
-      } else {
-        const hours = root.estimated_hours;
-        if (hours === null || hours === undefined) {
-          result.set(root.id, null);
-        } else {
-          result.set(root.id, consume(hours));
-        }
-      }
-    }
-    return result;
-  }
-
-  const fullChain = buildPackedFullEffortChain();
-  const standardChain = buildSequentialChain("standard");
-  const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
-    full_capacity: fullChain,
-    standard: standardChain,
-  };
-
   async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
     const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
@@ -398,19 +362,30 @@ export default function WbsPlanning() {
     }
   }
 
-  // WBS's Start date is always the PROJECT's own Start date (single
-  // source of truth) -- but it's still settable from here, writing
-  // straight through to projects.start_date rather than a separate
-  // WBS-local field.
-  async function saveProjectStartDate(value: string) {
+  async function saveProjectField(patch: Partial<ProjectRow>) {
     if (!project) return;
-    setProject((prev) => (prev ? { ...prev, start_date: value } : prev));
-    const { error } = await supabase.from("projects").update({ start_date: value }).eq("id", project.id);
+    setProject((prev) => (prev ? { ...prev, ...patch } : prev));
+    const { error } = await supabase.from("projects").update(patch).eq("id", project.id);
     if (error) {
-      await alert(`Couldn't save start date: ${error.message}`);
+      await alert(`Couldn't save: ${error.message}`);
       loadAll();
     }
   }
+
+  // Keeps `projects.start_date` in sync with the derived value, so the
+  // rest of the app (Projects table's own Start column, etc.) reflects
+  // the same "earliest task Start date" the WBS page now shows -- per
+  // Sandra: "I think this can be auto pulled from the earliest task start
+  // date." Only fires once tasks actually have Start dates; doesn't
+  // clobber a real existing project.start_date with null just because the
+  // page hasn't finished loading tasks yet.
+  useEffect(() => {
+    if (!project) return;
+    if (derivedProjectStart && derivedProjectStart !== (project.start_date ? project.start_date.slice(0, 10) : null)) {
+      saveProjectField({ start_date: derivedProjectStart });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedProjectStart]);
 
   // Soft completeness gate -- mirrors the Task name / Effort part of the
   // Projects table's own Lock policy.
@@ -432,9 +407,10 @@ export default function WbsPlanning() {
       .reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0) * 100
   ) / 100;
 
-  // Project-level projected completion under a given mode: the latest End
-  // date among every task's entry in that mode's chain.
-  function chainOverallSummary(chain: Map<string, ChainEntry | null>): { end: string | null; durationDays: number; complete: boolean } {
+  // Project-level projected span under a given mode: earliest Start /
+  // latest End among every task's entry in that mode's chain.
+  function chainOverallSummary(chain: Map<string, ChainEntry | null>): { start: string | null; end: string | null; durationDays: number; complete: boolean } {
+    let start: string | null = null;
     let end: string | null = null;
     let complete = true;
     for (const t of orderedTasks) {
@@ -443,10 +419,11 @@ export default function WbsPlanning() {
         complete = false;
         continue;
       }
+      if (!start || entry.start < start) start = entry.start;
       if (!end || entry.end > end) end = entry.end;
     }
-    const durationDays = end ? workingDaysBetween(parseLocalDate(projectStartDate), parseLocalDate(end), holidaySet).length : 0;
-    return { end, durationDays, complete };
+    const durationDays = start && end ? workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length : 0;
+    return { start, end, durationDays, complete };
   }
 
   async function saveDraft() {
@@ -456,7 +433,7 @@ export default function WbsPlanning() {
     const unresolved = orderedTasks.filter((t) => !chosenChain.get(t.id));
     if (unresolved.length) {
       await alert(
-        `Can't save ${MODE_LABEL[activeMode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add Estimated hours for every task first.`
+        `Can't save ${MODE_LABEL[activeMode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add a Start date and Estimated hours for every task first.`
       );
       return;
     }
@@ -473,7 +450,7 @@ export default function WbsPlanning() {
     const verb = MODE_LABEL[activeMode];
     if (
       !(await confirm(
-        `Save this project's timelines using ${verb}?\n\nThis writes every task's computed Start/Due date (still fully editable afterward) and records both modes for reporting. Timelines stay unlocked -- lock from the Tasks page's Timelines column when you're ready to finalize.`
+        `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting. Timelines stay unlocked -- lock from the Tasks page's Timelines column when you're ready to finalize.`
       ))
     )
       return;
@@ -527,13 +504,11 @@ export default function WbsPlanning() {
         <>
           <td style={{ ...style, color: "var(--muted)" }}>—</td>
           <td style={{ ...style, color: "var(--muted)" }}>—</td>
-          <td style={{ ...style, color: "var(--muted)" }}>—</td>
         </>
       );
     }
     return (
       <>
-        <td style={style}>{entry.start}</td>
         <td style={style}>{entry.end}</td>
         <td style={style}>{entry.durationDays}</td>
       </>
@@ -551,40 +526,45 @@ export default function WbsPlanning() {
   // count exactly as committed in the DB; THIS project's own tasks are
   // overridden with whatever the ACTIVE mode currently computes for
   // start/due (falling back to the task's real dates if it doesn't have
-  // a computed entry yet, e.g. missing Est. hrs) -- so picking an
-  // assignee or effort level (both autosave immediately into `tasks`
-  // state) or switching modes recomputes the heat-map instantly, with no
-  // Save required.
-  // Sandra, 2026-07-24: initial version of this only overrode dates on
-  // top of the separately-fetched `allTasks` snapshot -- but that
-  // snapshot is fetched once on page load and never updated after, so a
-  // freshly-picked Assignee/Effort (which autosave into local `tasks`
-  // state instantly) never showed up here; the heat-map stayed flat
-  // until a full reload. Fixed by building THIS project's rows straight
-  // from the live `tasks`/`orderedTasks` state (always current) and only
-  // pulling OTHER projects' tasks from the `allTasks` snapshot.
-  const effectiveTasksForUtil: UtilTaskRow[] = [
-    ...allTasks.filter((t) => t.project_id !== projectId),
-    ...orderedTasks.map((t) => {
-      const entry = chainByMode[activeMode].get(t.id);
-      return {
-        id: t.id,
-        project_id: t.project_id,
-        assignee_id: t.assignee_id,
-        status: t.status,
-        start_date: entry?.start ?? t.start_date,
-        current_due_date: entry?.end ?? t.current_due_date,
-        effort: t.effort,
-      };
-    }),
+  // a computed entry yet, e.g. missing Est. hrs or Start date) -- so
+  // editing a Start date, assignee, or effort level (all autosave
+  // immediately into `tasks` state) or switching modes recomputes the
+  // heat-map instantly, with no Save required.
+  const effectiveTasksForUtil: UtilTaskRow[] = allTasks.map((t) => {
+    if (t.project_id !== projectId) return t;
+    const local = orderedTasks.find((ot) => ot.id === t.id);
+    const entry = local ? chainByMode[activeMode].get(local.id) : null;
+    return entry ? { ...t, start_date: entry.start, current_due_date: entry.end } : t;
+  });
+
+  // Same live-draft idea for THIS project's own row in the PM-overhead
+  // calculation (Sandra: "when project owner has been selected and start
+  // date - fill out the heat map based on how we have set up PM
+  // overheads... update the PM overhead utilization to fill as the dates
+  // progress while building the WBS"). `allProjects` is a one-time
+  // snapshot fetched at page load -- swap this project's row for a live
+  // one built from the current draft Owner + derived Start/End span, so
+  // picking an Owner or extending the schedule (adding/replanning tasks)
+  // updates PM-overhead points immediately, same pattern as
+  // effectiveTasksForUtil above.
+  const effectiveProjectsForUtil: UtilProjectRow[] = [
+    ...allProjects.filter((p) => p.id !== projectId),
+    {
+      id: projectId ?? "",
+      owner_id: project.owner_id,
+      start_date: derivedProjectStart,
+      end_date: summaries[activeMode].end,
+    },
   ];
 
-  const utilWindowStart = addDays(parseLocalDate(projectStartDate), utilWindowOffset * UTIL_WINDOW_DAYS);
+  const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
 
   function utilAvailability(personId: string, dateStr: string): AvailabilityRow | undefined {
     return availability.find((a) => a.person_id === personId && a.date === dateStr);
   }
+
+  const owner = people.find((p) => p.id === project.owner_id);
 
   return (
     <div>
@@ -594,10 +574,10 @@ export default function WbsPlanning() {
       </Link>
       <h1>WBS Planning — {project.name}</h1>
       <p className="subtitle">
-        Set each task's Estimated hours, Effort, and Assignee below (all save immediately). The project's own Start date anchors the very first task;
-        every task after it starts right after the one before it finishes -- computed independently for Full Effort (packed to use leftover same-day
-        capacity) and Conservative Effort. Save applies the selected mode's dates to every task without locking anything. The utilization panel below
-        updates live as you plan, using whichever mode is active.
+        Set each task's own Start date, Estimated hours, Effort, and Assignee below (all save immediately). End date is auto-computed from that Start
+        under each mode's own flat daily rate -- Full Effort at 7.5h/day, Conservative Effort at 4h/day -- independently per task, so tasks can freely
+        overlap or run in parallel. The project's own Start date above is auto-pulled from the earliest task's Start date. Save applies the active
+        mode's End dates to every task without locking. The utilization panel below (including the Owner's PM-overhead load) updates live as you plan.
       </p>
 
       {project.timelines_locked ? (
@@ -607,9 +587,23 @@ export default function WbsPlanning() {
       ) : (
         <>
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
+            <InlineText value={project.name} editable onCommit={(v) => saveProjectField({ name: v })} />
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
+            <InlineSelect
+              value={owner?.name ?? ""}
+              editable
+              allowEmpty
+              emptyLabel="No owner"
+              options={people.map((p) => p.name)}
+              onCommit={(name) => {
+                const p = people.find((pp) => pp.name === name);
+                saveProjectField({ owner_id: p?.id ?? null });
+              }}
+            />
             <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
-            <InlineDate value={project.start_date} editable onCommit={(v) => saveProjectStartDate(v)} />
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>This is the project's own Start date (Projects table stays in sync) -- every task chains from here.</span>
+            <span style={{ fontSize: 12.5 }}>{derivedProjectStart ?? "Not set yet"}</span>
+            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Auto-pulled from the earliest task's own Start date below.</span>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>Save using:</span>
               <div className="timeline-segmented">
@@ -647,12 +641,14 @@ export default function WbsPlanning() {
           </div>
 
           {/* Live utilization heat-map -- same points/tier formula as the
-              Utilization page, fed this project's DRAFT plan */}
+              Utilization page, fed this project's DRAFT plan (including
+              its own draft Owner/derived-span for PM overhead) */}
           <div className="card" style={{ padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
               <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                Live preview -- updates as you assign people and set effort, using {MODE_LABEL[activeMode]}'s current schedule.
+                Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using {MODE_LABEL[activeMode]}'s current
+                schedule.
               </span>
               <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
                 <button className="planner-nav-btn" title="Previous 4 weeks" onClick={() => setUtilWindowOffset((o) => o - 1)}>
@@ -708,7 +704,7 @@ export default function WbsPlanning() {
                             </td>
                           );
                         }
-                        const points = dailyPointsFor(p.id, iso, effectiveTasksForUtil, allProjects);
+                        const points = dailyPointsFor(p.id, iso, effectiveTasksForUtil, effectiveProjectsForUtil);
                         const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
                         const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
                         const tier = tierOf(pct);
@@ -752,18 +748,19 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 150 }}>
                     Assignee
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
+                  <th rowSpan={2} style={{ width: 110 }}>
+                    Start
+                  </th>
+                  <th colSpan={2} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
                     Full Effort
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }}>
+                  <th colSpan={2} style={{ textAlign: "center", ...modeColStyle("standard") }}>
                     Conservative Effort
                   </th>
                 </tr>
                 <tr>
-                  <th style={{ width: 100, ...modeColStyle("full_capacity") }}>Start Date</th>
                   <th style={{ width: 100, ...modeColStyle("full_capacity") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("full_capacity") }}>Duration (days)</th>
-                  <th style={{ width: 100, ...modeColStyle("standard") }}>Start Date</th>
                   <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
                 </tr>
@@ -771,7 +768,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={10} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={9} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -826,13 +823,18 @@ export default function WbsPlanning() {
                           }}
                         />
                       </td>
+                      <td>
+                        <span title={isParent ? "Computed from this task's own sub-tasks (earliest Start date)" : undefined}>
+                          <InlineDate value={t.start_date} editable={!isParent} onCommit={(v) => saveTaskField(t.id, { start_date: v })} />
+                        </span>
+                      </td>
                       {renderScenarioCells(t, "full_capacity")}
                       {renderScenarioCells(t, "standard")}
                     </tr>
                   );
                 })}
                 <tr>
-                  <td colSpan={10} className="add-row-cell">
+                  <td colSpan={9} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task
@@ -848,7 +850,7 @@ export default function WbsPlanning() {
               {saving ? "Saving…" : `Save using ${MODE_LABEL[activeMode]}`}
             </button>
             <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-              Writes {MODE_LABEL[activeMode]}'s dates onto every task. Nothing is locked -- finalize later from the Tasks page.
+              Writes {MODE_LABEL[activeMode]}'s End dates onto every task. Nothing is locked -- finalize later from the Tasks page.
             </span>
           </div>
         </>
