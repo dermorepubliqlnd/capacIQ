@@ -4,7 +4,7 @@ import { ArrowLeft, Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
-import { InlineText, InlineNumber, InlineSelect } from "../components/InlineCell";
+import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { fullCapacityScenario, standardScenario, capacityBasedScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
@@ -415,6 +415,23 @@ export default function WbsPlanning() {
     }
   }
 
+  // Sandra, 2026-07-24: WBS's Start date is always the PROJECT's own Start
+  // date (single source of truth, so the chain and the Tasks page can
+  // never disagree) -- but it still needs to be settable from here rather
+  // than only from the Projects table, since defaulting silently to
+  // today's date with no way to change it was a real gap ("unable to
+  // select start date in WBS"). This writes straight through to
+  // projects.start_date -- it is NOT a separate WBS-local field.
+  async function saveProjectStartDate(value: string) {
+    if (!project) return;
+    setProject((prev) => (prev ? { ...prev, start_date: value } : prev));
+    const { error } = await supabase.from("projects").update({ start_date: value }).eq("id", project.id);
+    if (error) {
+      alert(`Couldn't save start date: ${error.message}`);
+      loadAll();
+    }
+  }
+
   // Soft completeness gate -- mirrors the Task name / Effort part of the
   // Projects table's own Lock policy (incompleteTasksFor in Projects.tsx).
   // Estimated hours (and, for Capacity-Based, a picked person) are NOT
@@ -596,8 +613,9 @@ export default function WbsPlanning() {
       ) : (
         <>
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date: {projectStartDate}</span>
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>From the project's own Start date -- every task chains from here.</span>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
+            <InlineDate value={project.start_date} editable onCommit={(v) => saveProjectStartDate(v)} />
+            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>This is the project's own Start date (Projects table stays in sync) -- every task chains from here.</span>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>Save using:</span>
               <div className="timeline-segmented">
