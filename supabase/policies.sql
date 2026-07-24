@@ -1199,11 +1199,20 @@ begin
   delete from task_effort_changes where task_id = any(p_task_ids);
   delete from time_entries where task_id = any(p_task_ids);
   delete from task_collaborators where task_id = any(p_task_ids);
+  delete from task_planning_snapshots where task_id = any(p_task_ids);
   delete from tasks where id = any(p_task_ids);
 end;
 $$;
 
 grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;
+
+-- Migration 2026-07-24: delete_tasks_and_dependents also clears
+-- task_planning_snapshots (added by the WBS planning feature the day
+-- before, migration 2026-07-23d below -- this RPC predates that table so
+-- didn't know about it yet). Same root cause as the whole migration
+-- above: task_planning_snapshots_task_id_fkey surfaced the first time a
+-- WBS-planned task with a saved snapshot was deleted from the Tasks
+-- page's bulk-delete. Applied live via the Supabase SQL editor.
 
 -- Migration 2026-07-23c: split project_status into Status + Phase
 --
