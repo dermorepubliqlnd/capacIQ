@@ -883,6 +883,8 @@ export default function WbsPlanning() {
   // wanting per-person colors at all.
   const GANTT_DAY_WIDTH = 28;
   const GANTT_NAME_COL_WIDTH = 220;
+  const GANTT_HEADER_HEIGHT = 24; // matches the date-label row's own height
+  const GANTT_ROW_HEIGHT = 26; // matches each task row's own height
   const activeSummary = summaries[activeMode];
   const ganttStartDate = activeSummary.start ? addDays(parseLocalDate(activeSummary.start), -1) : null;
   const ganttEndDate = activeSummary.end ? addDays(parseLocalDate(activeSummary.end), 1) : null;
@@ -904,6 +906,56 @@ export default function WbsPlanning() {
   function ganttBarWidthPx(startStr: string, endStr: string): number {
     const diffDays = Math.round((parseLocalDate(endStr).getTime() - parseLocalDate(startStr).getTime()) / 86400000) + 1;
     return Math.max(diffDays, 1) * GANTT_DAY_WIDTH;
+  }
+
+  // Sandra, 2026-07-24: "is it ok if we show dependencies via a light broken
+  // or thin line just to show relationship?" -- confirmed as a READ-ONLY
+  // visual only (drawn from the existing "Depends on" data, using whichever
+  // mode's chain is currently active, same as the bars themselves). This is
+  // NOT the deferred "Gantt drag-linking" feature (creating/editing a
+  // dependency by dragging between bars) -- that's a separate, bigger
+  // interaction design still not started. An elbow (horizontal-vertical-
+  // horizontal) path reads more like a real Gantt tool than a straight
+  // diagonal and avoids visually cutting across unrelated bars in between.
+  // Sandra confirmed she wants conflict-awareness: a normal edge is a
+  // light dashed gray line ("light broken ... thin line"); an edge where
+  // the successor starts on or before the predecessor's own End under the
+  // active mode (the same test `dependencyConflict` already uses) turns
+  // solid amber, matching the existing warning-triangle icon's color, so
+  // the same conflict is visible on the Gantt without checking the table.
+  function ganttConnectors() {
+    const rowIndexOf = new Map(orderedTasks.map((t, i) => [t.id, i]));
+    const elems: JSX.Element[] = [];
+    for (const t of orderedTasks) {
+      const depIds = dependsOnIdsFor(t.id);
+      if (!depIds.length) continue;
+      const succEntry = chainByMode[activeMode].get(t.id);
+      const succRow = rowIndexOf.get(t.id);
+      if (!succEntry || succRow === undefined) continue;
+      for (const depId of depIds) {
+        const predEntry = chainByMode[activeMode].get(depId);
+        const predRow = rowIndexOf.get(depId);
+        if (!predEntry || predRow === undefined) continue;
+        const x1 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(predEntry.end) + GANTT_DAY_WIDTH;
+        const y1 = GANTT_HEADER_HEIGHT + predRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
+        const x2 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(succEntry.start);
+        const y2 = GANTT_HEADER_HEIGHT + succRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
+        const midX = x1 + Math.max((x2 - x1) / 2, 6);
+        const conflict = succEntry.start <= predEntry.end;
+        const path = `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`;
+        elems.push(
+          <path
+            key={`${depId}->${t.id}`}
+            d={path}
+            fill="none"
+            stroke={conflict ? "var(--warning-text, #b45309)" : "var(--border)"}
+            strokeWidth={conflict ? 1.5 : 1}
+            strokeDasharray={conflict ? undefined : "3,3"}
+          />
+        );
+      }
+    }
+    return elems;
   }
 
   return (
@@ -1347,7 +1399,21 @@ export default function WbsPlanning() {
               </div>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <div style={{ display: "flex", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                {/* Sandra, 2026-07-24: "is it ok if we show dependencies via
+                    a light broken or thin line just to show relationship?"
+                    -- a single SVG overlay (`ganttConnectors()` below)
+                    spans the whole header+rows area so an elbow line can be
+                    drawn from any predecessor row to any successor row
+                    (they're rarely adjacent). This wrapping div is what
+                    that overlay is absolutely positioned against; nothing
+                    else changed about the header/row markup below, just
+                    moved their shared `minWidth` up onto this one wrapper
+                    instead of repeating it on every row. Read-only lines
+                    only -- NOT the deferred drag-to-create-a-dependency
+                    feature, which is a separate, bigger interaction and
+                    still not started. */}
+                <div style={{ position: "relative", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                <div style={{ display: "flex" }}>
                   <div style={{ width: GANTT_NAME_COL_WIDTH, flexShrink: 0, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }} />
                   <div style={{ position: "relative", width: ganttWidthPx, height: 24, flexShrink: 0 }}>
                     {ganttDays.map((d, i) => {
@@ -1384,7 +1450,7 @@ export default function WbsPlanning() {
                   const assignee = people.find((p) => p.id === t.assignee_id);
                   const barColor = assignee ? colorForPerson(assignee) : UNASSIGNED_BAR_COLOR;
                   return (
-                    <div key={t.id} style={{ display: "flex", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                    <div key={t.id} style={{ display: "flex" }}>
                       <div
                         style={{
                           width: GANTT_NAME_COL_WIDTH,
@@ -1456,6 +1522,14 @@ export default function WbsPlanning() {
                     </div>
                   );
                 })}
+                <svg
+                  width={GANTT_NAME_COL_WIDTH + ganttWidthPx}
+                  height={GANTT_HEADER_HEIGHT + orderedTasks.length * GANTT_ROW_HEIGHT}
+                  style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+                >
+                  {ganttConnectors()}
+                </svg>
+                </div>
               </div>
             )}
           </div>
