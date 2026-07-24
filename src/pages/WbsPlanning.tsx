@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2 } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -197,6 +197,30 @@ export default function WbsPlanning() {
     return dependencies.filter((d) => d.task_id === taskId).map((d) => d.depends_on_task_id);
   }
 
+  // Sandra, 2026-07-24: found live that setting "Task 2 depends on Task 1"
+  // didn't move Task 2's Start at all -- v1 (Round 9) deliberately kept
+  // Start fully manual with only a warning. Her follow-up request: "let's
+  // now move the start date on the dependent task. But allow manual edit,
+  // when overridden then show warning. But by default, change to what
+  // makes sense." This computes the latest "day after a predecessor's own
+  // End" across ALL of a task's dependencies, under whichever mode is
+  // CURRENTLY active -- used only as a one-time default at the moment a
+  // dependency is added (not a continuous rollup like a parent-task Est.
+  // hrs/Start field), so the field stays a completely normal, freely
+  // editable one afterward. If the user later edits it manually into a
+  // conflict, the existing `dependencyConflict` warning already covers
+  // that -- nothing here tries to re-snap it back.
+  function suggestedStartFor(depIds: string[], mode: Mode): string | null {
+    let latest: string | null = null;
+    for (const depId of depIds) {
+      const entry = chainByMode[mode].get(depId);
+      if (!entry) continue;
+      const candidate = nextWorkingDayAfter(entry.end, holidaySet);
+      if (!latest || candidate > latest) latest = candidate;
+    }
+    return latest;
+  }
+
   async function addDependency(taskId: string, dependsOnId: string) {
     // Basic guard against an immediate two-way cycle (A depends on B, which
     // already depends on A). Longer cycles aren't checked in this v1 --
@@ -211,7 +235,10 @@ export default function WbsPlanning() {
     if (error) {
       await alert(`Couldn't add dependency: ${error.message}`);
       loadAll();
+      return;
     }
+    const suggestedStart = suggestedStartFor([...dependsOnIdsFor(taskId), dependsOnId], activeMode);
+    if (suggestedStart) saveTaskField(taskId, { start_date: suggestedStart });
   }
 
   async function removeDependency(taskId: string, dependsOnId: string) {
@@ -378,16 +405,30 @@ export default function WbsPlanning() {
   const derivedProjectStart: string | null = topLevelStarts.length ? topLevelStarts.reduce((min, d) => (d < min ? d : min)) : null;
   const utilAnchorDate = derivedProjectStart ?? fallbackStartDate;
 
+  // Fixed 2026-07-24 (Sandra: "fix the glitch when adding task in WBS") --
+  // the old default-Start logic for a new task only ever looked at the
+  // LITERAL last task in the list, which is almost always the most
+  // recently added "Untitled task" itself -- with no Est. hrs yet, its
+  // chain entry is null, so every SUBSEQUENT new task silently fell back
+  // to the project's own Start date instead of chaining after whichever
+  // task actually has a real schedule. Walking backwards for the last
+  // task that resolves to a real entry (in either mode) fixes this --
+  // blank placeholder rows in between no longer break the chain.
+  function lastResolvedEntry(list: (TaskRow & { depth: number })[]): ChainEntry | null {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const entry = fullChain.get(list[i].id) ?? standardChain.get(list[i].id);
+      if (entry) return entry;
+    }
+    return null;
+  }
+
   async function addTopLevelTask() {
     if (!project) return;
     const today = new Date().toISOString().slice(0, 10);
     const roots = orderedTasks.filter((t) => t.depth === 0);
     let defaultStart = derivedProjectStart ?? fallbackStartDate;
-    if (roots.length) {
-      const last = roots[roots.length - 1];
-      const entry = fullChain.get(last.id) ?? standardChain.get(last.id);
-      if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
-    }
+    const entry = lastResolvedEntry(roots);
+    if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
     const defaultDue = project.end_date ?? today;
     const { error } = await supabase.from("tasks").insert({
       project_id: project.id,
@@ -409,11 +450,8 @@ export default function WbsPlanning() {
     if (parent.depth > 0) return; // only 2 layers total: parent + 1 sub-task level
     const siblings = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === parent.id);
     let defaultStart = parent.start_date ? parent.start_date.slice(0, 10) : derivedProjectStart ?? fallbackStartDate;
-    if (siblings.length) {
-      const last = siblings[siblings.length - 1];
-      const entry = fullChain.get(last.id) ?? standardChain.get(last.id);
-      if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
-    }
+    const siblingEntry = lastResolvedEntry(siblings);
+    if (siblingEntry) defaultStart = nextWorkingDayAfter(siblingEntry.end, holidaySet);
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
@@ -426,6 +464,33 @@ export default function WbsPlanning() {
     });
     if (error) {
       await alert(`Couldn't add subtask: ${error.message}`);
+      return;
+    }
+    loadAll();
+  }
+
+  // Sandra, 2026-07-24: "Allow deleting of tasks in WBS. Right now we can
+  // add but no option to delete." Mirrors Projects.tsx's own bulk-delete
+  // convention exactly -- same `delete_tasks_and_dependents` RPC (already
+  // clears task_dependencies in both FK directions as of this same
+  // round's migration, see [[project_capaciq_wbs_planning]]), same
+  // "deleting a parent also deletes its own sub-tasks" bundling, same
+  // hard-delete confirm copy (tasks are always hard-deleted on this page,
+  // never soft-archived -- only Projects get the 30-day archive/restore
+  // treatment).
+  async function deleteTask(t: TaskRow & { depth: number }) {
+    const childIds = t.depth === 0 ? tasks.filter((x) => x.parent_task_id === t.id).map((x) => x.id) : [];
+    const allIds = [t.id, ...childIds];
+    const ok = await confirm({
+      title: "Delete task",
+      message: `Delete "${t.name}"${childIds.length ? ` (and ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""})` : ""}? This can't be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.rpc("delete_tasks_and_dependents", { p_task_ids: allIds });
+    if (error) {
+      await alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadAll();
@@ -729,9 +794,9 @@ export default function WbsPlanning() {
         Set each task's own Start date, Estimated hours, Effort, and Assignee below (all save immediately). End date is auto-computed from that Start
         under each mode's own flat daily rate -- Full Effort at 7.5h/day, Conservative Effort at 4h/day -- independently per task, so tasks can freely
         overlap or run in parallel. The project's own Start date above is auto-pulled from the earliest task's Start date. Set "Depends on" to flag a
-        task that should follow another -- Start stays yours to set, but a task starting on or before its dependency's own End gets a warning icon.
-        Save applies the active mode's End dates to every task without locking. The utilization panel below (including the Owner's PM-overhead load)
-        updates live as you plan.
+        task that should follow another -- doing so moves its Start to right after that dependency's own End, but it stays yours to edit afterward;
+        a task starting on or before its dependency's own End gets a warning icon. Save applies the active mode's End dates to every task without
+        locking. The utilization panel below (including the Owner's PM-overhead load) updates live as you plan.
       </p>
 
       {project.timelines_locked ? (
@@ -1057,6 +1122,9 @@ export default function WbsPlanning() {
                               <Plus size={14} />
                             </button>
                           )}
+                          <button className="add-subtask-btn" onClick={() => deleteTask(t)} title={isParent ? "Delete task (and its sub-tasks)" : "Delete task"}>
+                            <Trash2 size={14} />
+                          </button>
                         </div>
                       </td>
                       <td>
