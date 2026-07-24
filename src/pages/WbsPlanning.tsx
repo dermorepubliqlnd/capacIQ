@@ -668,7 +668,7 @@ export default function WbsPlanning() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(!!owner)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true)}>
                 <InlineSelect
                   value={owner?.name ?? ""}
                   editable
