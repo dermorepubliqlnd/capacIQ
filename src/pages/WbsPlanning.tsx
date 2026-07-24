@@ -36,6 +36,16 @@ interface TaskRow {
   assignee_id: string | null;
   status: string | null;
   start_date: string | null;
+  // Per-mode draft Start dates (migration 2026-07-24f). `start_date` above
+  // stays the single canonical field the REST of the app reads (Projects &
+  // Tasks table, Timeline, Calendar) -- only written by this page's own
+  // Save button, same as `current_due_date` always was. Full Effort and
+  // Conservative Effort each need their OWN Start now: a dependency's
+  // predecessor finishes on a different date under each mode, so a single
+  // shared Start could never sit "right after" both at once -- see
+  // [[project_capaciq_wbs_planning]] Round 11 for the live bug this fixes.
+  start_date_full: string | null;
+  start_date_standard: string | null;
   current_due_date: string;
   estimated_hours: number | null;
   effort: string | null;
@@ -161,7 +171,9 @@ export default function WbsPlanning() {
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status").eq("id", projectId).single(),
       supabase
         .from("tasks")
-        .select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,effort,is_archived,sort_order")
+        .select(
+          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,current_due_date,estimated_hours,effort,is_archived,sort_order"
+        )
         .eq("project_id", projectId)
         .eq("is_archived", false)
         .order("sort_order"),
@@ -199,17 +211,21 @@ export default function WbsPlanning() {
 
   // Sandra, 2026-07-24: found live that setting "Task 2 depends on Task 1"
   // didn't move Task 2's Start at all -- v1 (Round 9) deliberately kept
-  // Start fully manual with only a warning. Her follow-up request: "let's
-  // now move the start date on the dependent task. But allow manual edit,
-  // when overridden then show warning. But by default, change to what
-  // makes sense." This computes the latest "day after a predecessor's own
-  // End" across ALL of a task's dependencies, under whichever mode is
-  // CURRENTLY active -- used only as a one-time default at the moment a
-  // dependency is added (not a continuous rollup like a parent-task Est.
-  // hrs/Start field), so the field stays a completely normal, freely
-  // editable one afterward. If the user later edits it manually into a
-  // conflict, the existing `dependencyConflict` warning already covers
-  // that -- nothing here tries to re-snap it back.
+  // Start fully manual with only a warning. Round 10 tried auto-moving a
+  // single shared Start field, but that broke down the moment BOTH modes
+  // needed to be correct at once: Task 1 finishes on a different date
+  // under Full Effort vs Conservative Effort, so one shared Start could
+  // only ever be "right after" one of them. Round 11 fix (her own
+  // diagnosis: "I think the toggle on top cause the issue"): Full Effort
+  // and Conservative Effort now each get their OWN Start field
+  // (`start_date_full`/`start_date_standard`), each auto-moved
+  // independently -- this computes the latest "day after a predecessor's
+  // own End" across ALL of a task's dependencies, for ONE given mode. Used
+  // only as a one-time default the moment a dependency is added (not a
+  // continuous rollup), so both fields stay completely normal, freely
+  // editable afterward. If the user later edits either into a conflict,
+  // `dependencyConflict` (mode-parameterized, checked against that SAME
+  // mode's own Start field) catches it.
   function suggestedStartFor(depIds: string[], mode: Mode): string | null {
     let latest: string | null = null;
     for (const depId of depIds) {
@@ -237,8 +253,13 @@ export default function WbsPlanning() {
       loadAll();
       return;
     }
-    const suggestedStart = suggestedStartFor([...dependsOnIdsFor(taskId), dependsOnId], activeMode);
-    if (suggestedStart) saveTaskField(taskId, { start_date: suggestedStart });
+    const allDeps = [...dependsOnIdsFor(taskId), dependsOnId];
+    const patch: Partial<TaskRow> = {};
+    const suggestedFull = suggestedStartFor(allDeps, "full_capacity");
+    if (suggestedFull) patch.start_date_full = suggestedFull;
+    const suggestedStandard = suggestedStartFor(allDeps, "standard");
+    if (suggestedStandard) patch.start_date_standard = suggestedStandard;
+    if (Object.keys(patch).length) saveTaskField(taskId, patch);
   }
 
   async function removeDependency(taskId: string, dependsOnId: string) {
@@ -321,12 +342,18 @@ export default function WbsPlanning() {
   // Same idea, for Start date -- a parent's own Start is locked and
   // mirrors the EARLIEST of its direct sub-tasks' own Start dates (its
   // End mirrors the latest, computed live in buildChain below since End
-  // isn't a stored field until Save).
-  function subtaskStartMin(parentId: string): string | null {
+  // isn't a stored field until Save). Round 11: Start is now three
+  // separate fields (legacy `start_date` for the rest of the app, plus
+  // `start_date_full`/`start_date_standard` for each mode's own draft) --
+  // this rolls up whichever field is asked for.
+  function subtaskStartMinField(parentId: string, field: "start_date" | "start_date_full" | "start_date_standard"): string | null {
     const children = tasks.filter((t) => t.parent_task_id === parentId);
-    const withStart = children.filter((t) => !!t.start_date);
+    const withStart = children.filter((t) => !!t[field]);
     if (withStart.length === 0) return null;
-    return withStart.reduce((min, t) => ((t.start_date as string).slice(0, 10) < min ? (t.start_date as string).slice(0, 10) : min), (withStart[0].start_date as string).slice(0, 10));
+    return withStart.reduce((min, t) => {
+      const v = (t[field] as string).slice(0, 10);
+      return v < min ? v : min;
+    }, (withStart[0][field] as string).slice(0, 10));
   }
 
   useEffect(() => {
@@ -334,10 +361,14 @@ export default function WbsPlanning() {
       if (t.parent_task_id) continue;
       if (!hasChildren(t.id)) continue;
       const sum = subtaskHoursSum(t.id);
-      const minStart = subtaskStartMin(t.id);
+      const minLegacy = subtaskStartMinField(t.id, "start_date");
+      const minFull = subtaskStartMinField(t.id, "start_date_full");
+      const minStandard = subtaskStartMinField(t.id, "start_date_standard");
       const patch: Partial<TaskRow> = {};
       if (sum !== t.estimated_hours) patch.estimated_hours = sum;
-      if (minStart !== (t.start_date ? t.start_date.slice(0, 10) : null)) patch.start_date = minStart;
+      if (minLegacy !== (t.start_date ? t.start_date.slice(0, 10) : null)) patch.start_date = minLegacy;
+      if (minFull !== (t.start_date_full ? t.start_date_full.slice(0, 10) : null)) patch.start_date_full = minFull;
+      if (minStandard !== (t.start_date_standard ? t.start_date_standard.slice(0, 10) : null)) patch.start_date_standard = minStandard;
       if (Object.keys(patch).length > 0) saveTaskField(t.id, patch);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -358,7 +389,8 @@ export default function WbsPlanning() {
   // constraint here).
   function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
     const hours = t.estimated_hours;
-    const start = t.start_date ? t.start_date.slice(0, 10) : null;
+    const rawStart = mode === "full_capacity" ? t.start_date_full : t.start_date_standard;
+    const start = rawStart ? rawStart.slice(0, 10) : null;
     if (hours === null || hours === undefined || !start) return null;
     const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
     const r = scenario(hours, start, holidaySet);
@@ -398,12 +430,17 @@ export default function WbsPlanning() {
     standard: standardChain,
   };
 
-  // The project's own Start date is now DERIVED -- the earliest top-level
-  // task's own Start date -- rather than driving the chain. `null` until
-  // at least one top-level task has a Start date set.
-  const topLevelStarts = orderedTasks.filter((t) => t.depth === 0 && t.start_date).map((t) => (t.start_date as string).slice(0, 10));
-  const derivedProjectStart: string | null = topLevelStarts.length ? topLevelStarts.reduce((min, d) => (d < min ? d : min)) : null;
-  const utilAnchorDate = derivedProjectStart ?? fallbackStartDate;
+  // Round 11 (Sandra): the project's own Start date is now MANUAL again --
+  // "the user can plot the start onset in the top bar. Start will no
+  // longer depend on the earliest start of task." Reversing the earlier
+  // "derived from earliest task Start" model was necessary once Full
+  // Effort and Conservative Effort got their own independent Start
+  // fields below -- there's no longer one single "earliest task start" to
+  // derive from anyway (Full's earliest and Conservative's earliest can
+  // differ). `project.start_date` is just a plain editable anchor now,
+  // used as the fallback Start for the very first task in each mode's
+  // chain when there's nothing earlier to chain from.
+  const utilAnchorDate = fallbackStartDate;
 
   // Fixed 2026-07-24 (Sandra: "fix the glitch when adding task in WBS") --
   // the old default-Start logic for a new task only ever looked at the
@@ -412,11 +449,13 @@ export default function WbsPlanning() {
   // chain entry is null, so every SUBSEQUENT new task silently fell back
   // to the project's own Start date instead of chaining after whichever
   // task actually has a real schedule. Walking backwards for the last
-  // task that resolves to a real entry (in either mode) fixes this --
-  // blank placeholder rows in between no longer break the chain.
-  function lastResolvedEntry(list: (TaskRow & { depth: number })[]): ChainEntry | null {
+  // task that resolves to a real entry fixes this -- blank placeholder
+  // rows in between no longer break the chain. Round 11: mode-parameterized
+  // now that Full Effort and Conservative Effort each need their own
+  // independent "what did the last real task end on" answer.
+  function lastResolvedEntry(list: (TaskRow & { depth: number })[], mode: Mode): ChainEntry | null {
     for (let i = list.length - 1; i >= 0; i--) {
-      const entry = fullChain.get(list[i].id) ?? standardChain.get(list[i].id);
+      const entry = chainByMode[mode].get(list[i].id);
       if (entry) return entry;
     }
     return null;
@@ -426,15 +465,21 @@ export default function WbsPlanning() {
     if (!project) return;
     const today = new Date().toISOString().slice(0, 10);
     const roots = orderedTasks.filter((t) => t.depth === 0);
-    let defaultStart = derivedProjectStart ?? fallbackStartDate;
-    const entry = lastResolvedEntry(roots);
-    if (entry) defaultStart = nextWorkingDayAfter(entry.end, holidaySet);
+    const anchor = project.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
+    let defaultStartFull = anchor;
+    let defaultStartStandard = anchor;
+    const entryFull = lastResolvedEntry(roots, "full_capacity");
+    if (entryFull) defaultStartFull = nextWorkingDayAfter(entryFull.end, holidaySet);
+    const entryStandard = lastResolvedEntry(roots, "standard");
+    if (entryStandard) defaultStartStandard = nextWorkingDayAfter(entryStandard.end, holidaySet);
     const defaultDue = project.end_date ?? today;
     const { error } = await supabase.from("tasks").insert({
       project_id: project.id,
       name: "Untitled task",
       status: "Not Started",
-      start_date: defaultStart,
+      start_date: defaultStartFull, // legacy single field -- convenience placeholder for other pages until Save
+      start_date_full: defaultStartFull,
+      start_date_standard: defaultStartStandard,
       original_due_date: defaultDue,
       current_due_date: defaultDue,
       sort_order: Date.now(),
@@ -449,15 +494,21 @@ export default function WbsPlanning() {
   async function addSubtask(parent: TaskRow & { depth: number }) {
     if (parent.depth > 0) return; // only 2 layers total: parent + 1 sub-task level
     const siblings = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === parent.id);
-    let defaultStart = parent.start_date ? parent.start_date.slice(0, 10) : derivedProjectStart ?? fallbackStartDate;
-    const siblingEntry = lastResolvedEntry(siblings);
-    if (siblingEntry) defaultStart = nextWorkingDayAfter(siblingEntry.end, holidaySet);
+    const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
+    let defaultStartFull = parent.start_date_full ? parent.start_date_full.slice(0, 10) : projectAnchor;
+    let defaultStartStandard = parent.start_date_standard ? parent.start_date_standard.slice(0, 10) : projectAnchor;
+    const siblingEntryFull = lastResolvedEntry(siblings, "full_capacity");
+    if (siblingEntryFull) defaultStartFull = nextWorkingDayAfter(siblingEntryFull.end, holidaySet);
+    const siblingEntryStandard = lastResolvedEntry(siblings, "standard");
+    if (siblingEntryStandard) defaultStartStandard = nextWorkingDayAfter(siblingEntryStandard.end, holidaySet);
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
       name: "Untitled sub-task",
       status: "Not Started",
-      start_date: defaultStart,
+      start_date: defaultStartFull,
+      start_date_full: defaultStartFull,
+      start_date_standard: defaultStartStandard,
       original_due_date: parent.current_due_date,
       current_due_date: parent.current_due_date,
       sort_order: Date.now(),
@@ -515,32 +566,20 @@ export default function WbsPlanning() {
     }
   }
 
-  // Keeps `projects.start_date` in sync with the derived value, so the
-  // rest of the app (Projects table's own Start column, etc.) reflects
-  // the same "earliest task Start date" the WBS page now shows -- per
-  // Sandra: "I think this can be auto pulled from the earliest task start
-  // date." Only fires once tasks actually have Start dates; doesn't
-  // clobber a real existing project.start_date with null just because the
-  // page hasn't finished loading tasks yet.
-  useEffect(() => {
-    if (!project) return;
-    if (derivedProjectStart && derivedProjectStart !== (project.start_date ? project.start_date.slice(0, 10) : null)) {
-      saveProjectField({ start_date: derivedProjectStart });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [derivedProjectStart]);
-
   // Soft completeness gate -- mirrors the Task name / Effort part of the
-  // Projects table's own Lock policy.
+  // Projects table's own Lock policy. Round 11: conflict check now covers
+  // BOTH modes always (not just whichever is toggled active), since the
+  // scoping table itself shows both modes' Start/End side by side
+  // regardless of the toggle now.
   function softIssues(): string[] {
     const issues: string[] = [];
     const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
     const noEffort = orderedTasks.filter((t) => !t.effort);
-    const conflicted = orderedTasks.filter((t) => dependencyConflict(t, activeMode));
+    const conflicted = orderedTasks.filter((t) => dependencyConflict(t, "full_capacity") || dependencyConflict(t, "standard"));
     if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
     if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
     if (conflicted.length)
-      issues.push(`${conflicted.length} task(s) start on or before a dependency's own End under ${MODE_LABEL[activeMode]} -- double-check those Start dates.`);
+      issues.push(`${conflicted.length} task(s) start on or before a dependency's own End under at least one mode -- double-check those Start dates.`);
     return issues;
   }
 
@@ -659,21 +698,34 @@ export default function WbsPlanning() {
     };
   }
 
-  function renderScenarioCells(t: TaskRow, mode: Mode) {
+  // Round 11: each mode now renders its OWN Start cell (editable, with its
+  // own conflict warning) alongside End/Duration -- replaces the old
+  // single shared Start column entirely. `field` picks which of the two
+  // per-mode columns this cell reads/writes.
+  function renderModeCells(t: TaskRow & { depth: number }, mode: Mode, isParent: boolean) {
+    const field = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
     const entry = chainByMode[mode].get(t.id);
+    const conflict = dependencyConflict(t, mode);
     const style = { fontSize: 12, ...modeColStyle(mode) };
-    if (!entry) {
-      return (
-        <>
-          <td style={{ ...style, color: "var(--muted)" }}>—</td>
-          <td style={{ ...style, color: "var(--muted)" }}>—</td>
-        </>
-      );
-    }
     return (
       <>
-        <td style={style}>{entry.end}</td>
-        <td style={style}>{entry.durationDays}</td>
+        <td style={style}>
+          <span
+            title={
+              isParent
+                ? `Computed from this task's own sub-tasks (earliest Start under ${MODE_LABEL[mode]})`
+                : conflict
+                ? `Starts on or before "${conflict.name}" finishes (${conflict.end}) under ${MODE_LABEL[mode]} -- double-check this Start date.`
+                : undefined
+            }
+            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+          >
+            <InlineDate value={t[field]} editable={!isParent} onCommit={(v) => saveTaskField(t.id, { [field]: v } as Partial<TaskRow>)} />
+            {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
+          </span>
+        </td>
+        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.end : "—"}</td>
+        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.durationDays : "—"}</td>
       </>
     );
   }
@@ -735,7 +787,7 @@ export default function WbsPlanning() {
     {
       id: projectId ?? "",
       owner_id: project.owner_id,
-      start_date: derivedProjectStart,
+      start_date: project.start_date,
       end_date: summaries[activeMode].end,
     },
   ];
@@ -791,12 +843,12 @@ export default function WbsPlanning() {
       </Link>
       <h1>WBS Planning — {project.name}</h1>
       <p className="subtitle">
-        Set each task's own Start date, Estimated hours, Effort, and Assignee below (all save immediately). End date is auto-computed from that Start
-        under each mode's own flat daily rate -- Full Effort at 7.5h/day, Conservative Effort at 4h/day -- independently per task, so tasks can freely
-        overlap or run in parallel. The project's own Start date above is auto-pulled from the earliest task's Start date. Set "Depends on" to flag a
-        task that should follow another -- doing so moves its Start to right after that dependency's own End, but it stays yours to edit afterward;
-        a task starting on or before its dependency's own End gets a warning icon. Save applies the active mode's End dates to every task without
-        locking. The utilization panel below (including the Owner's PM-overhead load) updates live as you plan.
+        Plot the project's own Start date above -- it anchors the first task in each mode when there's nothing earlier to chain from. Full Effort and
+        Conservative Effort each get their own independent Start/End/Duration below (7.5h/day vs 4h/day), since the same task can genuinely start on a
+        different day under each mode. Set "Depends on" to flag a task that should follow another -- doing so moves that dependency's Start (under
+        each mode, independently) to right after its predecessor's own End under that same mode, but it stays yours to edit afterward; a task starting
+        on or before its dependency's own End gets a warning icon. The "Save using" toggle only affects the Gantt, the utilization preview, and which
+        mode's numbers Save actually commits -- it no longer changes what the scoping table itself shows.
       </p>
 
       {project.timelines_locked ? (
@@ -828,11 +880,13 @@ export default function WbsPlanning() {
                 />
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
-              <span style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{derivedProjectStart ?? "Not set yet"}</span>
+              <div className="wbs-field-box" style={fieldBoxStyle(true)}>
+                <InlineDate value={project.start_date} editable onCommit={(v) => saveProjectField({ start_date: v })} />
+              </div>
               <span
-                title="Auto-pulled from the earliest task's own Start date below."
+                title="Your own plotted anchor -- used as the default Start for the very first task in each mode when there's nothing earlier to chain from. No longer auto-pulled from tasks."
                 style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
               >
                 <Info size={13} style={{ color: "var(--muted)" }} />
@@ -1080,19 +1134,18 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 150 }}>
                     Depends on
                   </th>
-                  <th rowSpan={2} style={{ width: 110 }}>
-                    Start
-                  </th>
-                  <th colSpan={2} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
                     Full Effort
                   </th>
-                  <th colSpan={2} style={{ textAlign: "center", ...modeColStyle("standard") }}>
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }}>
                     Conservative Effort
                   </th>
                 </tr>
                 <tr>
+                  <th style={{ width: 110, ...modeColStyle("full_capacity") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("full_capacity") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("full_capacity") }}>Duration (days)</th>
+                  <th style={{ width: 110, ...modeColStyle("standard") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
                 </tr>
@@ -1100,7 +1153,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={10} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={11} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -1109,7 +1162,6 @@ export default function WbsPlanning() {
                   const isParent = t.depth === 0 && hasChildren(t.id);
                   const assignee = people.find((p) => p.id === t.assignee_id);
                   const dependsOnIds = dependsOnIdsFor(t.id);
-                  const conflict = dependencyConflict(t, activeMode);
                   return (
                     <tr key={t.id}>
                       <td>
@@ -1190,28 +1242,13 @@ export default function WbsPlanning() {
                           onRemove={(depId) => removeDependency(t.id, depId)}
                         />
                       </td>
-                      <td>
-                        <span
-                          title={
-                            isParent
-                              ? "Computed from this task's own sub-tasks (earliest Start date)"
-                              : conflict
-                              ? `Starts on or before "${conflict.name}" finishes (${conflict.end}) under ${MODE_LABEL[activeMode]} -- double-check this Start date.`
-                              : undefined
-                          }
-                          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
-                        >
-                          <InlineDate value={t.start_date} editable={!isParent} onCommit={(v) => saveTaskField(t.id, { start_date: v })} />
-                          {conflict && <AlertTriangle size={13} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
-                        </span>
-                      </td>
-                      {renderScenarioCells(t, "full_capacity")}
-                      {renderScenarioCells(t, "standard")}
+                      {renderModeCells(t, "full_capacity", isParent)}
+                      {renderModeCells(t, "standard", isParent)}
                     </tr>
                   );
                 })}
                 <tr>
-                  <td colSpan={10} className="add-row-cell">
+                  <td colSpan={11} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task

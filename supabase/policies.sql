@@ -1399,3 +1399,30 @@ end;
 $$;
 
 grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;
+
+-- Migration 2026-07-24f: per-mode Start columns for WBS planning
+--
+-- Sandra caught a real design flaw live: a task's Start was one shared
+-- field used by BOTH Full Effort and Conservative Effort's math. Once
+-- dependencies existed, this broke down completely -- auto-moving that
+-- one field to sit right after a predecessor's Full Effort end left
+-- Conservative Effort (whose same predecessor finishes LATER) still
+-- starting too early, with no way to fix it since there was only one
+-- Start to move. Her own diagnosis: "I think the toggle on top cause the
+-- issue" -- the single "active mode" toggle was being used to decide
+-- which mode's math a single shared Start should follow, when Full
+-- Effort and Conservative Effort actually need their OWN independent
+-- Start per task.
+--
+-- Fix: two new nullable draft columns, one per mode, backfilled from the
+-- existing `start_date` so today's values aren't lost. These are WBS
+-- planning-only drafts (same idea as `current_due_date` already being
+-- draft-only until Save) -- the original `start_date`/`current_due_date`
+-- columns are UNTOUCHED and remain the single canonical schedule the
+-- rest of the app (Projects & Tasks table, Timeline, Calendar) reads;
+-- WBS's own Save button still picks one mode and writes into those two
+-- original columns exactly as before, so nothing downstream changes.
+alter table tasks add column if not exists start_date_full date;
+alter table tasks add column if not exists start_date_standard date;
+update tasks set start_date_full = start_date where start_date_full is null;
+update tasks set start_date_standard = start_date where start_date_standard is null;
