@@ -503,12 +503,12 @@ export default function WbsPlanning() {
   // indistinguishable from static text. A permanent, subtle border makes
   // clear these are fillable fields even at rest; an unfilled field gets
   // a dashed border in the muted/warning tone as a nudge to fill it in.
-  function fieldBoxStyle(isFilled: boolean): CSSProperties {
+  function fieldBoxStyle(isFilled: boolean, minWidth = 110): CSSProperties {
     return {
       border: `1px ${isFilled ? "solid" : "dashed"} ${isFilled ? "var(--border)" : "var(--warning-text, #b45309)"}`,
       borderRadius: 6,
       padding: "1px 4px",
-      minWidth: 110,
+      minWidth,
       background: "var(--surface)",
     };
   }
@@ -626,13 +626,13 @@ export default function WbsPlanning() {
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
-              <div style={fieldBoxStyle(!!project.name)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(!!project.name, 170)}>
                 <InlineText value={project.name} editable onCommit={(v) => saveProjectField({ name: v })} />
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
-              <div style={fieldBoxStyle(!!owner)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(!!owner)}>
                 <InlineSelect
                   value={owner?.name ?? ""}
                   editable
@@ -668,27 +668,122 @@ export default function WbsPlanning() {
             </div>
           </div>
 
-          {/* Project-level summary: total effort + timeline comparison across modes */}
-          <div className="card" style={{ padding: 14, marginBottom: 12 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)", marginBottom: 10 }}>
-              Total effort needed: {totalEffortHours}h across {orderedTasks.filter((t) => t.depth === 0).length} task(s)
+          {/* Project-level summary: fixed total effort (left) + a
+              duration comparison bar per mode (right) -- redesigned per
+              Sandra's own mockup (2026-07-24): a big "Total Effort
+              Needed" number that never changes between modes (a
+              "Fixed total effort" pill makes that explicit), next to a
+              horizontal bar per mode sized by its own working-day
+              duration so the Full Effort vs Conservative Effort
+              tradeoff reads visually, not just as two numbers. */}
+          <div className="card" style={{ padding: 16, marginBottom: 12, display: "flex", gap: 28, flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                gap: 6,
+                minWidth: 150,
+                paddingRight: 28,
+                borderRight: "1px solid var(--border)",
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.3 }}>
+                Total Effort Needed
+              </div>
+              <div style={{ fontSize: 30, fontWeight: 700, color: "var(--navy)", lineHeight: 1.1 }}>
+                {totalEffortHours}
+                <span style={{ fontSize: 15, fontWeight: 600, marginLeft: 3 }}>h</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                across {orderedTasks.filter((t) => t.depth === 0).length} task(s)
+              </div>
+              <span
+                className="status-pill neutral"
+                style={{ marginTop: 2, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+                title="The total hours don't change between modes -- only how many days they take to fit."
+              >
+                🔒 Fixed total effort
+              </span>
             </div>
-            <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
-              {MODES.map((m) => {
+
+            <div style={{ flex: 1, minWidth: 340 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)", marginBottom: 12 }}>Effort Comparison (by Duration)</div>
+              {MODES.map((m, i) => {
                 const s = summaries[m];
+                const color = m === "full_capacity" ? "#3b82f6" : "#22c55e";
+                const rate = m === "full_capacity" ? "7.5 h/day" : "4 h/day";
+                const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, 1);
+                const widthPct = s.durationDays ? Math.max(18, Math.round((s.durationDays / maxDuration) * 100)) : 0;
                 return (
-                  <div key={m} style={{ minWidth: 180 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.3 }}>
-                      {MODE_LABEL[m]}
+                  <div
+                    key={m}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 16,
+                      marginBottom: i === MODES.length - 1 ? 0 : 14,
+                    }}
+                  >
+                    <div style={{ width: 165, flexShrink: 0, fontSize: 12, fontWeight: 600, color }}>
+                      {MODE_LABEL[m]} ({rate})
                     </div>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginTop: 2 }}>{s.end ?? "—"}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                      {s.end ? `${s.durationDays} working day(s)` : "no schedule yet"}
-                      {!s.complete && s.end ? " · incomplete" : ""}
+                    <div style={{ flex: 1, minWidth: 100 }}>
+                      {s.durationDays ? (
+                        <div
+                          style={{
+                            width: `${widthPct}%`,
+                            minWidth: 90,
+                            background: color,
+                            color: "#fff",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            textAlign: "center",
+                            padding: "6px 8px",
+                            borderRadius: 4,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {s.durationDays} working day{s.durationDays === 1 ? "" : "s"}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>no schedule yet</span>
+                      )}
+                    </div>
+                    <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
+                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Start</div>
+                      <div>{s.start ?? "—"}</div>
+                    </div>
+                    <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
+                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>End</div>
+                      <div>{s.end ?? "—"}</div>
+                    </div>
+                    <div style={{ width: 100, fontSize: 11.5, flexShrink: 0 }}>
+                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Duration</div>
+                      <div>
+                        {s.durationDays ? `${s.durationDays} working day${s.durationDays === 1 ? "" : "s"}` : "—"}
+                        {!s.complete && s.end ? " · incomplete" : ""}
+                      </div>
                     </div>
                   </div>
                 );
               })}
+              <div
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  marginTop: 12,
+                  paddingTop: 8,
+                  fontSize: 11,
+                  color: "var(--muted)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Info size={12} style={{ flexShrink: 0 }} />
+                Effort hours stay fixed at {totalEffortHours}h. Timeline changes based on daily capacity: Full Effort = 7.5h/day, Conservative Effort =
+                4h/day.
+              </div>
             </div>
           </div>
 

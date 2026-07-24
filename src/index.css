@@ -605,6 +605,21 @@ select.inline-cell { cursor: pointer; }
 }
 .inline-cell.readonly:hover { border-color: transparent; background: transparent; }
 
+/* WBS header fields (Project name, Owner): these already sit inside a
+   permanent bordered box (see fieldBoxStyle in WbsPlanning.tsx) so the
+   field reads as "fillable" even at rest -- without this override, the
+   nested .inline-cell input/select ALSO draws its own hover/focus border
+   on top, showing as a second, lighter box nested inside the first one
+   while typing/renaming (Sandra, 2026-07-24: "there is a light box
+   showing inside the field when renaming"). Suppressing the inner
+   hover/focus chrome here keeps just the one outer box. */
+.wbs-field-box .inline-cell,
+.wbs-field-box .inline-cell:hover,
+.wbs-field-box .inline-cell:focus {
+  border-color: transparent;
+  background: transparent;
+}
+
 /* Task name cell: Notion-style sub-task affordances -- a collapse/expand
    chevron on parents that have a sub-task, and a bare "+" icon (hover-only)
    to add one, capped at parent + 1 sub-task level (no deeper nesting). */
