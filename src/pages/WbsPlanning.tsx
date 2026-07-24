@@ -6,12 +6,21 @@ import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
-import { fullCapacityScenario, standardScenario, capacityBasedScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
+import { standardScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
+import {
+  dailyPointsFor,
+  dailyCapacityFor,
+  tierOf,
+  type UtilTaskRow,
+  type UtilProjectRow,
+  type UtilPersonRow,
+} from "../lib/utilizationCalc";
 
 interface ProjectRow {
   id: string;
   name: string;
+  owner_id: string | null;
   start_date: string | null;
   end_date: string | null;
   timelines_locked: boolean;
@@ -24,22 +33,19 @@ interface TaskRow {
   parent_task_id: string | null;
   name: string;
   assignee_id: string | null;
+  status: string | null;
   start_date: string | null;
   current_due_date: string;
   estimated_hours: number | null;
   effort: string | null;
   is_archived: boolean;
+  sort_order: number | null;
 }
 interface PersonRow {
   id: string;
   name: string;
   daily_capacity_hours: number;
   is_active: boolean;
-}
-interface AllocationRow {
-  person_id: string;
-  date: string;
-  hours: number;
 }
 interface AvailabilityRow {
   person_id: string;
@@ -50,18 +56,19 @@ interface HolidayRow {
   date: string;
 }
 
-type Mode = "full_capacity" | "standard" | "capacity_based";
-// Sandra, 2026-07-23: "Full Capacity / Standard / Capacity-Based" all leaned
-// on the word "capacity" and read as confusing/redundant. Renamed the
-// DISPLAY labels only -- the underlying `mode` values stored in
-// task_planning_snapshots stay as full_capacity/standard/capacity_based so
-// existing rows and code aren't affected, just what's shown on screen.
+// Sandra, 2026-07-24: "this is getting complicated ... have a full and
+// conservative computation - remove capacity based." Capacity-Based was
+// trying to answer two questions at once (how long will this take, AND
+// does this person have room) -- splitting those apart is why the
+// Utilization panel below now carries the "does this person have room"
+// job on its own, and Assignee becomes a normal per-task field again
+// (same as the rest of the app), not something tied to a scheduling mode.
+type Mode = "full_capacity" | "standard";
 const MODE_LABEL: Record<Mode, string> = {
   full_capacity: "Full Effort",
   standard: "Conservative Effort",
-  capacity_based: "Capacity-Based",
 };
-const MODES: Mode[] = ["full_capacity", "standard", "capacity_based"];
+const MODES: Mode[] = ["full_capacity", "standard"];
 
 interface ChainEntry {
   start: string;
@@ -72,26 +79,25 @@ interface ChainEntry {
 
 const UTIL_WINDOW_DAYS = 28; // 4 weeks, daily view
 
-// WBS planning page (Sandra, 2026-07-23 through 2026-07-24, several design
-// rounds -- see project_capaciq_wbs_planning memory for the earlier history):
-// - Per task: Estimated hours, Task name, and Effort are directly editable
-//   (all autosave immediately, same convention as the rest of the app).
-// - Start/End dates are NOT typed per task -- they're computed by chaining
-//   from the PROJECT's own Start date (Sandra, 2026-07-24: "The start date
-//   on the WBS page will be the project start date"), independently per
-//   mode:
-//   - Full Effort: PACKED scheduling -- multiple short tasks can share a
-//     day's leftover 7.5h capacity instead of each task eating a whole day
-//     regardless of size (see buildPackedFullEffortChain below).
-//   - Conservative Effort / Capacity-Based: unchanged, one task at a time,
-//     jumps to the next working day once a task finishes.
-// - "Save" (Sandra, 2026-07-24: replaces the old three-button Finalize)
-//   writes ONE active mode's computed dates onto every task (still fully
-//   editable afterward on the Tasks page -- nothing is locked here
-//   anymore) and snapshots all three modes' numbers per task into
-//   task_planning_snapshots for reporting either way. Locking timelines is
-//   now ONLY done from the Tasks page's own Lock button (Timelines
-//   property) -- this page never locks anything itself.
+// WBS planning page -- see project_capaciq_wbs_planning memory for the
+// full design history across many rounds. Current shape (2026-07-24):
+// - Per task: Estimated hours, Task name, Effort, and Assignee are all
+//   directly editable and autosave immediately, same convention as the
+//   rest of the app.
+// - Start/End dates are NOT typed per task -- they're computed by
+//   chaining from the PROJECT's own Start date, independently for Full
+//   Effort (packed to use leftover same-day capacity) and Conservative
+//   Effort (one task at a time, flat 4h/day rate).
+// - "Save" writes ONE active mode's computed dates onto every task (still
+//   fully editable afterward) and snapshots both modes' numbers into
+//   task_planning_snapshots for reporting. Locking timelines is only ever
+//   done from the Tasks page's own Lock button.
+// - A Utilization snapshot panel (points/tier-based, same formula as the
+//   Utilization page) shows a live "what happens if I assign this"
+//   preview: it factors in every OTHER real task across the whole app for
+//   each person, but for tasks in THIS project it uses whatever the
+//   active mode currently computes for start/due -- so picking an
+//   assignee + effort updates the heat-map instantly, before Save.
 export default function WbsPlanning() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -102,11 +108,15 @@ export default function WbsPlanning() {
   const [project, setProject] = useState<ProjectRow | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
-  const [allocations, setAllocations] = useState<AllocationRow[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
+  // Cross-project data, fetched ONLY for the utilization heat-map -- a
+  // person's real workload includes every task/project they're on, not
+  // just this one, so the "does this person have room" question can't be
+  // answered from this project's own tasks alone.
+  const [allTasks, setAllTasks] = useState<UtilTaskRow[]>([]);
+  const [allProjects, setAllProjects] = useState<UtilProjectRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [taskPersonDrafts, setTaskPersonDrafts] = useState<Record<string, string>>({});
   const [activeMode, setActiveMode] = useState<Mode>("full_capacity");
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
@@ -114,20 +124,27 @@ export default function WbsPlanning() {
   async function loadAll() {
     if (!projectId) return;
     setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, { data: allocs }, { data: avail }, { data: hols }] = await Promise.all([
-      supabase.from("projects").select("id,name,start_date,end_date,timelines_locked,phase,status").eq("id", projectId).single(),
-      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,start_date,current_due_date,estimated_hours,effort,is_archived").eq("project_id", projectId).eq("is_archived", false),
+    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }] = await Promise.all([
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status").eq("id", projectId).single(),
+      supabase
+        .from("tasks")
+        .select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,effort,is_archived,sort_order")
+        .eq("project_id", projectId)
+        .eq("is_archived", false)
+        .order("sort_order"),
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
-      supabase.from("time_allocations").select("person_id,date,hours"),
       supabase.from("person_availability").select("person_id,date,status"),
       supabase.from("holidays").select("date"),
+      supabase.from("tasks").select("id,project_id,assignee_id,status,start_date,current_due_date,effort").eq("is_archived", false),
+      supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
     ]);
     setProject((proj as ProjectRow) ?? null);
     setTasks((tks as TaskRow[]) ?? []);
     setPeople((ppl as PersonRow[]) ?? []);
-    setAllocations((allocs as AllocationRow[]) ?? []);
     setAvailability((avail as AvailabilityRow[]) ?? []);
     setHolidays((hols as HolidayRow[]) ?? []);
+    setAllTasks((allTks as UtilTaskRow[]) ?? []);
+    setAllProjects((allProjs as UtilProjectRow[]) ?? []);
     setLoading(false);
   }
 
@@ -137,14 +154,19 @@ export default function WbsPlanning() {
   }, [projectId]);
 
   const holidaySet = buildHolidaySet(holidays.map((h) => h.date));
-  // Anchors the whole chain -- Sandra, 2026-07-24: always the project's own
-  // Start date now, no separate editable field on this page. Falls back to
-  // today only if the project itself has no Start date set yet.
+  // Anchors the whole chain -- always the project's own Start date.
+  // Falls back to today only if the project itself has no Start date yet.
   const projectStartDate = project?.start_date ? project.start_date.slice(0, 10) : new Date().toISOString().slice(0, 10);
 
   // Parent tasks first, each followed immediately by its own sub-tasks --
-  // same 2-level nesting the Projects table uses elsewhere, and the order
-  // the chain below walks in.
+  // same 2-level nesting the Projects table uses elsewhere. Relies on
+  // `tasks` already coming back sorted by sort_order from the query above
+  // (Sandra, 2026-07-24: "when adding task the new untitled task gets in
+  // the middle of the task list" -- the query had no explicit order
+  // clause before, so Postgres returned rows in whatever physical order
+  // they happened to be stored in, NOT creation order. Explicit
+  // `.order("sort_order")` fixes this the same way Projects.tsx's own
+  // Tasks query already does).
   function computeOrderedTasks(): (TaskRow & { depth: number })[] {
     const roots = tasks.filter((t) => !t.parent_task_id);
     const out: (TaskRow & { depth: number })[] = [];
@@ -160,15 +182,11 @@ export default function WbsPlanning() {
     return tasks.some((t) => t.parent_task_id === taskId);
   }
 
-  // Same rollup rule as the Projects & Tasks page (Sandra, 2026-07-23:
-  // "the parent hours can be edited. This should work the same way as
-  // when in task DB when handling parent sub task relationships") -- a
-  // parent task's own Est. hrs is locked and always mirrors the sum of
-  // its direct sub-tasks' Est. hrs, never typed directly. Duplicated here
-  // (rather than imported from Projects.tsx) since this page has its own
-  // separate `tasks` state/query -- Projects.tsx's own sync effect only
-  // runs while that page is mounted, so without this, editing hours here
-  // wouldn't keep a parent's total correct.
+  // Same rollup rule as the Projects & Tasks page -- a parent task's own
+  // Est. hrs is locked and always mirrors the sum of its direct
+  // sub-tasks' Est. hrs, never typed directly. Duplicated here (rather
+  // than imported from Projects.tsx) since this page has its own separate
+  // `tasks` state/query.
   function subtaskHoursSum(parentId: string): number | null {
     const children = tasks.filter((t) => t.parent_task_id === parentId);
     const withEstimate = children.filter((t) => t.estimated_hours !== null && t.estimated_hours !== undefined);
@@ -225,53 +243,25 @@ export default function WbsPlanning() {
     loadAll();
   }
 
-  function personCapacityOn(p: PersonRow, dateStr: string): number {
-    const av = availability.find((a) => a.person_id === p.id && a.date === dateStr);
-    if (av?.status === "off") return 0;
-    if (av?.status === "half_day") return p.daily_capacity_hours / 2;
-    return p.daily_capacity_hours;
-  }
-  function personCommittedOn(personId: string, dateStr: string): number {
-    return allocations.filter((a) => a.person_id === personId && a.date === dateStr).reduce((sum, a) => sum + Number(a.hours), 0);
-  }
-  function remainingHoursOnDate(p: PersonRow, dateStr: string): number {
-    return Math.max(0, personCapacityOn(p, dateStr) - personCommittedOn(p.id, dateStr));
-  }
-
   function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
     let d = addDays(parseLocalDate(dateStr), 1);
     while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
     return toISO(d);
   }
 
-  function personFor(t: TaskRow): PersonRow | null {
-    const personId = taskPersonDrafts[t.id] ?? t.assignee_id ?? "";
-    return people.find((p) => p.id === personId) ?? null;
-  }
-
   function computeEntry(t: TaskRow, start: string, mode: Mode): ChainEntry | null {
     const hours = t.estimated_hours;
     if (hours === null || hours === undefined) return null;
-    if (mode === "standard") {
-      const r = standardScenario(hours, start, holidaySet);
-      return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
-    }
-    const person = personFor(t);
-    if (!person) return null;
-    const r = capacityBasedScenario(hours, start, holidaySet, (d) => remainingHoursOnDate(person, d));
-    return { start, end: r.dueDate, durationDays: r.wholeDays };
+    const r = standardScenario(hours, start, holidaySet);
+    return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
   }
 
-  // Sequential chain -- used for Conservative Effort and Capacity-Based,
-  // unchanged from the original design: the project's Start date anchors
-  // the first top-level task, each following top-level task starts the
-  // working day after the one before it ends, and a task's own sub-tasks
-  // chain the same way within that task's slot (the parent's span is its
-  // first sub-task's start through its last sub-task's end). A task with
-  // no Estimated hours (or, for Capacity-Based, no person picked) can't be
-  // scheduled -- its entry is null, and nothing after it in THAT PARENT's
-  // remaining children can be placed either, since we no longer know when
-  // to start them.
+  // Sequential chain -- used for Conservative Effort: the project's Start
+  // date anchors the first top-level task, each following top-level task
+  // starts the working day after the one before it ends, and a task's own
+  // sub-tasks chain the same way within that task's slot. A task with no
+  // Estimated hours can't be scheduled -- its entry is null, and nothing
+  // after it in THAT PARENT's remaining children can be placed either.
   function buildSequentialChain(mode: Mode): Map<string, ChainEntry | null> {
     const result = new Map<string, ChainEntry | null>();
     let cursor = projectStartDate;
@@ -309,19 +299,14 @@ export default function WbsPlanning() {
     return result;
   }
 
-  // Packed Full Effort chain (Sandra, 2026-07-24 -- design agreed
-  // 2026-07-23, see project_capaciq_wbs_planning memory). Instead of every
-  // task eating a whole day of the flat 7.5h/day pool regardless of size
-  // (so a 3h task would push the next task to tomorrow even though 4.5h
-  // was left over), this keeps a single running "usage" ledger of hours
-  // already spoken for on each calendar day, shared across the ENTIRE
-  // chain (both root tasks and their sub-tasks draw from the same
-  // continuous pool, walked in the same order buildSequentialChain uses).
-  // A task starts on the first working day that still has spare capacity,
-  // consumes from that day (and however many more it needs) until its
-  // hours are used up, and the cursor is left sitting on the LAST day
-  // touched -- not the day after -- so the next task's search naturally
-  // tries to fill that same day's leftover capacity first.
+  // Packed Full Effort chain: instead of every task eating a whole day of
+  // the flat 7.5h/day pool regardless of size, this keeps a running
+  // "usage" ledger of hours already spoken for on each calendar day,
+  // shared across the ENTIRE chain. A task starts on the first working
+  // day that still has spare capacity, consumes from that day (and
+  // however many more it needs), and the cursor is left sitting on the
+  // LAST day touched so the next task's search tries to fill that same
+  // day's leftover capacity first.
   function buildPackedFullEffortChain(): Map<string, ChainEntry | null> {
     const result = new Map<string, ChainEntry | null>();
     const usage = new Map<string, number>(); // dateStr -> hours already used, capped at 7.5
@@ -397,82 +382,11 @@ export default function WbsPlanning() {
     return result;
   }
 
-  // Capacity-Based parallel chain (Sandra, 2026-07-24): the sequential
-  // chain above forces every sibling to queue strictly one after another
-  // using a single shared cursor -- fine for Conservative Effort (a flat
-  // idealized rate, no real person attached, so "queue everything" is a
-  // reasonable simplification) but wrong for Capacity-Based, which DOES
-  // attach a real person per task. Two sub-tasks assigned to two
-  // different people can genuinely start the same day -- they're not
-  // blocking each other. Fix: track each assigned person's own "next free
-  // date" across the ENTIRE plan (not reset per parent), applied to every
-  // task with children skipped and derived afterward -- Sandra confirmed
-  // "everything" (not just sub-tasks) should get this treatment. A task
-  // assigned to the same person as an earlier task in the list still
-  // queues after them (one person can't do two things at once); a task
-  // assigned to a different (or not-yet-busy) person starts as soon as
-  // its own anchor point allows, independent of siblings.
-  function buildCapacityBasedParallelChain(): Map<string, ChainEntry | null> {
-    const result = new Map<string, ChainEntry | null>();
-    const personCursor = new Map<string, string>(); // personId -> next free working day (ISO)
-
-    function nextFreeDayFor(personId: string): string {
-      return personCursor.get(personId) ?? projectStartDate;
-    }
-
-    // Pass 1: schedule every LEAF task (no sub-tasks of its own) in
-    // display order -- that order is the priority Sandra planned in.
-    // Parents are derived afterward in pass 2, not scheduled directly
-    // (their own Est. hrs already mirrors the sum of their children, so
-    // consuming them too would double-count, same reasoning as the
-    // packed Full Effort chain above).
-    for (const t of orderedTasks) {
-      if (hasChildren(t.id)) continue;
-      const hours = t.estimated_hours;
-      const person = personFor(t);
-      if (hours === null || hours === undefined || !person) {
-        result.set(t.id, null);
-        continue;
-      }
-      const start = nextFreeDayFor(person.id);
-      const r = capacityBasedScenario(hours, start, holidaySet, (d) => remainingHoursOnDate(person, d));
-      const entry: ChainEntry = { start, end: r.dueDate, durationDays: r.wholeDays };
-      result.set(t.id, entry);
-      personCursor.set(person.id, nextWorkingDayAfter(entry.end, holidaySet));
-    }
-
-    // Pass 2: a parent's span is now its EARLIEST child start through its
-    // LATEST child end -- not first-in-list-to-last-in-list, since
-    // children assigned to different people can finish out of order.
-    const roots = orderedTasks.filter((t) => t.depth === 0);
-    for (const root of roots) {
-      if (!hasChildren(root.id)) continue; // leaf roots already scheduled in pass 1
-      const children = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === root.id);
-      let start: string | null = null;
-      let end: string | null = null;
-      for (const c of children) {
-        const e = result.get(c.id);
-        if (!e) continue;
-        if (!start || e.start < start) start = e.start;
-        if (!end || e.end > end) end = e.end;
-      }
-      if (start && end) {
-        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-        result.set(root.id, { start, end, durationDays });
-      } else {
-        result.set(root.id, null);
-      }
-    }
-    return result;
-  }
-
   const fullChain = buildPackedFullEffortChain();
   const standardChain = buildSequentialChain("standard");
-  const capacityChain = buildCapacityBasedParallelChain();
   const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
     full_capacity: fullChain,
     standard: standardChain,
-    capacity_based: capacityChain,
   };
 
   async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
@@ -484,13 +398,10 @@ export default function WbsPlanning() {
     }
   }
 
-  // Sandra, 2026-07-24: WBS's Start date is always the PROJECT's own Start
-  // date (single source of truth, so the chain and the Tasks page can
-  // never disagree) -- but it still needs to be settable from here rather
-  // than only from the Projects table, since defaulting silently to
-  // today's date with no way to change it was a real gap ("unable to
-  // select start date in WBS"). This writes straight through to
-  // projects.start_date -- it is NOT a separate WBS-local field.
+  // WBS's Start date is always the PROJECT's own Start date (single
+  // source of truth) -- but it's still settable from here, writing
+  // straight through to projects.start_date rather than a separate
+  // WBS-local field.
   async function saveProjectStartDate(value: string) {
     if (!project) return;
     setProject((prev) => (prev ? { ...prev, start_date: value } : prev));
@@ -502,10 +413,7 @@ export default function WbsPlanning() {
   }
 
   // Soft completeness gate -- mirrors the Task name / Effort part of the
-  // Projects table's own Lock policy (incompleteTasksFor in Projects.tsx).
-  // Estimated hours (and, for Capacity-Based, a picked person) are NOT
-  // included here -- those are hard blockers checked separately below,
-  // since without them there's literally no schedule to compute at all.
+  // Projects table's own Lock policy.
   function softIssues(): string[] {
     const issues: string[] = [];
     const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
@@ -515,9 +423,9 @@ export default function WbsPlanning() {
     return issues;
   }
 
-  // Total effort for the whole project -- summed from top-level tasks only
-  // (a parent's own Est. hrs already mirrors the sum of its sub-tasks via
-  // the rollup effect above, so summing children too would double-count).
+  // Total effort for the whole project -- summed from top-level tasks
+  // only (a parent's own Est. hrs already mirrors the sum of its
+  // sub-tasks via the rollup effect above).
   const totalEffortHours = Math.round(
     orderedTasks
       .filter((t) => t.depth === 0)
@@ -525,9 +433,7 @@ export default function WbsPlanning() {
   ) / 100;
 
   // Project-level projected completion under a given mode: the latest End
-  // date among every task's entry in that mode's chain (not just the last
-  // task in list order -- Capacity-Based in particular can, in principle,
-  // resolve out of strict order if a person's schedule is uneven).
+  // date among every task's entry in that mode's chain.
   function chainOverallSummary(chain: Map<string, ChainEntry | null>): { end: string | null; durationDays: number; complete: boolean } {
     let end: string | null = null;
     let complete = true;
@@ -550,9 +456,7 @@ export default function WbsPlanning() {
     const unresolved = orderedTasks.filter((t) => !chosenChain.get(t.id));
     if (unresolved.length) {
       await alert(
-        `Can't save ${MODE_LABEL[activeMode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add Estimated hours${
-          activeMode === "capacity_based" ? ", and pick a person," : ""
-        } for every task first.`
+        `Can't save ${MODE_LABEL[activeMode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add Estimated hours for every task first.`
       );
       return;
     }
@@ -569,7 +473,7 @@ export default function WbsPlanning() {
     const verb = MODE_LABEL[activeMode];
     if (
       !(await confirm(
-        `Save this project's timelines using ${verb}?\n\nThis writes every task's computed Start/Due date (still fully editable afterward) and records all three modes for reporting. Timelines stay unlocked -- lock from the Tasks page's Timelines column when you're ready to finalize.`
+        `Save this project's timelines using ${verb}?\n\nThis writes every task's computed Start/Due date (still fully editable afterward) and records both modes for reporting. Timelines stay unlocked -- lock from the Tasks page's Timelines column when you're ready to finalize.`
       ))
     )
       return;
@@ -581,18 +485,7 @@ export default function WbsPlanning() {
         const chosen = chosenChain.get(t.id);
         if (!chosen) continue;
 
-        // Sandra, 2026-07-24: "saved using capacity based but it didn't
-        // carry over assignees" -- Save was only ever writing the
-        // computed Start/Due dates, never the person actually picked in
-        // the Capacity-Based Person column. That picker is the whole
-        // point of the mode, so persist it too when it's the active mode
-        // (personFor already falls back to the task's existing
-        // assignee_id when nothing was drafted this session, so this is
-        // a no-op write for tasks whose assignee didn't change).
         const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
-        if (activeMode === "capacity_based") {
-          patch.assignee_id = personFor(t)?.id ?? null;
-        }
         await supabase.from("tasks").update(patch).eq("id", t.id);
         setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
 
@@ -604,7 +497,7 @@ export default function WbsPlanning() {
             mode: m,
             applied: m === activeMode,
             target_start_date: entry.start,
-            person_id: m === "capacity_based" ? personFor(t)?.id ?? null : null,
+            person_id: null,
             raw_days: entry.rawDays ?? null,
             whole_days: entry.durationDays,
             computed_due_date: entry.end,
@@ -650,27 +543,30 @@ export default function WbsPlanning() {
   const summaries: Record<Mode, ReturnType<typeof chainOverallSummary>> = {
     full_capacity: chainOverallSummary(fullChain),
     standard: chainOverallSummary(standardChain),
-    capacity_based: chainOverallSummary(capacityChain),
   };
 
-  // Utilization snapshot -- Sandra, 2026-07-24: "when a user selects a
-  // start date, show a snapshot of their utilization for the next 4 weeks
-  // ... to see someone's bandwidth so we know who to assign." One global
-  // panel (not per-task), daily granularity, a 4-week window anchored on
-  // the project's own Start date with a forward/back toggle to page
-  // further out. Reuses the same capacity/committed-hours math already
-  // used for Capacity-Based scheduling above (personCapacityOn /
-  // personCommittedOn), just rendered as a grid instead of consumed by a
-  // scenario calculator.
+  // Real-time utilization heat-map (Sandra, 2026-07-24): "when we
+  // temporarily plot tasks to someone and select effort - the
+  // utilization preview updates real time." Every OTHER project's tasks
+  // count exactly as committed in the DB; THIS project's own tasks are
+  // overridden with whatever the ACTIVE mode currently computes for
+  // start/due (falling back to the task's real dates if it doesn't have
+  // a computed entry yet, e.g. missing Est. hrs) -- so picking an
+  // assignee or effort level (both autosave immediately into `tasks`
+  // state) or switching modes recomputes the heat-map instantly, with no
+  // Save required.
+  const effectiveTasksForUtil: UtilTaskRow[] = allTasks.map((t) => {
+    if (t.project_id !== projectId) return t;
+    const local = orderedTasks.find((ot) => ot.id === t.id);
+    const entry = local ? chainByMode[activeMode].get(local.id) : null;
+    return entry ? { ...t, start_date: entry.start, current_due_date: entry.end } : t;
+  });
+
   const utilWindowStart = addDays(parseLocalDate(projectStartDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
-  function utilTier(freeHours: number, capacity: number): { bg: string; fg: string } {
-    if (capacity <= 0) return { bg: "transparent", fg: "var(--muted)" };
-    const usedPct = Math.round(((capacity - freeHours) / capacity) * 100);
-    if (usedPct <= 0) return { bg: "var(--available-bg, #eef6ff)", fg: "var(--available-text, #2b6cb0)" };
-    if (usedPct <= 80) return { bg: "var(--success-bg, #e6f7ee)", fg: "var(--success-text, #1e7a4c)" };
-    if (usedPct <= 100) return { bg: "var(--warning-bg, #fff6e0)", fg: "var(--warning-text, #97650f)" };
-    return { bg: "var(--danger-bg, #fdeaea)", fg: "var(--danger-text, #b23a3a)" };
+
+  function utilAvailability(personId: string, dateStr: string): AvailabilityRow | undefined {
+    return availability.find((a) => a.person_id === personId && a.date === dateStr);
   }
 
   return (
@@ -681,10 +577,10 @@ export default function WbsPlanning() {
       </Link>
       <h1>WBS Planning — {project.name}</h1>
       <p className="subtitle">
-        Set each task's Estimated hours below (saves immediately). The project's own Start date anchors the very first task; every task after it starts
-        right after the one before it finishes -- computed independently for Full Effort (packed to use leftover same-day capacity), Conservative Effort,
-        and Capacity-Based. Save applies the selected mode's dates to every task without locking anything; all three modes' numbers stay on record for
-        reporting either way. Lock timelines from the Tasks page when you're ready to finalize.
+        Set each task's Estimated hours, Effort, and Assignee below (all save immediately). The project's own Start date anchors the very first task;
+        every task after it starts right after the one before it finishes -- computed independently for Full Effort (packed to use leftover same-day
+        capacity) and Conservative Effort. Save applies the selected mode's dates to every task without locking anything. The utilization panel below
+        updates live as you plan, using whichever mode is active.
       </p>
 
       {project.timelines_locked ? (
@@ -733,11 +629,14 @@ export default function WbsPlanning() {
             </div>
           </div>
 
-          {/* Global utilization snapshot -- bandwidth check before assigning */}
+          {/* Live utilization heat-map -- same points/tier formula as the
+              Utilization page, fed this project's DRAFT plan */}
           <div className="card" style={{ padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
-              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Daily free hours per person, so you know who has bandwidth to assign.</span>
+              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                Live preview -- updates as you assign people and set effort, using {MODE_LABEL[activeMode]}'s current schedule.
+              </span>
               <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
                 <button className="planner-nav-btn" title="Previous 4 weeks" onClick={() => setUtilWindowOffset((o) => o - 1)}>
                   <ChevronLeft size={14} />
@@ -779,17 +678,30 @@ export default function WbsPlanning() {
                         const iso = toISO(d);
                         if (!isWorkingDay(d, holidaySet)) {
                           return (
-                            <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)" }}>
+                            <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)", background: "var(--hover-bg)" }}>
                               –
                             </td>
                           );
                         }
-                        const capacity = personCapacityOn(p, iso);
-                        const free = remainingHoursOnDate(p, iso);
-                        const tier = utilTier(free, capacity);
+                        const av = utilAvailability(p.id, iso);
+                        if (av?.status === "off") {
+                          return (
+                            <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
+                              Off
+                            </td>
+                          );
+                        }
+                        const points = dailyPointsFor(p.id, iso, effectiveTasksForUtil, allProjects);
+                        const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
+                        const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
+                        const tier = tierOf(pct);
                         return (
-                          <td key={iso} style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600 }} title={`${p.name} · ${iso} · ${free}h free of ${capacity}h`}>
-                            {capacity > 0 ? free : "–"}
+                          <td
+                            key={iso}
+                            style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600 }}
+                            title={`${p.name} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
+                          >
+                            {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
                           </td>
                         );
                       })}
@@ -820,14 +732,14 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 90 }}>
                     Effort
                   </th>
+                  <th rowSpan={2} style={{ width: 150 }}>
+                    Assignee
+                  </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
                     Full Effort
                   </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }}>
                     Conservative Effort
-                  </th>
-                  <th colSpan={4} style={{ textAlign: "center", ...modeColStyle("capacity_based") }}>
-                    Capacity-Based
                   </th>
                 </tr>
                 <tr>
@@ -837,23 +749,19 @@ export default function WbsPlanning() {
                   <th style={{ width: 100, ...modeColStyle("standard") }}>Start Date</th>
                   <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
-                  <th style={{ width: 150, ...modeColStyle("capacity_based") }}>Person</th>
-                  <th style={{ width: 100, ...modeColStyle("capacity_based") }}>Start Date</th>
-                  <th style={{ width: 100, ...modeColStyle("capacity_based") }}>End Date</th>
-                  <th style={{ width: 90, ...modeColStyle("capacity_based") }}>Duration (days)</th>
                 </tr>
               </thead>
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={13} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={10} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
                 )}
                 {orderedTasks.map((t) => {
                   const isParent = t.depth === 0 && hasChildren(t.id);
-                  const person = personFor(t);
+                  const assignee = people.find((p) => p.id === t.assignee_id);
                   return (
                     <tr key={t.id}>
                       <td>
@@ -888,27 +796,26 @@ export default function WbsPlanning() {
                           onCommit={(v) => saveTaskField(t.id, { effort: v || null })}
                         />
                       </td>
-                      {renderScenarioCells(t, "full_capacity")}
-                      {renderScenarioCells(t, "standard")}
-                      <td style={{ fontSize: 12, ...modeColStyle("capacity_based") }}>
+                      <td>
                         <InlineSelect
-                          value={person?.name ?? ""}
+                          value={assignee?.name ?? ""}
                           editable
                           allowEmpty
-                          emptyLabel="Pick a person"
+                          emptyLabel="Unassigned"
                           options={people.map((p) => p.name)}
                           onCommit={(name) => {
                             const p = people.find((pp) => pp.name === name);
-                            setTaskPersonDrafts((prev) => ({ ...prev, [t.id]: p?.id ?? "" }));
+                            saveTaskField(t.id, { assignee_id: p?.id ?? null });
                           }}
                         />
                       </td>
-                      {renderScenarioCells(t, "capacity_based")}
+                      {renderScenarioCells(t, "full_capacity")}
+                      {renderScenarioCells(t, "standard")}
                     </tr>
                   );
                 })}
                 <tr>
-                  <td colSpan={13} className="add-row-cell">
+                  <td colSpan={10} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task
