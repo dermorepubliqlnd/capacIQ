@@ -940,7 +940,20 @@ export default function WbsPlanning() {
         const y1 = GANTT_HEADER_HEIGHT + predRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
         const x2 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(succEntry.start);
         const y2 = GANTT_HEADER_HEIGHT + succRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
-        const midX = x1 + Math.max((x2 - x1) / 2, 6);
+        // Sandra flagged this connector was rendering but essentially
+        // invisible in practice: (1) `var(--border)` (#e3e7ec) is a
+        // near-white hairline color meant for subtle table borders, far
+        // too faint for a line drawn over a plain white Gantt background;
+        // (2) a Finish-to-Start dependency's successor almost always
+        // starts the very next working day after its predecessor ends --
+        // there's rarely any real horizontal gap between the two bars, so
+        // the old 6px-minimum elbow jog was too small to read as anything
+        // more than a stray pixel. Fixed by switching the neutral color to
+        // `var(--muted)` (a real medium gray already used elsewhere on
+        // this page for secondary text -- still reads as "light/quiet"
+        // next to the bold amber conflict color, just not literally
+        // invisible) and widening the minimum jog to 14px.
+        const midX = x1 + Math.max((x2 - x1) / 2, 14);
         const conflict = succEntry.start <= predEntry.end;
         const path = `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`;
         elems.push(
@@ -948,9 +961,9 @@ export default function WbsPlanning() {
             key={`${depId}->${t.id}`}
             d={path}
             fill="none"
-            stroke={conflict ? "var(--warning-text, #b45309)" : "var(--border)"}
-            strokeWidth={conflict ? 1.5 : 1}
-            strokeDasharray={conflict ? undefined : "3,3"}
+            stroke={conflict ? "var(--warning-text, #b45309)" : "var(--muted, #8a94a6)"}
+            strokeWidth={conflict ? 1.5 : 1.25}
+            strokeDasharray={conflict ? undefined : "4,3"}
           />
         );
       }
