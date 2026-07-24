@@ -555,12 +555,29 @@ export default function WbsPlanning() {
   // assignee or effort level (both autosave immediately into `tasks`
   // state) or switching modes recomputes the heat-map instantly, with no
   // Save required.
-  const effectiveTasksForUtil: UtilTaskRow[] = allTasks.map((t) => {
-    if (t.project_id !== projectId) return t;
-    const local = orderedTasks.find((ot) => ot.id === t.id);
-    const entry = local ? chainByMode[activeMode].get(local.id) : null;
-    return entry ? { ...t, start_date: entry.start, current_due_date: entry.end } : t;
-  });
+  // Sandra, 2026-07-24: initial version of this only overrode dates on
+  // top of the separately-fetched `allTasks` snapshot -- but that
+  // snapshot is fetched once on page load and never updated after, so a
+  // freshly-picked Assignee/Effort (which autosave into local `tasks`
+  // state instantly) never showed up here; the heat-map stayed flat
+  // until a full reload. Fixed by building THIS project's rows straight
+  // from the live `tasks`/`orderedTasks` state (always current) and only
+  // pulling OTHER projects' tasks from the `allTasks` snapshot.
+  const effectiveTasksForUtil: UtilTaskRow[] = [
+    ...allTasks.filter((t) => t.project_id !== projectId),
+    ...orderedTasks.map((t) => {
+      const entry = chainByMode[activeMode].get(t.id);
+      return {
+        id: t.id,
+        project_id: t.project_id,
+        assignee_id: t.assignee_id,
+        status: t.status,
+        start_date: entry?.start ?? t.start_date,
+        current_due_date: entry?.end ?? t.current_due_date,
+        effort: t.effort,
+      };
+    }),
+  ];
 
   const utilWindowStart = addDays(parseLocalDate(projectStartDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
