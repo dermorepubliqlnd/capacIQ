@@ -96,7 +96,7 @@ export default function WbsPlanning() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { person: me } = useSession();
-  const { confirm, dialog } = useConfirm();
+  const { confirm, alert, dialog } = useConfirm();
   const isFullAccess = me?.access_level === "full";
 
   const [project, setProject] = useState<ProjectRow | null>(null);
@@ -201,7 +201,7 @@ export default function WbsPlanning() {
       sort_order: Date.now(),
     });
     if (error) {
-      alert(`Couldn't create task: ${error.message}`);
+      await alert(`Couldn't create task: ${error.message}`);
       return;
     }
     loadAll();
@@ -219,7 +219,7 @@ export default function WbsPlanning() {
       sort_order: Date.now(),
     });
     if (error) {
-      alert(`Couldn't add subtask: ${error.message}`);
+      await alert(`Couldn't add subtask: ${error.message}`);
       return;
     }
     loadAll();
@@ -397,9 +397,78 @@ export default function WbsPlanning() {
     return result;
   }
 
+  // Capacity-Based parallel chain (Sandra, 2026-07-24): the sequential
+  // chain above forces every sibling to queue strictly one after another
+  // using a single shared cursor -- fine for Conservative Effort (a flat
+  // idealized rate, no real person attached, so "queue everything" is a
+  // reasonable simplification) but wrong for Capacity-Based, which DOES
+  // attach a real person per task. Two sub-tasks assigned to two
+  // different people can genuinely start the same day -- they're not
+  // blocking each other. Fix: track each assigned person's own "next free
+  // date" across the ENTIRE plan (not reset per parent), applied to every
+  // task with children skipped and derived afterward -- Sandra confirmed
+  // "everything" (not just sub-tasks) should get this treatment. A task
+  // assigned to the same person as an earlier task in the list still
+  // queues after them (one person can't do two things at once); a task
+  // assigned to a different (or not-yet-busy) person starts as soon as
+  // its own anchor point allows, independent of siblings.
+  function buildCapacityBasedParallelChain(): Map<string, ChainEntry | null> {
+    const result = new Map<string, ChainEntry | null>();
+    const personCursor = new Map<string, string>(); // personId -> next free working day (ISO)
+
+    function nextFreeDayFor(personId: string): string {
+      return personCursor.get(personId) ?? projectStartDate;
+    }
+
+    // Pass 1: schedule every LEAF task (no sub-tasks of its own) in
+    // display order -- that order is the priority Sandra planned in.
+    // Parents are derived afterward in pass 2, not scheduled directly
+    // (their own Est. hrs already mirrors the sum of their children, so
+    // consuming them too would double-count, same reasoning as the
+    // packed Full Effort chain above).
+    for (const t of orderedTasks) {
+      if (hasChildren(t.id)) continue;
+      const hours = t.estimated_hours;
+      const person = personFor(t);
+      if (hours === null || hours === undefined || !person) {
+        result.set(t.id, null);
+        continue;
+      }
+      const start = nextFreeDayFor(person.id);
+      const r = capacityBasedScenario(hours, start, holidaySet, (d) => remainingHoursOnDate(person, d));
+      const entry: ChainEntry = { start, end: r.dueDate, durationDays: r.wholeDays };
+      result.set(t.id, entry);
+      personCursor.set(person.id, nextWorkingDayAfter(entry.end, holidaySet));
+    }
+
+    // Pass 2: a parent's span is now its EARLIEST child start through its
+    // LATEST child end -- not first-in-list-to-last-in-list, since
+    // children assigned to different people can finish out of order.
+    const roots = orderedTasks.filter((t) => t.depth === 0);
+    for (const root of roots) {
+      if (!hasChildren(root.id)) continue; // leaf roots already scheduled in pass 1
+      const children = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === root.id);
+      let start: string | null = null;
+      let end: string | null = null;
+      for (const c of children) {
+        const e = result.get(c.id);
+        if (!e) continue;
+        if (!start || e.start < start) start = e.start;
+        if (!end || e.end > end) end = e.end;
+      }
+      if (start && end) {
+        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+        result.set(root.id, { start, end, durationDays });
+      } else {
+        result.set(root.id, null);
+      }
+    }
+    return result;
+  }
+
   const fullChain = buildPackedFullEffortChain();
   const standardChain = buildSequentialChain("standard");
-  const capacityChain = buildSequentialChain("capacity_based");
+  const capacityChain = buildCapacityBasedParallelChain();
   const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
     full_capacity: fullChain,
     standard: standardChain,
@@ -410,7 +479,7 @@ export default function WbsPlanning() {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
     const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
     if (error) {
-      alert(`Couldn't save: ${error.message}`);
+      await alert(`Couldn't save: ${error.message}`);
       loadAll();
     }
   }
@@ -427,7 +496,7 @@ export default function WbsPlanning() {
     setProject((prev) => (prev ? { ...prev, start_date: value } : prev));
     const { error } = await supabase.from("projects").update({ start_date: value }).eq("id", project.id);
     if (error) {
-      alert(`Couldn't save start date: ${error.message}`);
+      await alert(`Couldn't save start date: ${error.message}`);
       loadAll();
     }
   }
@@ -480,7 +549,7 @@ export default function WbsPlanning() {
     const chosenChain = chainByMode[activeMode];
     const unresolved = orderedTasks.filter((t) => !chosenChain.get(t.id));
     if (unresolved.length) {
-      alert(
+      await alert(
         `Can't save ${MODE_LABEL[activeMode]} yet -- ${unresolved.length} task(s) don't have a schedule under it. Add Estimated hours${
           activeMode === "capacity_based" ? ", and pick a person," : ""
         } for every task first.`
@@ -490,7 +559,7 @@ export default function WbsPlanning() {
 
     const issues = softIssues();
     if (issues.length && !isFullAccess) {
-      alert(`Can't save yet:\n\n${issues.join("\n")}`);
+      await alert(`Can't save yet:\n\n${issues.join("\n")}`);
       return;
     }
     if (issues.length && isFullAccess) {
@@ -512,8 +581,20 @@ export default function WbsPlanning() {
         const chosen = chosenChain.get(t.id);
         if (!chosen) continue;
 
-        await supabase.from("tasks").update({ start_date: chosen.start, current_due_date: chosen.end }).eq("id", t.id);
-        setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, start_date: chosen.start, current_due_date: chosen.end } : x)));
+        // Sandra, 2026-07-24: "saved using capacity based but it didn't
+        // carry over assignees" -- Save was only ever writing the
+        // computed Start/Due dates, never the person actually picked in
+        // the Capacity-Based Person column. That picker is the whole
+        // point of the mode, so persist it too when it's the active mode
+        // (personFor already falls back to the task's existing
+        // assignee_id when nothing was drafted this session, so this is
+        // a no-op write for tasks whose assignee didn't change).
+        const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
+        if (activeMode === "capacity_based") {
+          patch.assignee_id = personFor(t)?.id ?? null;
+        }
+        await supabase.from("tasks").update(patch).eq("id", t.id);
+        setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
 
         const snapshotRows = MODES.map((m) => ({ m, entry: chainByMode[m].get(t.id) }))
           .filter((x): x is { m: Mode; entry: ChainEntry } => !!x.entry)
@@ -532,7 +613,7 @@ export default function WbsPlanning() {
         if (snapshotRows.length) await supabase.from("task_planning_snapshots").insert(snapshotRows);
       }
       await loadAll();
-      alert(`Saved using ${verb}. Timelines are still unlocked -- finalize from the Tasks page when ready.`);
+      await alert(`Saved using ${verb}. Timelines are still unlocked -- finalize from the Tasks page when ready.`);
     } finally {
       setSaving(false);
     }
