@@ -530,12 +530,32 @@ export default function WbsPlanning() {
   // editing a Start date, assignee, or effort level (all autosave
   // immediately into `tasks` state) or switching modes recomputes the
   // heat-map instantly, with no Save required.
-  const effectiveTasksForUtil: UtilTaskRow[] = allTasks.map((t) => {
-    if (t.project_id !== projectId) return t;
-    const local = orderedTasks.find((ot) => ot.id === t.id);
-    const entry = local ? chainByMode[activeMode].get(local.id) : null;
-    return entry ? { ...t, start_date: entry.start, current_due_date: entry.end } : t;
-  });
+  // NOTE (fixed 2026-07-24, found live on "Project 1" right after Round 7
+  // shipped): the earlier version of this merged computed start/due dates
+  // onto `allTasks`' own per-task object, which kept THAT snapshot's
+  // assignee_id/effort/status -- fine for dates, but any Assignee/Effort
+  // edited live (no full-page reload since) never made it into the
+  // heat-map, since `allTasks` is fetched once at page load and never
+  // refetched after a plain field save. Fixed by rebuilding this
+  // project's own rows entirely fresh from live local state every
+  // render, same fix already applied once before for a narrower version
+  // of this same staleness bug -- only OTHER projects' tasks (not being
+  // edited in this session) still come from the `allTasks` snapshot.
+  const effectiveTasksForUtil: UtilTaskRow[] = [
+    ...allTasks.filter((t) => t.project_id !== projectId),
+    ...orderedTasks.map((t) => {
+      const entry = chainByMode[activeMode].get(t.id);
+      return {
+        id: t.id,
+        project_id: t.project_id,
+        assignee_id: t.assignee_id,
+        status: t.status,
+        start_date: entry?.start ?? t.start_date,
+        current_due_date: entry?.end ?? t.current_due_date,
+        effort: t.effort,
+      };
+    }),
+  ];
 
   // Same live-draft idea for THIS project's own row in the PM-overhead
   // calculation (Sandra: "when project owner has been selected and start
