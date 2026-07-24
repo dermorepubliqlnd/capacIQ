@@ -11,6 +11,7 @@ import Admin from "./pages/Admin";
 import DayPlanner from "./pages/DayPlanner";
 import HolidayCalendar from "./pages/HolidayCalendar";
 import WbsPlanning from "./pages/WbsPlanning";
+import BaselineReport from "./pages/BaselineReport";
 import Login from "./pages/Login";
 import SetPassword from "./pages/SetPassword";
 
@@ -48,6 +49,7 @@ export default function App() {
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:projectId" element={<Projects />} />
           <Route path="/projects/:projectId/wbs" element={<WbsPlanning />} />
+          <Route path="/projects/:projectId/baseline" element={<BaselineReport />} />
           <Route path="/tasks" element={<Navigate to="/projects" replace />} />
           <Route path="/tasks/:taskId" element={<Navigate to="/projects" replace />} />
           <Route path="/extension-requests" element={<ExtensionRequests />} />

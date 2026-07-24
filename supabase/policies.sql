@@ -1437,3 +1437,111 @@ update tasks set start_date_standard = start_date where start_date_standard is n
 -- is left alone (the existing conflict warning still covers that case).
 alter table tasks add column if not exists start_full_auto boolean not null default true;
 alter table tasks add column if not exists start_standard_auto boolean not null default true;
+
+-- Migration 2026-07-24h (baseline vs final performance reporting).
+-- Sandra: "I want to see initial baseline and final performance ... upon
+-- locking timelines, this saves and cannot be changed ... on project
+-- close I want to see changes." Two immutable snapshots, same "audit
+-- trail, no update/delete policy" convention as task_planning_snapshots
+-- above -- one automatically captured the moment timelines are LOCKED
+-- (Projects.tsx's performTimelinesLock), one captured by a new deliberate
+-- "Close out" action (her own choice over tying this to a Status value,
+-- since Status can get toggled around for other reasons). Each snapshot
+-- also gets a per-task child table (name + estimated_hours at that exact
+-- moment) so the report can later show WHICH tasks were added or grew --
+-- deliberately NOT a foreign key to tasks(id) so this stays readable even
+-- if a task is later deleted (tasks are always hard-deleted per
+-- [[project_capaciq_archive_semantics]], never soft-archived).
+create table if not exists project_baselines (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade not null unique,
+  captured_at timestamptz not null default now(),
+  captured_by uuid references people(id),
+  mode text not null check (mode in ('full_capacity', 'standard')),
+  total_est_hours numeric not null,
+  task_count integer not null,
+  start_date date,
+  end_date date
+);
+create table if not exists project_baseline_tasks (
+  id uuid primary key default gen_random_uuid(),
+  baseline_id uuid references project_baselines(id) on delete cascade not null,
+  task_id uuid not null,
+  name text not null,
+  estimated_hours numeric
+);
+create index if not exists project_baseline_tasks_baseline_idx on project_baseline_tasks(baseline_id);
+
+create table if not exists project_closeouts (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references projects(id) on delete cascade not null unique,
+  closed_at timestamptz not null default now(),
+  closed_by uuid references people(id),
+  mode text not null check (mode in ('full_capacity', 'standard')),
+  total_est_hours numeric not null,
+  task_count integer not null,
+  start_date date,
+  end_date date
+);
+create table if not exists project_closeout_tasks (
+  id uuid primary key default gen_random_uuid(),
+  closeout_id uuid references project_closeouts(id) on delete cascade not null,
+  task_id uuid not null,
+  name text not null,
+  estimated_hours numeric
+);
+create index if not exists project_closeout_tasks_closeout_idx on project_closeout_tasks(closeout_id);
+
+alter table project_baselines enable row level security;
+alter table project_baseline_tasks enable row level security;
+alter table project_closeouts enable row level security;
+alter table project_closeout_tasks enable row level security;
+
+create policy project_baselines_select on project_baselines for select
+  using (can_see_project(project_id));
+create policy project_baselines_insert on project_baselines for insert
+  with check (
+    exists (select 1 from projects pr where pr.id = project_id and (my_access_level() = 'full' or pr.owner_id = my_person_id()))
+  );
+-- Immutable audit trail -- no update/delete policy (both denied by default).
+
+create policy project_baseline_tasks_select on project_baseline_tasks for select
+  using (exists (select 1 from project_baselines b where b.id = baseline_id and can_see_project(b.project_id)));
+create policy project_baseline_tasks_insert on project_baseline_tasks for insert
+  with check (
+    exists (
+      select 1 from project_baselines b join projects pr on pr.id = b.project_id
+      where b.id = baseline_id and (my_access_level() = 'full' or pr.owner_id = my_person_id())
+    )
+  );
+
+create policy project_closeouts_select on project_closeouts for select
+  using (can_see_project(project_id));
+-- Close-out is re-runnable (Sandra may need to correct/refresh the final
+-- numbers), so unlike the other snapshot tables this one DOES get an
+-- update policy -- same permission as insert. Still no delete.
+create policy project_closeouts_insert on project_closeouts for insert
+  with check (
+    exists (select 1 from projects pr where pr.id = project_id and (my_access_level() = 'full' or pr.owner_id = my_person_id()))
+  );
+create policy project_closeouts_update on project_closeouts for update
+  using (
+    exists (select 1 from projects pr where pr.id = project_id and (my_access_level() = 'full' or pr.owner_id = my_person_id()))
+  );
+
+create policy project_closeout_tasks_select on project_closeout_tasks for select
+  using (exists (select 1 from project_closeouts c where c.id = closeout_id and can_see_project(c.project_id)));
+create policy project_closeout_tasks_insert on project_closeout_tasks for insert
+  with check (
+    exists (
+      select 1 from project_closeouts c join projects pr on pr.id = c.project_id
+      where c.id = closeout_id and (my_access_level() = 'full' or pr.owner_id = my_person_id())
+    )
+  );
+create policy project_closeout_tasks_delete on project_closeout_tasks for delete
+  using (
+    exists (
+      select 1 from project_closeouts c join projects pr on pr.id = c.project_id
+      where c.id = closeout_id and (my_access_level() = 'full' or pr.owner_id = my_person_id())
+    )
+  );

@@ -1098,6 +1098,87 @@ export default function Projects() {
   // lock/unlock actually went through (false if blocked or declined),
   // so callers that gate a second action on it (the guardrail gates the
   // Phase change itself) know whether to proceed.
+  // Baseline vs Final performance reporting (Sandra, 2026-07-24): the
+  // moment a project's timelines are LOCKED (through either entry point
+  // below, since both funnel through performTimelinesLock), take one
+  // immutable snapshot of where the project stood -- total estimated
+  // hours, task count, and the Start/End span -- plus a per-task list
+  // (name + estimated hours) so a later report can show exactly which
+  // tasks were added or grew since. First-lock-only: if a re-lock happens
+  // later (e.g. after an approved mid-stream change), the ORIGINAL
+  // baseline is left alone -- it's meant to answer "what did we commit
+  // to," not "what did we most recently commit to." The matching "Final"
+  // side is a separate, manually-triggered Close-out action (her
+  // explicit choice over tying it to a Status value) -- see
+  // project_closeouts / the BaselineReport page.
+  //
+  // Hours total sums only ROOT tasks' estimated_hours (parent tasks
+  // already roll up their children's hours -- see
+  // [[project_capaciq_est_hours_rollup]] -- so summing every row would
+  // double-count). Task count and the per-task snapshot list include
+  // EVERY task (root + sub-tasks), since a "task added later" could just
+  // as easily be a new sub-task under an existing parent.
+  //
+  // Mode isn't tracked directly on the project row -- the WBS page's
+  // Save writes a task_planning_snapshots batch per mode with `applied`
+  // flagging which one was chosen. We look up the most recent applied
+  // snapshot for any of this project's tasks to label the baseline;
+  // if none exists yet (locked before ever running WBS Save), we fall
+  // back to 'full_capacity' as a reasonable default label rather than
+  // blocking the lock over it.
+  async function captureProjectBaseline(p: ProjectRow) {
+    const { data: existing } = await supabase.from("project_baselines").select("id").eq("project_id", p.id).maybeSingle();
+    if (existing) return; // first-lock-only -- never overwrite an existing baseline
+
+    const projectTasks = tasks.filter((t) => t.project_id === p.id);
+    if (!projectTasks.length) return;
+
+    const rootTasks = projectTasks.filter((t) => !t.parent_task_id);
+    const totalEstHours = rootTasks.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0);
+    const starts = projectTasks.map((t) => t.start_date).filter((d): d is string => !!d);
+    const ends = projectTasks.map((t) => t.current_due_date).filter((d): d is string => !!d);
+    const startDate = starts.length ? starts.reduce((a, b) => (b < a ? b : a)) : null;
+    const endDate = ends.length ? ends.reduce((a, b) => (b > a ? b : a)) : null;
+
+    let mode: "full_capacity" | "standard" = "full_capacity";
+    const { data: lastSnapshot } = await supabase
+      .from("task_planning_snapshots")
+      .select("mode, computed_at")
+      .in(
+        "task_id",
+        projectTasks.map((t) => t.id)
+      )
+      .eq("applied", true)
+      .order("computed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastSnapshot?.mode === "standard" || lastSnapshot?.mode === "full_capacity") mode = lastSnapshot.mode;
+
+    const { data: baseline, error: baselineError } = await supabase
+      .from("project_baselines")
+      .insert({
+        project_id: p.id,
+        captured_by: me?.id ?? null,
+        mode,
+        total_est_hours: totalEstHours,
+        task_count: projectTasks.length,
+        start_date: startDate,
+        end_date: endDate,
+      })
+      .select("id")
+      .single();
+    if (baselineError || !baseline) return; // non-fatal -- lock itself already succeeded
+
+    await supabase.from("project_baseline_tasks").insert(
+      projectTasks.map((t) => ({
+        baseline_id: baseline.id,
+        task_id: t.id,
+        name: t.name,
+        estimated_hours: t.estimated_hours,
+      }))
+    );
+  }
+
   async function performTimelinesLock(p: ProjectRow, locked: boolean, confirmMessage: string): Promise<boolean> {
     if (locked) {
       const incomplete = incompleteTasksFor(p.id);
@@ -1146,6 +1227,7 @@ export default function Projects() {
     if (locked && p.phase === "Scoping" && p.status !== "Paused" && p.status !== "Cancelled") {
       await updateProject(p.id, { phase: "Design" });
     }
+    if (locked) await captureProjectBaseline(p);
     loadAll();
     return true;
   }
@@ -1826,6 +1908,31 @@ export default function Projects() {
                 }}
               >
                 WBS
+              </button>
+            )}
+            {/* Sandra, 2026-07-24: Baseline vs Final report link -- only
+                appears once a baseline exists (i.e. once locked at least
+                once), same "New link next to WBS/Tasks per project"
+                placement she chose live via AskUserQuestion. */}
+            {p.timelines_locked && (
+              <button
+                onClick={() => navigate(`/projects/${p.id}/baseline`)}
+                title="View this project's Baseline vs Final performance report"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--accent, #2563eb)",
+                  cursor: "pointer",
+                }}
+              >
+                Report
               </button>
             )}
           </div>
