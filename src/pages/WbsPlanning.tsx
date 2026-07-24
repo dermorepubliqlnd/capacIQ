@@ -1,6 +1,6 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -496,6 +496,23 @@ export default function WbsPlanning() {
     return m === activeMode ? { background: "#eaf1fb" } : {};
   }
 
+  // A visible box around the header's editable fields (Project name,
+  // Owner) -- Sandra: "make it evident that thos fields needs to be
+  // filled." Plain `.inline-cell` inputs only show a border on
+  // hover/focus, so an empty one (no Owner picked yet) looked
+  // indistinguishable from static text. A permanent, subtle border makes
+  // clear these are fillable fields even at rest; an unfilled field gets
+  // a dashed border in the muted/warning tone as a nudge to fill it in.
+  function fieldBoxStyle(isFilled: boolean): CSSProperties {
+    return {
+      border: `1px ${isFilled ? "solid" : "dashed"} ${isFilled ? "var(--border)" : "var(--warning-text, #b45309)"}`,
+      borderRadius: 6,
+      padding: "1px 4px",
+      minWidth: 110,
+      background: "var(--surface)",
+    };
+  }
+
   function renderScenarioCells(t: TaskRow, mode: Mode) {
     const entry = chainByMode[mode].get(t.id);
     const style = { fontSize: 12, ...modeColStyle(mode) };
@@ -606,25 +623,40 @@ export default function WbsPlanning() {
         </div>
       ) : (
         <>
-          <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
-            <InlineText value={project.name} editable onCommit={(v) => saveProjectField({ name: v })} />
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
-            <InlineSelect
-              value={owner?.name ?? ""}
-              editable
-              allowEmpty
-              emptyLabel="No owner"
-              options={people.map((p) => p.name)}
-              onCommit={(name) => {
-                const p = people.find((pp) => pp.name === name);
-                saveProjectField({ owner_id: p?.id ?? null });
-              }}
-            />
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
-            <span style={{ fontSize: 12.5 }}>{derivedProjectStart ?? "Not set yet"}</span>
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Auto-pulled from the earliest task's own Start date below.</span>
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
+              <div style={fieldBoxStyle(!!project.name)}>
+                <InlineText value={project.name} editable onCommit={(v) => saveProjectField({ name: v })} />
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
+              <div style={fieldBoxStyle(!!owner)}>
+                <InlineSelect
+                  value={owner?.name ?? ""}
+                  editable
+                  allowEmpty
+                  emptyLabel="No owner"
+                  options={people.map((p) => p.name)}
+                  onCommit={(name) => {
+                    const p = people.find((pp) => pp.name === name);
+                    saveProjectField({ owner_id: p?.id ?? null });
+                  }}
+                />
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
+              <span style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>{derivedProjectStart ?? "Not set yet"}</span>
+              <span
+                title="Auto-pulled from the earliest task's own Start date below."
+                style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
+              >
+                <Info size={13} style={{ color: "var(--muted)" }} />
+              </span>
+            </div>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>Save using:</span>
               <div className="timeline-segmented">
                 {MODES.map((m) => (
