@@ -11,6 +11,7 @@ export interface Person {
   daily_capacity_hours: number;
   is_active: boolean;
   auth_user_id: string;
+  color: string | null;
 }
 
 // Tracks the current Supabase Auth session and the matching `people` row

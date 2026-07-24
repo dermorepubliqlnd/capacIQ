@@ -16,6 +16,7 @@ import {
   type UtilProjectRow,
   type UtilPersonRow,
 } from "../lib/utilizationCalc";
+import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
 
 interface ProjectRow {
   id: string;
@@ -46,6 +47,7 @@ interface PersonRow {
   name: string;
   daily_capacity_hours: number;
   is_active: boolean;
+  color: string | null;
 }
 interface AvailabilityRow {
   person_id: string;
@@ -151,7 +153,7 @@ export default function WbsPlanning() {
         .eq("project_id", projectId)
         .eq("is_archived", false)
         .order("sort_order"),
-      supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
+      supabase.from("people").select("id,name,daily_capacity_hours,is_active,color").eq("is_active", true).order("name"),
       supabase.from("person_availability").select("person_id,date,status"),
       supabase.from("holidays").select("date"),
       supabase.from("tasks").select("id,project_id,assignee_id,status,start_date,current_due_date,effort").eq("is_archived", false),
@@ -603,6 +605,40 @@ export default function WbsPlanning() {
 
   const owner = people.find((p) => p.id === project.owner_id);
 
+  // Gantt chart (Sandra, 2026-07-24): a visual timeline below the task
+  // table, built LAST and deliberately after every scheduling-logic
+  // change above so it renders the final, settled model. Shows whichever
+  // mode is currently toggled active (same "Save using" control the rest
+  // of the page already uses) -- one timeline at a time, not both modes
+  // overlaid. Bars are colored by ASSIGNEE (not by mode) so a person with
+  // several overlapping bars in the same window is an immediate visual
+  // flag of over-allocation -- the actual motivation Sandra gave for
+  // wanting per-person colors at all.
+  const GANTT_DAY_WIDTH = 28;
+  const GANTT_NAME_COL_WIDTH = 220;
+  const activeSummary = summaries[activeMode];
+  const ganttStartDate = activeSummary.start ? addDays(parseLocalDate(activeSummary.start), -1) : null;
+  const ganttEndDate = activeSummary.end ? addDays(parseLocalDate(activeSummary.end), 1) : null;
+  const ganttDays: Date[] =
+    ganttStartDate && ganttEndDate
+      ? (() => {
+          const days: Date[] = [];
+          for (let d = new Date(ganttStartDate); d <= ganttEndDate; d = addDays(d, 1)) days.push(new Date(d));
+          return days;
+        })()
+      : [];
+  const ganttWidthPx = ganttDays.length * GANTT_DAY_WIDTH;
+
+  function ganttDayOffsetPx(dateStr: string): number {
+    if (!ganttStartDate) return 0;
+    const diffDays = Math.round((parseLocalDate(dateStr).getTime() - ganttStartDate.getTime()) / 86400000);
+    return diffDays * GANTT_DAY_WIDTH;
+  }
+  function ganttBarWidthPx(startStr: string, endStr: string): number {
+    const diffDays = Math.round((parseLocalDate(endStr).getTime() - parseLocalDate(startStr).getTime()) / 86400000) + 1;
+    return Math.max(diffDays, 1) * GANTT_DAY_WIDTH;
+  }
+
   return (
     <div>
       {dialog}
@@ -964,6 +1000,24 @@ export default function WbsPlanning() {
                           allowEmpty
                           emptyLabel="Unassigned"
                           options={people.map((p) => p.name)}
+                          renderReadOnly={(v) =>
+                            v ? (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                <span
+                                  style={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: "50%",
+                                    background: colorForPerson(assignee),
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                {v}
+                              </span>
+                            ) : (
+                              "Unassigned"
+                            )
+                          }
                           onCommit={(name) => {
                             const p = people.find((pp) => pp.name === name);
                             saveTaskField(t.id, { assignee_id: p?.id ?? null });
@@ -990,6 +1044,136 @@ export default function WbsPlanning() {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          {/* Timeline (Gantt) -- always visible below the table, showing
+              whichever mode is active. Built as absolutely-positioned bars
+              over a plain day grid rather than a table, so a bar can span
+              multiple days without colSpan gymnastics. */}
+          <div className="card" style={{ padding: 14, marginTop: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Timeline (Gantt)</strong>
+              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                Showing {MODE_LABEL[activeMode]}'s current schedule. Bars are colored by Assignee -- set colors in User management.
+              </span>
+            </div>
+            {ganttDays.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
+                No schedule yet -- add a Start date and Estimated hours to at least one task to see the timeline.
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ display: "flex", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                  <div style={{ width: GANTT_NAME_COL_WIDTH, flexShrink: 0, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }} />
+                  <div style={{ position: "relative", width: ganttWidthPx, height: 24, flexShrink: 0 }}>
+                    {ganttDays.map((d, i) => {
+                      const iso = toISO(d);
+                      const offDay = !isWorkingDay(d, holidaySet);
+                      const isFirstOfMonth = d.getDate() === 1 || i === 0;
+                      return (
+                        <div
+                          key={iso}
+                          title={iso}
+                          style={{
+                            position: "absolute",
+                            left: i * GANTT_DAY_WIDTH,
+                            top: 0,
+                            width: GANTT_DAY_WIDTH,
+                            height: "100%",
+                            fontSize: 9.5,
+                            textAlign: "center",
+                            color: offDay ? "var(--muted)" : "var(--text)",
+                            background: offDay ? "var(--hover-bg)" : undefined,
+                            fontWeight: isFirstOfMonth ? 700 : 400,
+                            borderLeft: isFirstOfMonth ? "1px solid var(--border)" : undefined,
+                          }}
+                        >
+                          {String(d.getMonth() + 1).padStart(2, "0")}/{String(d.getDate()).padStart(2, "0")}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {orderedTasks.map((t) => {
+                  const entry = chainByMode[activeMode].get(t.id);
+                  const isParent = t.depth === 0 && hasChildren(t.id);
+                  const assignee = people.find((p) => p.id === t.assignee_id);
+                  const barColor = assignee ? colorForPerson(assignee) : UNASSIGNED_BAR_COLOR;
+                  return (
+                    <div key={t.id} style={{ display: "flex", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                      <div
+                        style={{
+                          width: GANTT_NAME_COL_WIDTH,
+                          flexShrink: 0,
+                          position: "sticky",
+                          left: 0,
+                          background: "var(--surface)",
+                          zIndex: 1,
+                          fontSize: 11.5,
+                          fontWeight: t.depth === 0 ? 600 : 400,
+                          paddingLeft: 8 + t.depth * 16,
+                          paddingRight: 8,
+                          height: 26,
+                          display: "flex",
+                          alignItems: "center",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          borderBottom: "1px solid var(--hover-bg)",
+                        }}
+                        title={t.name}
+                      >
+                        {t.name}
+                      </div>
+                      <div style={{ position: "relative", width: ganttWidthPx, height: 26, flexShrink: 0, borderBottom: "1px solid var(--hover-bg)" }}>
+                        {ganttDays.map((d) => {
+                          const iso = toISO(d);
+                          if (isWorkingDay(d, holidaySet)) return null;
+                          return (
+                            <div
+                              key={iso}
+                              style={{
+                                position: "absolute",
+                                left: ganttDayOffsetPx(iso),
+                                top: 0,
+                                bottom: 0,
+                                width: GANTT_DAY_WIDTH,
+                                background: "var(--hover-bg)",
+                              }}
+                            />
+                          );
+                        })}
+                        {entry ? (
+                          <div
+                            title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${entry.start} → ${entry.end}`}
+                            style={{
+                              position: "absolute",
+                              left: ganttDayOffsetPx(entry.start),
+                              width: ganttBarWidthPx(entry.start, entry.end),
+                              top: isParent ? 9 : 4,
+                              height: isParent ? 8 : 18,
+                              background: barColor,
+                              opacity: isParent ? 0.55 : 1,
+                              borderRadius: 4,
+                              display: "flex",
+                              alignItems: "center",
+                              paddingLeft: 5,
+                              color: "#fff",
+                              fontSize: 9.5,
+                              fontWeight: 600,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                            }}
+                          >
+                            {!isParent && entry.durationDays}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="card" style={{ padding: 14, marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>

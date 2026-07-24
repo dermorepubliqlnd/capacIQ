@@ -70,6 +70,11 @@ create policy utilization_select on utilization_snapshots for select
 -- auth-level lockout. Added when User Management/Admin was built (Phase:
 -- Admin panel) so deactivating a person instantly revokes data access.
 alter table people add column if not exists is_active boolean not null default true;
+-- 2026-07-24: per-person color for WBS Gantt chart bars (Sandra: color-code
+-- by assignee so overlapping/overloaded people are visually obvious). Nullable
+-- -- null means "use the deterministic default palette color," computed
+-- client-side in src/lib/personColors.ts, not something that needs a DB default.
+alter table people add column if not exists color text;
 
 create or replace function my_person_id() returns uuid
 language sql stable security definer as $$

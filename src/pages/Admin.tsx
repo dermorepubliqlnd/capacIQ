@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type CSSProperties } from "react";
 import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
+import { defaultColorFor, isValidHex } from "../lib/personColors";
 
 function AccessDenied() {
   return (
@@ -129,6 +130,19 @@ export default function Admin() {
     loadPeople();
   }
 
+  // Per-person color for the WBS Gantt chart's assignee-based bar
+  // coloring (Sandra, 2026-07-24) -- stored as a nullable hex string;
+  // `null` means "use the deterministic default," not "no color."
+  async function saveColor(p: Person, hex: string | null) {
+    const value = hex && isValidHex(hex) ? hex.trim() : null;
+    setPeople((prev) => prev.map((x) => (x.id === p.id ? { ...x, color: value } : x)));
+    const { error } = await supabase.from("people").update({ color: value }).eq("id", p.id);
+    if (error) {
+      window.alert(`Couldn't save color: ${error.message}`);
+      loadPeople();
+    }
+  }
+
   function startEdit(p: Person) {
     setEditingId(p.id);
     setEditName(p.name);
@@ -241,6 +255,7 @@ export default function Admin() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Color</th>
               <th>Email</th>
               <th>Access</th>
               <th>Reports to</th>
@@ -252,12 +267,12 @@ export default function Admin() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={7} style={{ color: "var(--muted)" }}>Loading…</td>
+                <td colSpan={8} style={{ color: "var(--muted)" }}>Loading…</td>
               </tr>
             )}
             {!loading && people.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ color: "var(--muted)" }}>No one yet.</td>
+                <td colSpan={8} style={{ color: "var(--muted)" }}>No one yet.</td>
               </tr>
             )}
             {people.map((p) => {
@@ -276,6 +291,35 @@ export default function Admin() {
                     ) : (
                       p.name
                     )}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="color"
+                        value={p.color || defaultColorFor(p.id)}
+                        onChange={(e) => saveColor(p, e.target.value)}
+                        title="Pick a color -- used for this person's bars in the WBS Gantt chart"
+                        style={{ width: 26, height: 22, padding: 0, border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", background: "none" }}
+                      />
+                      <input
+                        key={`${p.id}-${p.color ?? "default"}`}
+                        type="text"
+                        defaultValue={p.color ?? ""}
+                        placeholder={defaultColorFor(p.id)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v && !isValidHex(v)) {
+                            window.alert(`"${v}" isn't a valid hex color (expected format: #3b82f6). Not saved.`);
+                            e.target.value = p.color ?? "";
+                            return;
+                          }
+                          saveColor(p, v || null);
+                        }}
+                        style={{ ...inputStyle, marginTop: 0, width: 78, fontFamily: "monospace", fontSize: 11 }}
+                      />
+                    </div>
                   </td>
                   <td>{p.email}</td>
                   <td>
