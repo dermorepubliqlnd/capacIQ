@@ -185,6 +185,7 @@ export default function WbsPlanning() {
   // (sort_order) -- does NOT touch Start/End dates on its own; pair with
   // the Refresh dates button below to re-seed dates from the new order.
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeMode, setActiveMode] = useState<Mode>("full_capacity");
   // Separate from `activeMode` (Sandra, 2026-07-28: split the old shared
@@ -686,6 +687,27 @@ export default function WbsPlanning() {
   // other root tasks; a parent's own sub-tasks chain only among their own
   // siblings (mirrors buildChain's own two-tier structure).
   async function refreshDates() {
+    // Bugfix (Sandra, 2026-07-28): clicking Refresh repeatedly kept pushing
+    // tasks further out instead of settling on a stable answer. Root cause
+    // -- a genuine feedback loop, not just "needs re-running": this walks
+    // ROOT tasks in LIST order, but a task's real causal position can come
+    // from an explicit "Depends on" link instead, and those two orderings
+    // don't have to agree (e.g. "New Task Insert" sat AFTER "Task 3" in
+    // the row list, but Task 3's own sub-task actually depended ON "New
+    // Task Insert"). Every click re-chained "New Task Insert" to start
+    // right after Task 3's (list-order) predecessor -- which pushed it
+    // LATER -- which then, on the NEXT click, pushed Task 3's own span
+    // later too (via the separate live dependency-tracking effect above,
+    // since Task 3's child's Start auto-follows New Task Insert's End) --
+    // which pushed New Task Insert later again the click after that, and
+    // so on, forever. Fixed by never letting Refresh re-seed any task that
+    // is itself the DEPENDS-ON TARGET of some other task (i.e. anything
+    // that appears as a `depends_on_task_id`) -- those already have a
+    // real, authoritative source for their position (the dependency
+    // system itself, [[project_capaciq_wbs_planning]] Round 9-12), so
+    // Refresh leaves them exactly where they are and only re-chains the
+    // tasks that have nothing else driving their Start.
+    const predecessorIds = new Set(dependencies.map((d) => d.depends_on_task_id));
     const patches = new Map<string, Partial<TaskRow>>();
     function patchFor(id: string): Partial<TaskRow> {
       const existing = patches.get(id) ?? {};
@@ -703,7 +725,7 @@ export default function WbsPlanning() {
         return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
       }
       function eligible(t: TaskRow): boolean {
-        return dependsOnIdsFor(t.id).length === 0 && t[autoField] !== false;
+        return dependsOnIdsFor(t.id).length === 0 && t[autoField] !== false && !predecessorIds.has(t.id);
       }
       let lastRootEntry: ChainEntry | null = null;
       for (const root of orderedTasks.filter((x) => x.depth === 0)) {
@@ -1468,6 +1490,7 @@ export default function WbsPlanning() {
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
                 <tr>
+                  <th rowSpan={2} className="row-gutter-cell" style={{ width: 22, minWidth: 22 }} />
                   <th rowSpan={2} style={{ minWidth: 200 }}>
                     Task
                   </th>
@@ -1502,7 +1525,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={11} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={12} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -1514,43 +1537,51 @@ export default function WbsPlanning() {
                   return (
                     <tr
                       key={t.id}
+                      className={dragOverTaskId === t.id && draggedTaskId !== t.id ? "row-drop-target" : undefined}
                       style={draggedTaskId === t.id ? { opacity: 0.5 } : undefined}
-                      onDragEnter={(e) => e.preventDefault()}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
+                      onDragOver={(e) => {
                         e.preventDefault();
-                        e.stopPropagation();
+                        if (dragOverTaskId !== t.id) setDragOverTaskId(t.id);
+                      }}
+                      onDragLeave={() => setDragOverTaskId((prev) => (prev === t.id ? null : prev))}
+                      onDrop={() => {
                         if (draggedTaskId) reorderTask(draggedTaskId, t.id);
                         setDraggedTaskId(null);
+                        setDragOverTaskId(null);
                       }}
                     >
-                      <td>
-                        <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
+                      {/* Round (2026-07-28): grip moved into its own
+                          dedicated gutter cell, matching DataTable.tsx's
+                          proven-working row-reorder pattern exactly
+                          (`.row-gutter-cell`/`.row-grip-btn`, plus
+                          onDragLeave + a drop-target highlight) --
+                          Sandra found the version embedded inside the
+                          busy Task-name cell (alongside InlineText and
+                          the add-subtask/delete buttons) simply didn't
+                          drag at all in this page, while the same pattern
+                          already works fine on the Projects & Tasks
+                          table. Isolating it in its own simple cell,
+                          identical in structure to the working one, is
+                          the safest fix rather than guessing further at
+                          what specifically conflicted in the shared cell. */}
+                      <td className="row-gutter-cell" onClick={(e) => e.stopPropagation()}>
+                        <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
+                            className="row-grip-btn"
                             draggable
-                            onDragStart={(e) => {
-                              // Sandra found live that the drag simply didn't
-                              // work at all -- root cause: dragstart never
-                              // called dataTransfer.setData, which some
-                              // browsers require to actually complete a
-                              // native HTML5 drag sequence (Chrome can be
-                              // lenient about this depending on version;
-                              // without it the whole gesture can silently
-                              // no-op). Setting it explicitly, plus
-                              // effectAllowed, plus preventDefault on both
-                              // dragenter AND dragover on the row (dragover
-                              // alone isn't always enough either) is the
-                              // standard, reliable recipe.
-                              e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", t.id);
-                              setDraggedTaskId(t.id);
+                            onDragStart={() => setDraggedTaskId(t.id)}
+                            onDragEnd={() => {
+                              setDraggedTaskId(null);
+                              setDragOverTaskId(null);
                             }}
-                            onDragEnd={() => setDraggedTaskId(null)}
                             title="Drag to reorder (among its own siblings)"
-                            style={{ cursor: "grab", display: "inline-flex", color: "var(--muted)", flexShrink: 0 }}
                           >
                             <GripVertical size={13} />
                           </span>
+                        </div>
+                      </td>
+                      <td>
+                        <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <InlineText value={t.name} editable bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
                           </div>
@@ -1663,7 +1694,7 @@ export default function WbsPlanning() {
                   );
                 })}
                 <tr>
-                  <td colSpan={11} className="add-row-cell">
+                  <td colSpan={12} className="add-row-cell">
                     <div className="add-row-trigger" onClick={addTopLevelTask}>
                       <Plus size={12} />
                       New task
