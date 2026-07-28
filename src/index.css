@@ -19,7 +19,15 @@
   --available-text: #6a9f3f;
   --hover-bg: #eef2f5;
   --radius-sm: 3px;
-  --radius-md: 4px;
+  --radius-md: 8px;
+  /* Round 1 of WBS UI redesign (2026-07-29): dedicated radius for
+     buttons/badges/segmented controls -- kept separate from --radius-sm
+     (still 3px, used by many small unrelated chips/icon-boxes app-wide)
+     so this pass's "6-8px" spec doesn't ripple into things it wasn't
+     meant to touch. --radius-md bumped 4px->8px for cards/panels/popovers
+     per the same spec ("6-10px corner radius") -- those are all
+     card/panel-sized containers, safe to modernize app-wide. */
+  --radius-btn: 7px;
 
   /* Typography: Figtree is the workhorse font for body/UI text (nav,
      buttons, inputs, tables). Sora is scoped only to titles/emphasis
@@ -137,6 +145,42 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 .status-pill.available { background: var(--available-bg); color: var(--available-text); }
 
 button { font-family: var(--font); border-radius: var(--radius-sm); font-size: var(--font-body); font-weight: 500; }
+
+/* Round 1 of WBS UI redesign (2026-07-29): buttons -- softly rounded
+   rectangles, 6-8px radius, ~34-38px height. Primary = blue/indigo bg +
+   white text; Secondary = white bg + subtle border. Restrained hover, no
+   elevation/shadow. Currently only used on WbsPlanning.tsx (Lock
+   Baseline/Start Revision/Save/etc.) but written as reusable app-wide
+   classes since nothing else claims these class names yet. */
+.btn-primary, .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-btn);
+  font-family: var(--font);
+  font-size: var(--font-body);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.btn-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: #245f92; border-color: #245f92; }
+.btn-primary:disabled { background: #b7c6d3; border-color: #b7c6d3; color: #fff; cursor: default; }
+.btn-secondary {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.btn-secondary:hover { background: var(--hover-bg); border-color: var(--muted); }
+.btn-secondary:disabled { color: var(--muted); cursor: default; }
+.btn-secondary:disabled:hover { background: var(--surface); border-color: var(--border); }
 input, select { font-family: var(--font); }
 
 .sidebar-appname { font-family: var(--font-heading); font-weight: 700; font-size: var(--font-sidebar-title); }
@@ -1200,13 +1244,13 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .timeline-segmented {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-btn);
   overflow: hidden;
 }
 .timeline-segmented-btn {
   font-size: 11px;
   font-weight: 500;
-  padding: 4px 8px;
+  padding: 5px 10px;
   background: var(--surface);
   color: var(--text-secondary);
   border: none;

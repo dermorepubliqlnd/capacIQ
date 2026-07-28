@@ -1769,7 +1769,7 @@ export default function Projects() {
                   padding: "2px 8px",
                   fontSize: 11,
                   fontWeight: 500,
-                  borderRadius: "var(--radius-sm)",
+                  borderRadius: "var(--radius-btn)",
                   border: `1px solid ${meta?.border ?? "var(--border)"}`,
                   background: meta?.bg ?? "var(--surface)",
                   color: meta?.color ?? "var(--text-secondary)",
