@@ -111,6 +111,11 @@ interface ClosureRequestRow {
   requested_at: string;
   requested_by: string | null;
 }
+
+interface ActiveBaselineRow {
+  version_number: number;
+  captured_at: string;
+}
 interface AvailabilityRow {
   person_id: string;
   date: string;
@@ -238,6 +243,10 @@ export default function WbsPlanning() {
   // Phase 2/3 workflow state.
   const [activeRevision, setActiveRevision] = useState<RevisionRow | null>(null);
   const [pendingClosure, setPendingClosure] = useState<ClosureRequestRow | null>(null);
+  // Phase 5 (2026-07-28): shown next to the status banner so it's clear
+  // which baseline version Compare-with-Baseline/variance are measuring
+  // against, e.g. after a re-baseline event.
+  const [activeBaseline, setActiveBaseline] = useState<ActiveBaselineRow | null>(null);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [showRevisionHistory, setShowRevisionHistory] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<RevisionRow[]>([]);
@@ -284,7 +293,7 @@ export default function WbsPlanning() {
       setDependencies([]);
     }
 
-    const [{ data: revRow }, { data: closureRow }] = await Promise.all([
+    const [{ data: revRow }, { data: closureRow }, { data: baselineRow }] = await Promise.all([
       supabase
         .from("project_revisions")
         .select("id,revision_number,reason,status,started_at")
@@ -297,9 +306,16 @@ export default function WbsPlanning() {
         .eq("project_id", projectId)
         .eq("status", "pending")
         .maybeSingle(),
+      supabase
+        .from("project_baselines")
+        .select("version_number,captured_at")
+        .eq("project_id", projectId)
+        .eq("is_active", true)
+        .maybeSingle(),
     ]);
     setActiveRevision((revRow as RevisionRow) ?? null);
     setPendingClosure((closureRow as ClosureRequestRow) ?? null);
+    setActiveBaseline((baselineRow as ActiveBaselineRow) ?? null);
 
     setLoading(false);
   }
@@ -727,6 +743,29 @@ export default function WbsPlanning() {
     setWorkflowBusy(false);
     if (error) {
       await alert(`Couldn't discard revision: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  // Phase 5 (2026-07-28): re-baselining -- promotes the CURRENT plan to be
+  // the new official Baseline once drift from the original has grown large
+  // enough that comparing against it isn't useful any more. No task
+  // snapshot to build here (see rebaseline_wbs_plan's own comment): the RPC
+  // sources straight from the latest already-persisted plan version.
+  async function handleRebaseline() {
+    if (!project) return;
+    if (
+      !(await confirm(
+        `Re-baseline "${project.name}"? This promotes the current plan to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`
+      ))
+    )
+      return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("rebaseline_wbs_plan", { p_project_id: project.id, p_reason: "Re-baselined from WBS page" });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't re-baseline: ${error.message}`);
       return;
     }
     await loadAll();
@@ -1515,6 +1554,11 @@ export default function WbsPlanning() {
           {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{WBS_STATUS_META[project.wbs_status]?.hint}</span>
+        {activeBaseline && (
+          <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+            Baseline V{activeBaseline.version_number} (locked {formatDate(activeBaseline.captured_at.slice(0, 10))})
+          </span>
+        )}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
           {canManageWbs && project.wbs_status === "draft" && (
             <button className="btn-primary" disabled={workflowBusy} onClick={handleLockBaseline}>
@@ -1524,6 +1568,11 @@ export default function WbsPlanning() {
           {canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && (
             <button className="btn-secondary" disabled={workflowBusy} onClick={handleStartRevision}>
               Start Revision
+            </button>
+          )}
+          {canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && (
+            <button className="btn-secondary" disabled={workflowBusy} onClick={handleRebaseline}>
+              Re-baseline
             </button>
           )}
           {canManageWbs &&
