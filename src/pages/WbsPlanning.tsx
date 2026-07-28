@@ -1120,6 +1120,7 @@ export default function WbsPlanning() {
             stroke={conflict ? "var(--warning-text, #b45309)" : "var(--muted, #8a94a6)"}
             strokeWidth={conflict ? 1.5 : 1.25}
             strokeDasharray={conflict ? undefined : "4,3"}
+            markerEnd={`url(#${conflict ? `gantt-arrow-conflict-${mode}` : `gantt-arrow-neutral-${mode}`})`}
           />
         );
       }
@@ -1332,9 +1333,11 @@ export default function WbsPlanning() {
           <div className="card" style={{ padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
-              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using {MODE_LABEL[utilPreviewMode]}'s
-                current schedule.
+              <span
+                title={`Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using ${MODE_LABEL[utilPreviewMode]}'s current schedule.`}
+                style={{ display: "inline-flex", cursor: "help", color: "var(--muted)" }}
+              >
+                <Info size={13} />
               </span>
               <div className="timeline-segmented" title="Preview only -- doesn't affect Scoping Effort or Save.">
                 {MODES.map((m) => (
@@ -1496,9 +1499,11 @@ export default function WbsPlanning() {
                     <tr
                       key={t.id}
                       style={draggedTaskId === t.id ? { opacity: 0.5 } : undefined}
+                      onDragEnter={(e) => e.preventDefault()}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
                         e.preventDefault();
+                        e.stopPropagation();
                         if (draggedTaskId) reorderTask(draggedTaskId, t.id);
                         setDraggedTaskId(null);
                       }}
@@ -1507,7 +1512,23 @@ export default function WbsPlanning() {
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <span
                             draggable
-                            onDragStart={() => setDraggedTaskId(t.id)}
+                            onDragStart={(e) => {
+                              // Sandra found live that the drag simply didn't
+                              // work at all -- root cause: dragstart never
+                              // called dataTransfer.setData, which some
+                              // browsers require to actually complete a
+                              // native HTML5 drag sequence (Chrome can be
+                              // lenient about this depending on version;
+                              // without it the whole gesture can silently
+                              // no-op). Setting it explicitly, plus
+                              // effectAllowed, plus preventDefault on both
+                              // dragenter AND dragover on the row (dragover
+                              // alone isn't always enough either) is the
+                              // standard, reliable recipe.
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData("text/plain", t.id);
+                              setDraggedTaskId(t.id);
+                            }}
                             onDragEnd={() => setDraggedTaskId(null)}
                             title="Drag to reorder (among its own siblings)"
                             style={{ cursor: "grab", display: "inline-flex", color: "var(--muted)", flexShrink: 0 }}
@@ -1788,6 +1809,19 @@ export default function WbsPlanning() {
                       height={GANTT_HEADER_HEIGHT + orderedTasks.length * GANTT_ROW_HEIGHT}
                       style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
                     >
+                      {/* Sandra, 2026-07-28: wants the dependency connectors
+                          to read as arrows, not bare lines -- two markers
+                          (neutral gray / conflict amber, matching each
+                          path's own stroke) so the arrowhead color always
+                          matches the line it's attached to. */}
+                      <defs>
+                        <marker id={`gantt-arrow-neutral-${mode}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                          <path d="M0,0 L8,4 L0,8 Z" fill="var(--muted, #8a94a6)" />
+                        </marker>
+                        <marker id={`gantt-arrow-conflict-${mode}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                          <path d="M0,0 L8,4 L0,8 Z" fill="var(--warning-text, #b45309)" />
+                        </marker>
+                      </defs>
                       {ganttConnectors(mode, ganttStartDate)}
                     </svg>
                     </div>
