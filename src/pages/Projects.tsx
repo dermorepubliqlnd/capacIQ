@@ -1544,12 +1544,40 @@ export default function Projects() {
         maxWidth: 420,
         render: (p) => {
           const icon = p.category ? PROJECT_CATEGORY_ICONS[p.category] ?? DEFAULT_PROJECT_ICON : DEFAULT_PROJECT_ICON;
+          // Round 21 (Sandra): the Project name/Owner should no longer be
+          // editable from this list at all -- both now live exclusively in
+          // the WBS page's own header (already editable there, see
+          // WbsPlanning.tsx). This cell is now a plain link into that page
+          // instead of an inline-editable text field, so "renaming a
+          // project" and "opening its WBS" are the same action rather than
+          // two separate, easy-to-confuse affordances.
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span className={`project-icon-badge ${icon.tone}`}>{icon.emoji}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <InlineText value={p.name} editable={canEditProject(p)} bold onCommit={(v) => updateProject(p.id, { name: v })} />
-              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/projects/${p.id}/wbs`);
+                }}
+                title="Open this project's WBS page (name and owner are edited there)"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: "left",
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  font: "inherit",
+                  fontWeight: 600,
+                  color: "var(--accent)",
+                  cursor: "pointer",
+                  textOverflow: "ellipsis",
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {p.name || "Untitled project"}
+              </button>
             </div>
           );
         },
@@ -1559,20 +1587,10 @@ export default function Projects() {
         label: "Owner",
         defaultWidth: 150,
         maxWidth: 220,
-        render: (p) => (
-          <InlineSelect
-            value={p.owner_id ?? ""}
-            editable={canEditProject(p)}
-            allowEmpty
-            emptyLabel="— none —"
-            options={people.map((x) => x.name)}
-            renderReadOnly={() => ownerName(p.owner_id)}
-            onCommit={(v) => {
-              const person = people.find((x) => x.name === v);
-              updateProject(p.id, { owner_id: person?.id ?? null });
-            }}
-          />
-        ),
+        // Round 21 (Sandra): Owner is now also only editable from the WBS
+        // page's own header -- always read-only here, regardless of
+        // canEditProject, matching the Project name cell above.
+        render: (p) => <span>{ownerName(p.owner_id)}</span>,
       },
       {
         key: "priority",
@@ -2166,13 +2184,17 @@ export default function Projects() {
     { key: "timelines_locked", label: "Timelines", getValue: (p) => (p.timelines_locked ? 1 : 0) },
   ];
 
+  // Round 21 (Sandra): "New project" now goes straight into the WBS page
+  // instead of dropping a blank "Untitled" row into this list for inline
+  // editing -- Project name and Owner are only ever set from the WBS
+  // header now, so there's nothing left to edit inline here anyway.
   async function createBlankProject() {
-    const { error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() });
-    if (error) {
-      alert(`Couldn't create project: ${error.message}`);
+    const { data, error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() }).select("id").single();
+    if (error || !data) {
+      alert(`Couldn't create project: ${error?.message ?? "unknown error"}`);
       return;
     }
-    loadAll();
+    navigate(`/projects/${data.id}/wbs`);
   }
 
   const visibleTasks = useMemo(
