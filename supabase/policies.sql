@@ -1545,3 +1545,11 @@ create policy project_closeout_tasks_delete on project_closeout_tasks for delete
       where c.id = closeout_id and (my_access_level() = 'full' or pr.owner_id = my_person_id())
     )
   );
+
+-- Migration 2026-07-28: WBS Planning "Scoping Effort" field. Persists
+-- whichever mode (full_capacity|standard) Save last actually wrote onto
+-- the project's tasks, so it stays visible in the WBS header on return
+-- visits instead of just reflecting whatever the page's own local toggle
+-- happens to be set to right now. No RLS change needed -- covered by the
+-- existing projects_select/projects_update policies.
+alter table projects add column if not exists scoping_effort_mode text;

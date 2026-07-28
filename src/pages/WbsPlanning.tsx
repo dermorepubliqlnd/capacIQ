@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2, Trash2 } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -29,6 +29,12 @@ interface ProjectRow {
   timelines_locked: boolean;
   phase: string | null;
   status: string | null;
+  // Persists whichever mode Save last actually wrote onto the tasks
+  // (migration 2026-07-28) -- shown read-back in the header as "Scoping
+  // Effort" so a project's officially-saved mode stays visible on return
+  // visits, not just whatever this page's own local toggle happens to be
+  // set to right now.
+  scoping_effort_mode: string | null;
 }
 interface TaskRow {
   id: string;
@@ -173,8 +179,20 @@ export default function WbsPlanning() {
   const [allProjects, setAllProjects] = useState<UtilProjectRow[]>([]);
   const [dependencies, setDependencies] = useState<DependencyRow[]>([]);
   const [depPickerOpenFor, setDepPickerOpenFor] = useState<string | null>(null);
+  // Grip-handle drag reorder (Sandra, 2026-07-28): constrained to siblings
+  // -- a top-level task can only reorder among other top-level tasks, a
+  // sub-task only among its own parent's other sub-tasks. Purely visual
+  // (sort_order) -- does NOT touch Start/End dates on its own; pair with
+  // the Refresh dates button below to re-seed dates from the new order.
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeMode, setActiveMode] = useState<Mode>("full_capacity");
+  // Separate from `activeMode` (Sandra, 2026-07-28: split the old shared
+  // toggle apart) -- this one only drives the Utilization snapshot
+  // preview below; `activeMode` is now purely "which mode Save/Scoping
+  // Effort points at." Both Gantts render always, unconditionally, so
+  // neither state drives Gantt selection anymore.
+  const [utilPreviewMode, setUtilPreviewMode] = useState<Mode>("full_capacity");
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
 
@@ -182,7 +200,7 @@ export default function WbsPlanning() {
     if (!projectId) return;
     setLoading(true);
     const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }] = await Promise.all([
-      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status").eq("id", projectId).single(),
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select(
@@ -376,6 +394,25 @@ export default function WbsPlanning() {
     }, (withStart[0][field] as string).slice(0, 10));
   }
 
+  // Parent-task Assignee rollup (Sandra, 2026-07-28): a parent's own
+  // Assignee used to be a fully independent field, decoupled from its
+  // children -- same gap Est. hrs had before its own rollup. That's a
+  // real double-counting risk for utilization: if a parent happened to
+  // carry its own Assignee+Effort, its points landed on top of its
+  // children's, even though the parent's own span is just the union of
+  // theirs. Fixed the same way Est. hrs already works: derived, locked,
+  // never typed directly. "Multiple" is a display-only state (children
+  // assigned to 2+ different people) -- never written to `assignee_id`
+  // itself, which stays null in that case (or null for zero-assignee
+  // children too).
+  function parentAssigneeState(parentId: string): { id: string | null; multiple: boolean } {
+    const children = tasks.filter((t) => t.parent_task_id === parentId);
+    const ids = Array.from(new Set(children.map((t) => t.assignee_id).filter((id): id is string => !!id)));
+    if (ids.length === 1) return { id: ids[0], multiple: false };
+    if (ids.length > 1) return { id: null, multiple: true };
+    return { id: null, multiple: false };
+  }
+
   useEffect(() => {
     for (const t of tasks) {
       if (t.parent_task_id) continue;
@@ -389,6 +426,8 @@ export default function WbsPlanning() {
       if (minLegacy !== (t.start_date ? t.start_date.slice(0, 10) : null)) patch.start_date = minLegacy;
       if (minFull !== (t.start_date_full ? t.start_date_full.slice(0, 10) : null)) patch.start_date_full = minFull;
       if (minStandard !== (t.start_date_standard ? t.start_date_standard.slice(0, 10) : null)) patch.start_date_standard = minStandard;
+      const { id: rolledUpAssignee } = parentAssigneeState(t.id);
+      if (rolledUpAssignee !== t.assignee_id) patch.assignee_id = rolledUpAssignee;
       if (Object.keys(patch).length > 0) saveTaskField(t.id, patch);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -606,6 +645,105 @@ export default function WbsPlanning() {
     loadAll();
   }
 
+  // Drag-reorder within siblings only -- see draggedTaskId comment above.
+  // Purely reassigns sort_order (evenly spaced so future inserts/drags
+  // have room); never touches any date field.
+  function siblingsFor(t: TaskRow & { depth: number }): (TaskRow & { depth: number })[] {
+    return t.depth === 0 ? orderedTasks.filter((x) => x.depth === 0) : orderedTasks.filter((x) => x.depth === 1 && x.parent_task_id === t.parent_task_id);
+  }
+
+  async function reorderTask(draggedId: string, targetId: string) {
+    if (draggedId === targetId) return;
+    const dragged = orderedTasks.find((x) => x.id === draggedId);
+    const target = orderedTasks.find((x) => x.id === targetId);
+    if (!dragged || !target) return;
+    if (dragged.depth !== target.depth || dragged.parent_task_id !== target.parent_task_id) return; // different group -- ignore
+    const group = siblingsFor(dragged);
+    const withoutDragged = group.filter((x) => x.id !== draggedId);
+    const targetIndex = withoutDragged.findIndex((x) => x.id === targetId);
+    const reordered = [...withoutDragged.slice(0, targetIndex), dragged, ...withoutDragged.slice(targetIndex)];
+    const updates = reordered.map((x, i) => ({ id: x.id, sort_order: (i + 1) * 1000 }));
+    setTasks((prev) =>
+      prev.map((x) => {
+        const u = updates.find((uu) => uu.id === x.id);
+        return u ? { ...x, sort_order: u.sort_order } : x;
+      })
+    );
+    for (const u of updates) {
+      await supabase.from("tasks").update({ sort_order: u.sort_order }).eq("id", u.id);
+    }
+  }
+
+  // "Refresh dates" (Sandra, 2026-07-28): the grip-handle reorder above is
+  // purely visual -- it doesn't recompute anyone's Start. This button
+  // re-seeds Start for whichever tasks are still eligible (no dependency
+  // set -- those already auto-track live via the existing effect above --
+  // AND still on "auto pilot," i.e. not manually overridden) to
+  // "day after the previous task in the NEW order finishes," exactly the
+  // same default-seeding math `addTopLevelTask`/`addSubtask` already use
+  // for a brand-new task, just re-run across the whole current list order
+  // on demand rather than only once at creation. Root tasks chain among
+  // other root tasks; a parent's own sub-tasks chain only among their own
+  // siblings (mirrors buildChain's own two-tier structure).
+  async function refreshDates() {
+    const patches = new Map<string, Partial<TaskRow>>();
+    function patchFor(id: string): Partial<TaskRow> {
+      const existing = patches.get(id) ?? {};
+      patches.set(id, existing);
+      return existing;
+    }
+    for (const mode of MODES) {
+      const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
+      const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
+      function entryWithOverride(t: TaskRow, overrideStart?: string): ChainEntry | null {
+        if (!overrideStart) return computeEntry(t, mode);
+        if (t.estimated_hours === null || t.estimated_hours === undefined) return null;
+        const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
+        const r = scenario(t.estimated_hours, overrideStart, holidaySet);
+        return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+      }
+      function eligible(t: TaskRow): boolean {
+        return dependsOnIdsFor(t.id).length === 0 && t[autoField] !== false;
+      }
+      let lastRootEntry: ChainEntry | null = null;
+      for (const root of orderedTasks.filter((x) => x.depth === 0)) {
+        if (hasChildren(root.id)) {
+          let lastSiblingEntry: ChainEntry | null = null;
+          const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id);
+          const childEntries: ChainEntry[] = [];
+          for (const child of children) {
+            let overrideStart: string | undefined;
+            if (eligible(child) && lastSiblingEntry) overrideStart = nextWorkingDayAfter(lastSiblingEntry.end, holidaySet);
+            const entry = entryWithOverride(child, overrideStart);
+            if (overrideStart && entry) (patchFor(child.id) as Record<string, unknown>)[startField] = overrideStart;
+            if (entry) {
+              lastSiblingEntry = entry;
+              childEntries.push(entry);
+            }
+          }
+          if (childEntries.length) {
+            const start = childEntries.reduce((min, e) => (e.start < min ? e.start : min), childEntries[0].start);
+            const end = childEntries.reduce((max, e) => (e.end > max ? e.end : max), childEntries[0].end);
+            lastRootEntry = { start, end, durationDays: 0 };
+          }
+        } else {
+          let overrideStart: string | undefined;
+          if (eligible(root) && lastRootEntry) overrideStart = nextWorkingDayAfter(lastRootEntry.end, holidaySet);
+          const entry = entryWithOverride(root, overrideStart);
+          if (overrideStart && entry) (patchFor(root.id) as Record<string, unknown>)[startField] = overrideStart;
+          if (entry) lastRootEntry = entry;
+        }
+      }
+    }
+    if (patches.size === 0) {
+      await alert("Nothing to refresh -- every task's Start is either manually set or already tracking a dependency.");
+      return;
+    }
+    for (const [id, patch] of patches) {
+      await saveTaskField(id, patch);
+    }
+  }
+
   async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
     const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
@@ -633,7 +771,7 @@ export default function WbsPlanning() {
   function softIssues(): string[] {
     const issues: string[] = [];
     const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
-    const noEffort = orderedTasks.filter((t) => !t.effort);
+    const noEffort = orderedTasks.filter((t) => !t.effort && !(t.depth === 0 && hasChildren(t.id)));
     const conflicted = orderedTasks.filter((t) => dependencyConflict(t, "full_capacity") || dependencyConflict(t, "standard"));
     if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
     if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
@@ -726,6 +864,7 @@ export default function WbsPlanning() {
           }));
         if (snapshotRows.length) await supabase.from("task_planning_snapshots").insert(snapshotRows);
       }
+      await supabase.from("projects").update({ scoping_effort_mode: activeMode }).eq("id", project.id);
       await loadAll();
       await alert(`Saved using ${verb}. Timelines are still unlocked -- finalize from the Tasks page when ready.`);
     } finally {
@@ -829,18 +968,25 @@ export default function WbsPlanning() {
   // edited in this session) still come from the `allTasks` snapshot.
   const effectiveTasksForUtil: UtilTaskRow[] = [
     ...allTasks.filter((t) => t.project_id !== projectId),
-    ...orderedTasks.map((t) => {
-      const entry = chainByMode[activeMode].get(t.id);
-      return {
-        id: t.id,
-        project_id: t.project_id,
-        assignee_id: t.assignee_id,
-        status: t.status,
-        start_date: entry?.start ?? t.start_date,
-        current_due_date: entry?.end ?? t.current_due_date,
-        effort: t.effort,
-      };
-    }),
+    // Parent rows (tasks with their own sub-tasks) are excluded here on
+    // purpose -- see parentAssigneeState/the Effort "N/A" cell above.
+    // A parent's own span is just the union of its children's, so
+    // counting it too would double the points/utilization contribution
+    // for whoever it's (rolled-up-)assigned to.
+    ...orderedTasks
+      .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
+      .map((t) => {
+        const entry = chainByMode[utilPreviewMode].get(t.id);
+        return {
+          id: t.id,
+          project_id: t.project_id,
+          assignee_id: t.assignee_id,
+          status: t.status,
+          start_date: entry?.start ?? t.start_date,
+          current_due_date: entry?.end ?? t.current_due_date,
+          effort: t.effort,
+        };
+      }),
   ];
 
   // Same live-draft idea for THIS project's own row in the PM-overhead
@@ -859,7 +1005,7 @@ export default function WbsPlanning() {
       id: projectId ?? "",
       owner_id: project.owner_id,
       start_date: project.start_date,
-      end_date: summaries[activeMode].end,
+      end_date: summaries[utilPreviewMode].end,
     },
   ];
 
@@ -881,26 +1027,36 @@ export default function WbsPlanning() {
   // several overlapping bars in the same window is an immediate visual
   // flag of over-allocation -- the actual motivation Sandra gave for
   // wanting per-person colors at all.
-  const GANTT_DAY_WIDTH = 28;
+  // Round (2026-07-28): widened 28->34 (matches TimelineView's own day-cell
+  // width elsewhere in the app) and switched from "one Gantt, whichever
+  // mode is toggled" to "both Gantts, always" -- see ganttMetricsFor/
+  // renderGantt below. Sandra flagged the single-mode Gantt read as
+  // cramped/hard to follow, especially with dependency connector lines
+  // layered on top -- the wider day column gives the elbow lines more
+  // room to read clearly, on top of just being less crowded on its own.
+  const GANTT_DAY_WIDTH = 34;
   const GANTT_NAME_COL_WIDTH = 220;
   const GANTT_HEADER_HEIGHT = 24; // matches the date-label row's own height
   const GANTT_ROW_HEIGHT = 26; // matches each task row's own height
-  const activeSummary = summaries[activeMode];
-  const ganttStartDate = activeSummary.start ? addDays(parseLocalDate(activeSummary.start), -1) : null;
-  const ganttEndDate = activeSummary.end ? addDays(parseLocalDate(activeSummary.end), 1) : null;
-  const ganttDays: Date[] =
-    ganttStartDate && ganttEndDate
-      ? (() => {
-          const days: Date[] = [];
-          for (let d = new Date(ganttStartDate); d <= ganttEndDate; d = addDays(d, 1)) days.push(new Date(d));
-          return days;
-        })()
-      : [];
-  const ganttWidthPx = ganttDays.length * GANTT_DAY_WIDTH;
 
-  function ganttDayOffsetPx(dateStr: string): number {
-    if (!ganttStartDate) return 0;
-    const diffDays = Math.round((parseLocalDate(dateStr).getTime() - ganttStartDate.getTime()) / 86400000);
+  function ganttMetricsFor(mode: Mode) {
+    const summary = summaries[mode];
+    const startDate = summary.start ? addDays(parseLocalDate(summary.start), -1) : null;
+    const endDate = summary.end ? addDays(parseLocalDate(summary.end), 1) : null;
+    const days: Date[] =
+      startDate && endDate
+        ? (() => {
+            const out: Date[] = [];
+            for (let d = new Date(startDate); d <= endDate; d = addDays(d, 1)) out.push(new Date(d));
+            return out;
+          })()
+        : [];
+    const widthPx = days.length * GANTT_DAY_WIDTH;
+    return { startDate, days, widthPx };
+  }
+  function ganttDayOffsetPx(startDate: Date | null, dateStr: string): number {
+    if (!startDate) return 0;
+    const diffDays = Math.round((parseLocalDate(dateStr).getTime() - startDate.getTime()) / 86400000);
     return diffDays * GANTT_DAY_WIDTH;
   }
   function ganttBarWidthPx(startStr: string, endStr: string): number {
@@ -923,22 +1079,22 @@ export default function WbsPlanning() {
   // active mode (the same test `dependencyConflict` already uses) turns
   // solid amber, matching the existing warning-triangle icon's color, so
   // the same conflict is visible on the Gantt without checking the table.
-  function ganttConnectors() {
+  function ganttConnectors(mode: Mode, startDate: Date | null) {
     const rowIndexOf = new Map(orderedTasks.map((t, i) => [t.id, i]));
     const elems: JSX.Element[] = [];
     for (const t of orderedTasks) {
       const depIds = dependsOnIdsFor(t.id);
       if (!depIds.length) continue;
-      const succEntry = chainByMode[activeMode].get(t.id);
+      const succEntry = chainByMode[mode].get(t.id);
       const succRow = rowIndexOf.get(t.id);
       if (!succEntry || succRow === undefined) continue;
       for (const depId of depIds) {
-        const predEntry = chainByMode[activeMode].get(depId);
+        const predEntry = chainByMode[mode].get(depId);
         const predRow = rowIndexOf.get(depId);
         if (!predEntry || predRow === undefined) continue;
-        const x1 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(predEntry.end) + GANTT_DAY_WIDTH;
+        const x1 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(startDate, predEntry.end) + GANTT_DAY_WIDTH;
         const y1 = GANTT_HEADER_HEIGHT + predRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
-        const x2 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(succEntry.start);
+        const x2 = GANTT_NAME_COL_WIDTH + ganttDayOffsetPx(startDate, succEntry.start);
         const y2 = GANTT_HEADER_HEIGHT + succRow * GANTT_ROW_HEIGHT + GANTT_ROW_HEIGHT / 2;
         // Sandra flagged this connector was rendering but essentially
         // invisible in practice: (1) `var(--border)` (#e3e7ec) is a
@@ -983,8 +1139,9 @@ export default function WbsPlanning() {
         Conservative Effort each get their own independent Start/End/Duration below (7.5h/day vs 4h/day), since the same task can genuinely start on a
         different day under each mode. Set "Depends on" to flag a task that should follow another -- doing so moves that dependency's Start (under
         each mode, independently) to right after its predecessor's own End under that same mode, but it stays yours to edit afterward; a task starting
-        on or before its dependency's own End gets a warning icon. The "Save using" toggle only affects the Gantt, the utilization preview, and which
-        mode's numbers Save actually commits -- it no longer changes what the scoping table itself shows.
+        on or before its dependency's own End gets a warning icon. "Scoping Effort" (top right) picks which mode Save actually commits, and is recorded
+        as this project's official mode once you Save -- the Utilization snapshot below has its own separate Full/Conservative preview toggle, and both
+        Gantts below are always shown together regardless of either one.
       </p>
 
       {project.timelines_locked ? (
@@ -1029,14 +1186,31 @@ export default function WbsPlanning() {
               </span>
             </div>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--navy)" }}>Save using:</span>
-              <div className="timeline-segmented">
-                {MODES.map((m) => (
-                  <button key={m} className={`timeline-segmented-btn${activeMode === m ? " active" : ""}`} onClick={() => setActiveMode(m)}>
-                    {MODE_LABEL[m]}
-                  </button>
-                ))}
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 150)}>
+                <InlineSelect
+                  value={MODE_LABEL[activeMode]}
+                  editable
+                  options={MODES.map((m) => MODE_LABEL[m])}
+                  onCommit={(label) => {
+                    const m = MODES.find((mm) => MODE_LABEL[mm] === label);
+                    if (m) setActiveMode(m);
+                  }}
+                />
               </div>
+              <span
+                title={
+                  project.scoping_effort_mode
+                    ? `Officially saved as ${MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}. Pick a mode here, then Save to change what's officially recorded and written onto every task.`
+                    : "Not saved yet -- pick a mode, then Save to record it as this project's official Scoping Effort and write its dates onto every task."
+                }
+                style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
+              >
+                <Info size={13} style={{ color: "var(--muted)" }} />
+              </span>
+              <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
+                {saving ? "Saving…" : "Save"}
+              </button>
             </div>
           </div>
 
@@ -1070,13 +1244,6 @@ export default function WbsPlanning() {
               <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
                 across {orderedTasks.filter((t) => t.depth === 0).length} task(s)
               </div>
-              <span
-                className="status-pill neutral"
-                style={{ marginTop: 2, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
-                title="The total hours don't change between modes -- only how many days they take to fit."
-              >
-                🔒 Fixed total effort
-              </span>
             </div>
 
             <div style={{ flex: 1, minWidth: 340 }}>
@@ -1153,8 +1320,8 @@ export default function WbsPlanning() {
                 }}
               >
                 <Info size={12} style={{ flexShrink: 0 }} />
-                Effort hours stay fixed at {totalEffortHours}h. Timeline changes based on daily capacity: Full Effort = 7.5h/day, Conservative Effort =
-                4h/day.
+                Total Effort reflects the current plan -- it can change as tasks are added, resized, or actuals come in. Timeline changes based on daily
+                capacity: Full Effort = 7.5h/day, Conservative Effort = 4h/day.
               </div>
             </div>
           </div>
@@ -1163,12 +1330,19 @@ export default function WbsPlanning() {
               Utilization page, fed this project's DRAFT plan (including
               its own draft Owner/derived-span for PM overhead) */}
           <div className="card" style={{ padding: 14, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
               <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using {MODE_LABEL[activeMode]}'s current
-                schedule.
+                Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using {MODE_LABEL[utilPreviewMode]}'s
+                current schedule.
               </span>
+              <div className="timeline-segmented" title="Preview only -- doesn't affect Scoping Effort or Save.">
+                {MODES.map((m) => (
+                  <button key={m} className={`timeline-segmented-btn${utilPreviewMode === m ? " active" : ""}`} onClick={() => setUtilPreviewMode(m)}>
+                    {MODE_LABEL[m]}
+                  </button>
+                ))}
+              </div>
               <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
                 <button className="planner-nav-btn" title="Previous 4 weeks" onClick={() => setUtilWindowOffset((o) => o - 1)}>
                   <ChevronLeft size={14} />
@@ -1251,6 +1425,26 @@ export default function WbsPlanning() {
             </div>
           </div>
 
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+            <button
+              onClick={refreshDates}
+              title="Recompute Start dates for tasks that are still on auto-pilot (no dependency set, not manually overridden) based on the current row order -- useful after dragging a task into a new position."
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                padding: "5px 10px",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm, 6px)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                cursor: "pointer",
+              }}
+            >
+              <RefreshCw size={13} /> Refresh dates
+            </button>
+          </div>
           <div className="card" style={{ padding: 0, overflowX: "auto" }}>
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
@@ -1299,9 +1493,27 @@ export default function WbsPlanning() {
                   const assignee = people.find((p) => p.id === t.assignee_id);
                   const dependsOnIds = dependsOnIdsFor(t.id);
                   return (
-                    <tr key={t.id}>
+                    <tr
+                      key={t.id}
+                      style={draggedTaskId === t.id ? { opacity: 0.5 } : undefined}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (draggedTaskId) reorderTask(draggedTaskId, t.id);
+                        setDraggedTaskId(null);
+                      }}
+                    >
                       <td>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
+                          <span
+                            draggable
+                            onDragStart={() => setDraggedTaskId(t.id)}
+                            onDragEnd={() => setDraggedTaskId(null)}
+                            title="Drag to reorder (among its own siblings)"
+                            style={{ cursor: "grab", display: "inline-flex", color: "var(--muted)", flexShrink: 0 }}
+                          >
+                            <GripVertical size={13} />
+                          </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <InlineText value={t.name} editable bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
                           </div>
@@ -1325,46 +1537,76 @@ export default function WbsPlanning() {
                         </span>
                       </td>
                       <td>
-                        <InlineSelect
-                          value={t.effort ?? ""}
-                          editable
-                          allowEmpty
-                          emptyLabel="Pick effort"
-                          options={TASK_EFFORT_OPTIONS}
-                          renderReadOnly={(v) => (v ? <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral"}`}>{v}</span> : "Pick effort")}
-                          onCommit={(v) => saveTaskField(t.id, { effort: v || null })}
-                        />
+                        {isParent ? (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own effort is already represented by its sub-tasks' own Effort/points, so it doesn't carry a separate value.">
+                            N/A
+                          </span>
+                        ) : (
+                          <InlineSelect
+                            value={t.effort ?? ""}
+                            editable
+                            allowEmpty
+                            emptyLabel="Pick effort"
+                            options={TASK_EFFORT_OPTIONS}
+                            renderReadOnly={(v) => (v ? <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral"}`}>{v}</span> : "Pick effort")}
+                            onCommit={(v) => saveTaskField(t.id, { effort: v || null })}
+                          />
+                        )}
                       </td>
                       <td>
-                        <InlineSelect
-                          value={assignee?.name ?? ""}
-                          editable
-                          allowEmpty
-                          emptyLabel="Unassigned"
-                          options={people.map((p) => p.name)}
-                          renderReadOnly={(v) =>
-                            v ? (
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        {isParent ? (
+                          (() => {
+                            const { multiple } = parentAssigneeState(t.id);
+                            if (multiple) {
+                              return (
                                 <span
-                                  style={{
-                                    width: 8,
-                                    height: 8,
-                                    borderRadius: "50%",
-                                    background: colorForPerson(assignee),
-                                    flexShrink: 0,
-                                  }}
-                                />
-                                {v}
+                                  style={{ fontSize: 11.5, color: "var(--muted)", fontStyle: "italic" }}
+                                  title="This task's own sub-tasks are assigned to more than one person -- pick a single Assignee on each sub-task instead."
+                                >
+                                  Multiple
+                                </span>
+                              );
+                            }
+                            return assignee ? (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Mirrors its sub-tasks -- all currently assigned to the same person.">
+                                <span style={{ width: 8, height: 8, borderRadius: "50%", background: colorForPerson(assignee), flexShrink: 0 }} />
+                                {assignee.name}
                               </span>
                             ) : (
-                              "Unassigned"
-                            )
-                          }
-                          onCommit={(name) => {
-                            const p = people.find((pp) => pp.name === name);
-                            saveTaskField(t.id, { assignee_id: p?.id ?? null });
-                          }}
-                        />
+                              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Unassigned</span>
+                            );
+                          })()
+                        ) : (
+                          <InlineSelect
+                            value={assignee?.name ?? ""}
+                            editable
+                            allowEmpty
+                            emptyLabel="Unassigned"
+                            options={people.map((p) => p.name)}
+                            renderReadOnly={(v) =>
+                              v ? (
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  <span
+                                    style={{
+                                      width: 8,
+                                      height: 8,
+                                      borderRadius: "50%",
+                                      background: colorForPerson(assignee),
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  {v}
+                                </span>
+                              ) : (
+                                "Unassigned"
+                              )
+                            }
+                            onCommit={(name) => {
+                              const p = people.find((pp) => pp.name === name);
+                              saveTaskField(t.id, { assignee_id: p?.id ?? null });
+                            }}
+                          />
+                        )}
                       </td>
                       <td style={{ position: "relative" }}>
                         <DependsOnPicker
@@ -1395,166 +1637,166 @@ export default function WbsPlanning() {
             </table>
           </div>
 
-          {/* Timeline (Gantt) -- always visible below the table, showing
-              whichever mode is active. Built as absolutely-positioned bars
-              over a plain day grid rather than a table, so a bar can span
-              multiple days without colSpan gymnastics. */}
-          <div className="card" style={{ padding: 14, marginTop: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Timeline (Gantt)</strong>
-              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                Showing {MODE_LABEL[activeMode]}'s current schedule. Bars are colored by Assignee -- set colors in User management.
-              </span>
-            </div>
-            {ganttDays.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
-                No schedule yet -- add a Start date and Estimated hours to at least one task to see the timeline.
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                {/* Sandra, 2026-07-24: "is it ok if we show dependencies via
-                    a light broken or thin line just to show relationship?"
-                    -- a single SVG overlay (`ganttConnectors()` below)
-                    spans the whole header+rows area so an elbow line can be
-                    drawn from any predecessor row to any successor row
-                    (they're rarely adjacent). This wrapping div is what
-                    that overlay is absolutely positioned against; nothing
-                    else changed about the header/row markup below, just
-                    moved their shared `minWidth` up onto this one wrapper
-                    instead of repeating it on every row. Read-only lines
-                    only -- NOT the deferred drag-to-create-a-dependency
-                    feature, which is a separate, bigger interaction and
-                    still not started. */}
-                <div style={{ position: "relative", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
-                <div style={{ display: "flex" }}>
-                  <div style={{ width: GANTT_NAME_COL_WIDTH, flexShrink: 0, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }} />
-                  <div style={{ position: "relative", width: ganttWidthPx, height: 24, flexShrink: 0 }}>
-                    {ganttDays.map((d, i) => {
-                      const iso = toISO(d);
-                      const offDay = !isWorkingDay(d, holidaySet);
-                      const isFirstOfMonth = d.getDate() === 1 || i === 0;
-                      return (
-                        <div
-                          key={iso}
-                          title={iso}
-                          style={{
-                            position: "absolute",
-                            left: i * GANTT_DAY_WIDTH,
-                            top: 0,
-                            width: GANTT_DAY_WIDTH,
-                            height: "100%",
-                            fontSize: 9.5,
-                            textAlign: "center",
-                            color: offDay ? "var(--muted)" : "var(--text)",
-                            background: offDay ? "var(--hover-bg)" : undefined,
-                            fontWeight: isFirstOfMonth ? 700 : 400,
-                            borderLeft: isFirstOfMonth ? "1px solid var(--border)" : undefined,
-                          }}
-                        >
-                          {String(d.getMonth() + 1).padStart(2, "0")}/{String(d.getDate()).padStart(2, "0")}
-                        </div>
-                      );
-                    })}
-                  </div>
+          {/* Timeline (Gantt) -- always visible below the table, BOTH
+              modes stacked (2026-07-28: previously just whichever mode was
+              toggled active; Sandra asked for both side by side since the
+              scoping table above already shows both regardless of
+              toggle). renderGantt(mode) below is the same markup as
+              before, just parameterized instead of reading `activeMode`
+              directly, called once per MODE. */}
+          {MODES.map((mode) => {
+            const { startDate: ganttStartDate, days: ganttDays, widthPx: ganttWidthPx } = ganttMetricsFor(mode);
+            return (
+              <div key={mode} className="card" style={{ padding: 14, marginTop: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Timeline (Gantt) — {MODE_LABEL[mode]}</strong>
+                  <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                    Bars are colored by Assignee -- set colors in User management.
+                  </span>
                 </div>
-                {orderedTasks.map((t) => {
-                  const entry = chainByMode[activeMode].get(t.id);
-                  const isParent = t.depth === 0 && hasChildren(t.id);
-                  const assignee = people.find((p) => p.id === t.assignee_id);
-                  const barColor = assignee ? colorForPerson(assignee) : UNASSIGNED_BAR_COLOR;
-                  return (
-                    <div key={t.id} style={{ display: "flex" }}>
-                      <div
-                        style={{
-                          width: GANTT_NAME_COL_WIDTH,
-                          flexShrink: 0,
-                          position: "sticky",
-                          left: 0,
-                          background: "var(--surface)",
-                          zIndex: 1,
-                          fontSize: 11.5,
-                          fontWeight: t.depth === 0 ? 600 : 400,
-                          paddingLeft: 8 + t.depth * 16,
-                          paddingRight: 8,
-                          height: 26,
-                          display: "flex",
-                          alignItems: "center",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          borderBottom: "1px solid var(--hover-bg)",
-                        }}
-                        title={t.name}
-                      >
-                        {t.name}
-                      </div>
-                      <div style={{ position: "relative", width: ganttWidthPx, height: 26, flexShrink: 0, borderBottom: "1px solid var(--hover-bg)" }}>
-                        {ganttDays.map((d) => {
+                {ganttDays.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
+                    No schedule yet -- add a Start date and Estimated hours to at least one task to see the timeline.
+                  </div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    {/* Sandra, 2026-07-24: "is it ok if we show dependencies via
+                        a light broken or thin line just to show relationship?"
+                        -- a single SVG overlay (`ganttConnectors()` below)
+                        spans the whole header+rows area so an elbow line can be
+                        drawn from any predecessor row to any successor row
+                        (they're rarely adjacent). This wrapping div is what
+                        that overlay is absolutely positioned against; nothing
+                        else changed about the header/row markup below, just
+                        moved their shared `minWidth` up onto this one wrapper
+                        instead of repeating it on every row. Read-only lines
+                        only -- NOT the deferred drag-to-create-a-dependency
+                        feature, which is a separate, bigger interaction and
+                        still not started. */}
+                    <div style={{ position: "relative", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
+                    <div style={{ display: "flex" }}>
+                      <div style={{ width: GANTT_NAME_COL_WIDTH, flexShrink: 0, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }} />
+                      <div style={{ position: "relative", width: ganttWidthPx, height: 24, flexShrink: 0 }}>
+                        {ganttDays.map((d, i) => {
                           const iso = toISO(d);
-                          if (isWorkingDay(d, holidaySet)) return null;
+                          const offDay = !isWorkingDay(d, holidaySet);
+                          const isFirstOfMonth = d.getDate() === 1 || i === 0;
                           return (
                             <div
                               key={iso}
+                              title={iso}
                               style={{
                                 position: "absolute",
-                                left: ganttDayOffsetPx(iso),
+                                left: i * GANTT_DAY_WIDTH,
                                 top: 0,
-                                bottom: 0,
                                 width: GANTT_DAY_WIDTH,
-                                background: "var(--hover-bg)",
+                                height: "100%",
+                                fontSize: 9.5,
+                                textAlign: "center",
+                                color: offDay ? "var(--muted)" : "var(--text)",
+                                background: offDay ? "var(--hover-bg)" : undefined,
+                                fontWeight: isFirstOfMonth ? 700 : 400,
+                                borderLeft: isFirstOfMonth ? "1px solid var(--border)" : undefined,
                               }}
-                            />
+                            >
+                              {String(d.getMonth() + 1).padStart(2, "0")}/{String(d.getDate()).padStart(2, "0")}
+                            </div>
                           );
                         })}
-                        {entry ? (
-                          <div
-                            title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${formatDate(entry.start)} → ${formatDate(entry.end)}`}
-                            style={{
-                              position: "absolute",
-                              left: ganttDayOffsetPx(entry.start),
-                              width: ganttBarWidthPx(entry.start, entry.end),
-                              top: isParent ? 9 : 4,
-                              height: isParent ? 8 : 18,
-                              background: barColor,
-                              opacity: isParent ? 0.55 : 1,
-                              borderRadius: 4,
-                              display: "flex",
-                              alignItems: "center",
-                              paddingLeft: 5,
-                              color: "#fff",
-                              fontSize: 9.5,
-                              fontWeight: 600,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                            }}
-                          >
-                            {!isParent && entry.durationDays}
-                          </div>
-                        ) : null}
                       </div>
                     </div>
-                  );
-                })}
-                <svg
-                  width={GANTT_NAME_COL_WIDTH + ganttWidthPx}
-                  height={GANTT_HEADER_HEIGHT + orderedTasks.length * GANTT_ROW_HEIGHT}
-                  style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
-                >
-                  {ganttConnectors()}
-                </svg>
-                </div>
+                    {orderedTasks.map((t) => {
+                      const entry = chainByMode[mode].get(t.id);
+                      const isParent = t.depth === 0 && hasChildren(t.id);
+                      const assignee = people.find((p) => p.id === t.assignee_id);
+                      const barColor = assignee ? colorForPerson(assignee) : UNASSIGNED_BAR_COLOR;
+                      return (
+                        <div key={t.id} style={{ display: "flex" }}>
+                          <div
+                            style={{
+                              width: GANTT_NAME_COL_WIDTH,
+                              flexShrink: 0,
+                              position: "sticky",
+                              left: 0,
+                              background: "var(--surface)",
+                              zIndex: 1,
+                              fontSize: 11.5,
+                              fontWeight: t.depth === 0 ? 600 : 400,
+                              paddingLeft: 8 + t.depth * 16,
+                              paddingRight: 8,
+                              height: 26,
+                              display: "flex",
+                              alignItems: "center",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              borderBottom: "1px solid var(--hover-bg)",
+                            }}
+                            title={t.name}
+                          >
+                            {t.name}
+                          </div>
+                          <div style={{ position: "relative", width: ganttWidthPx, height: 26, flexShrink: 0, borderBottom: "1px solid var(--hover-bg)" }}>
+                            {ganttDays.map((d) => {
+                              const iso = toISO(d);
+                              if (isWorkingDay(d, holidaySet)) return null;
+                              return (
+                                <div
+                                  key={iso}
+                                  style={{
+                                    position: "absolute",
+                                    left: ganttDayOffsetPx(ganttStartDate, iso),
+                                    top: 0,
+                                    bottom: 0,
+                                    width: GANTT_DAY_WIDTH,
+                                    background: "var(--hover-bg)",
+                                  }}
+                                />
+                              );
+                            })}
+                            {entry ? (
+                              <div
+                                title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${formatDate(entry.start)} → ${formatDate(entry.end)}`}
+                                style={{
+                                  position: "absolute",
+                                  left: ganttDayOffsetPx(ganttStartDate, entry.start),
+                                  width: ganttBarWidthPx(entry.start, entry.end),
+                                  top: isParent ? 9 : 4,
+                                  height: isParent ? 8 : 18,
+                                  background: barColor,
+                                  opacity: isParent ? 0.55 : 1,
+                                  borderRadius: 4,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  paddingLeft: 5,
+                                  color: "#fff",
+                                  fontSize: 9.5,
+                                  fontWeight: 600,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                }}
+                              >
+                                {!isParent && entry.durationDays}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <svg
+                      width={GANTT_NAME_COL_WIDTH + ganttWidthPx}
+                      height={GANTT_HEADER_HEIGHT + orderedTasks.length * GANTT_ROW_HEIGHT}
+                      style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+                    >
+                      {ganttConnectors(mode, ganttStartDate)}
+                    </svg>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })}
 
-          <div className="card" style={{ padding: 14, marginTop: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn-primary" disabled={saving} onClick={saveDraft}>
-              {saving ? "Saving…" : `Save using ${MODE_LABEL[activeMode]}`}
-            </button>
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-              Writes {MODE_LABEL[activeMode]}'s End dates onto every task. Nothing is locked -- finalize later from the Tasks page.
-            </span>
-          </div>
         </>
       )}
     </div>

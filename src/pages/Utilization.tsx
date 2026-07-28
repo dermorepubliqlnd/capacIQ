@@ -19,6 +19,7 @@ interface ProjectRow {
 interface TaskRow {
   id: string;
   project_id: string;
+  parent_task_id: string | null;
   name: string;
   assignee_id: string | null;
   status: string | null;
@@ -172,7 +173,7 @@ export default function Utilization() {
     const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
-      supabase.from("tasks").select("id,project_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
     ]);
@@ -220,8 +221,18 @@ export default function Utilization() {
     return null;
   }
 
+  // 2026-07-28: parent tasks (tasks with their own sub-tasks) are excluded
+  // from utilization points -- a parent's own span/hours are already just
+  // a rollup of its children (see WBS Planning's parentAssigneeState /
+  // the Effort "N/A" treatment for parents), so counting a parent's own
+  // Effort+Assignee here on top of its children's would double-count
+  // whoever it's assigned to. `parentTaskIds` is every id that appears as
+  // some other task's own parent_task_id.
+  const parentTaskIds = new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
   function openTasksFor(personId: string): TaskRow[] {
-    return tasks.filter((t) => t.assignee_id === personId && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
+    return tasks.filter(
+      (t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete"
+    );
   }
   function ownedProjectsFor(personId: string): ProjectRow[] {
     return projects.filter((p) => p.owner_id === personId);
