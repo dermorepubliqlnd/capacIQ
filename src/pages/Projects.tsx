@@ -1101,169 +1101,17 @@ export default function Projects() {
       .join("\n");
   }
 
-  // Shared by the manual Lock/Unlock button (lockProjectTimelines, below --
-  // asks its own generic "Lock/Unlock timelines for X?" confirm) and the
-  // Design-phase guardrail (guardDesignPhaseLock, below -- asks a
-  // differently-worded, context-specific confirm instead). Both need the
-  // exact same underlying policy (incomplete-task gate, then the RPC call)
-  // per Sandra's instruction that the guardrail should "still follow our
-  // policies set before locking scoping" rather than invent a separate
-  // check -- so the policy itself lives here once, and only the
-  // confirmation wording differs per caller. Returns true only if the
-  // lock/unlock actually went through (false if blocked or declined),
-  // so callers that gate a second action on it (the guardrail gates the
-  // Phase change itself) know whether to proceed.
-  // Baseline vs Final performance reporting (Sandra, 2026-07-24): the
-  // moment a project's timelines are LOCKED (through either entry point
-  // below, since both funnel through performTimelinesLock), take one
-  // immutable snapshot of where the project stood -- total estimated
-  // hours, task count, and the Start/End span -- plus a per-task list
-  // (name + estimated hours) so a later report can show exactly which
-  // tasks were added or grew since. First-lock-only: if a re-lock happens
-  // later (e.g. after an approved mid-stream change), the ORIGINAL
-  // baseline is left alone -- it's meant to answer "what did we commit
-  // to," not "what did we most recently commit to." The matching "Final"
-  // side is a separate, manually-triggered Close-out action (her
-  // explicit choice over tying it to a Status value) -- see
-  // project_closeouts / the BaselineReport page.
-  //
-  // Hours total sums only ROOT tasks' estimated_hours (parent tasks
-  // already roll up their children's hours -- see
-  // [[project_capaciq_est_hours_rollup]] -- so summing every row would
-  // double-count). Task count and the per-task snapshot list include
-  // EVERY task (root + sub-tasks), since a "task added later" could just
-  // as easily be a new sub-task under an existing parent.
-  //
-  // Mode isn't tracked directly on the project row -- the WBS page's
-  // Save writes a task_planning_snapshots batch per mode with `applied`
-  // flagging which one was chosen. We look up the most recent applied
-  // snapshot for any of this project's tasks to label the baseline;
-  // if none exists yet (locked before ever running WBS Save), we fall
-  // back to 'full_capacity' as a reasonable default label rather than
-  // blocking the lock over it.
-  async function captureProjectBaseline(p: ProjectRow) {
-    const { data: existing } = await supabase.from("project_baselines").select("id").eq("project_id", p.id).maybeSingle();
-    if (existing) return; // first-lock-only -- never overwrite an existing baseline
-
-    const projectTasks = tasks.filter((t) => t.project_id === p.id);
-    if (!projectTasks.length) return;
-
-    const rootTasks = projectTasks.filter((t) => !t.parent_task_id);
-    const totalEstHours = rootTasks.reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0);
-    const starts = projectTasks.map((t) => t.start_date).filter((d): d is string => !!d);
-    const ends = projectTasks.map((t) => t.current_due_date).filter((d): d is string => !!d);
-    const startDate = starts.length ? starts.reduce((a, b) => (b < a ? b : a)) : null;
-    const endDate = ends.length ? ends.reduce((a, b) => (b > a ? b : a)) : null;
-
-    let mode: "full_capacity" | "standard" = "full_capacity";
-    const { data: lastSnapshot } = await supabase
-      .from("task_planning_snapshots")
-      .select("mode, computed_at")
-      .in(
-        "task_id",
-        projectTasks.map((t) => t.id)
-      )
-      .eq("applied", true)
-      .order("computed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (lastSnapshot?.mode === "standard" || lastSnapshot?.mode === "full_capacity") mode = lastSnapshot.mode;
-
-    const { data: baseline, error: baselineError } = await supabase
-      .from("project_baselines")
-      .insert({
-        project_id: p.id,
-        captured_by: me?.id ?? null,
-        mode,
-        total_est_hours: totalEstHours,
-        task_count: projectTasks.length,
-        start_date: startDate,
-        end_date: endDate,
-      })
-      .select("id")
-      .single();
-    if (baselineError || !baseline) return; // non-fatal -- lock itself already succeeded
-
-    await supabase.from("project_baseline_tasks").insert(
-      projectTasks.map((t) => ({
-        baseline_id: baseline.id,
-        task_id: t.id,
-        name: t.name,
-        estimated_hours: t.estimated_hours,
-      }))
-    );
-  }
-
-  async function performTimelinesLock(p: ProjectRow, locked: boolean, confirmMessage: string): Promise<boolean> {
-    if (locked) {
-      const incomplete = incompleteTasksFor(p.id);
-      if (incomplete.length > 0) {
-        const summary = missingFieldSummary(incomplete);
-        if (!isFullAccess) {
-          alert(`Can't lock yet -- ${incomplete.length} task(s) are missing required info:\n\n${summary}`);
-          return false;
-        }
-        if (!(await confirm(`${incomplete.length} task(s) are missing required info and would be locked incomplete:\n\n${summary}\n\nFull Access override: lock anyway?`))) return false;
-      }
-    }
-
-    if (!locked && !isFullAccess) {
-      // Owner self-service unlock only applies to a project still in
-      // Scoping. Once truly Locked, the DB itself now refuses a direct
-      // owner-initiated unlock (see the projects_date_lock/
-      // set_project_timelines_locked governance added 2026-07-21) -- the
-      // only path from here is an approved Project Extension Request.
-      alert(
-        'This project\'s timelines are locked. Ask your manager or Full Access to unlock it, or file a "Request timeline change" once that\'s available from the Extension Requests page.'
-      );
-      return false;
-    }
-
-    if (!(await confirm(confirmMessage))) return false;
-    const { error } = await supabase.rpc("set_project_timelines_locked", { p_project_id: p.id, p_locked: locked });
-    if (error) {
-      alert(`Couldn't ${locked ? "lock" : "unlock"} timelines: ${error.message}`);
-      return false;
-    }
-    // Sandra, 2026-07-23: locking timelines through ANY entry point (the
-    // manual Lock button below, or guardDesignPhaseLock via the Phase
-    // dropdown) advances Phase from Scoping to Design by default -- the
-    // mirror image of the Design-phase guardrail's own forward direction,
-    // so "Timelines locked" and "Phase: Design" stay paired regardless of
-    // which side someone changes first. Only fires when Phase is exactly
-    // "Scoping": a project already further along (Development/Evaluation/
-    // Delivery) that gets re-locked after an approved mid-stream change
-    // keeps its real phase, and Paused/Cancelled are deliberately skipped
-    // so this can't fight the "Phase freezes while stopped" rule from the
-    // original Status/Phase split. Unlocking does NOT auto-revert Phase
-    // back to Scoping -- an unlock is normally a temporary, approved
-    // exception for one edit, not an undo of design work already done;
-    // flag it if that assumption doesn't hold up in practice.
-    if (locked && p.phase === "Scoping" && p.status !== "Paused" && p.status !== "Cancelled") {
-      await updateProject(p.id, { phase: "Design" });
-    }
-    if (locked) await captureProjectBaseline(p);
-    loadAll();
-    return true;
-  }
-
-  // Phase 4 (2026-07-28): no longer called from anywhere in this file --
-  // the Timelines column's manual Lock/Unlock button is gone (replaced by
-  // the WBS Status column) and guardDesignPhaseLock no longer auto-locks
-  // either. Left in place, not deleted, since retiring this whole old
-  // lock/captureProjectBaseline path is explicitly scoped to Phase 6.
-  async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
-    const verb = locked ? "Lock" : "Unlock";
-    const detail = locked
-      ? "This freezes every task's current due date as the committed baseline. After this, due dates can only change via an approved Extension Request."
-      : "This re-opens every task's due date for free editing during planning, until locked again.";
-    await performTimelinesLock(p, locked, `${verb} timelines for "${p.name}"?\n\n${detail}`);
-  }
+  // Phase 6 (2026-07-28): the old manual Lock/Unlock button, and the
+  // captureProjectBaseline snapshot it used to take on first lock, were
+  // removed here -- both retired in favor of the WBS Planning page's
+  // lock_wbs_baseline RPC (Phase 2/3), which is now the only way a
+  // project's baseline gets captured. See [[project_capaciq_phase6_retire_old_flow]].
 
   // Guardrail (Sandra, 2026-07-23): moving a project's Phase to Design
   // while its Timelines are still in Scoping (unlocked) prompts to lock
-  // first, using the exact same policy as the manual Lock button above --
-  // not a new/separate date-presence check. Declining the prompt, or
+  // first (Phase 6: now redirects to WBS Planning's Lock Baseline instead
+  // of a manual Lock button, which no longer exists -- see below).
+  // Declining the prompt, or
   // getting blocked by the incomplete-task gate, blocks the Phase change
   // itself (her answer: "Block the Phase change"), leaving Phase
   // untouched. Already-locked projects skip the prompt entirely. Scoped to

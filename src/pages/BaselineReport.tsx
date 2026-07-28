@@ -1,26 +1,33 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Lock, Flag, Plus, TrendingUp } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { useSession } from "../lib/useSession";
-import { useConfirm } from "../lib/useConfirm";
 import { formatDate } from "../lib/formatDate";
+import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
 
 // Baseline vs Final performance reporting (Sandra, 2026-07-24):
 // "I want to see initial baseline and final performance ... upon locking
 // timelines, this saves and cannot be changed ... on project close I want
-// to see changes." Baseline is captured automatically the moment
-// timelines are LOCKED (see captureProjectBaseline in Projects.tsx --
-// same performTimelinesLock entry point either the Lock button or the
-// Design-phase guardrail uses). Final is captured by the manual
-// "Close out" action below, her explicit choice over tying this to a
-// Status value since Status gets toggled around for other reasons.
-// Close-out is deliberately re-runnable (numbers can be refreshed if
-// corrected later), unlike the baseline which is written once and never
-// touched again.
+// to see changes."
 //
-// Reached via a "Report" link next to the Timelines column on the
-// Projects page (only shown once a project is locked, i.e. once a
+// Phase 6 (2026-07-28): this page's own freely re-runnable "Close out
+// project" / "Re-run close-out" button was RETIRED here -- it let anyone
+// with edit access overwrite Final performance at any time with no
+// approval, which is exactly the "double closing" Sandra explicitly
+// banned ("Closing is final ... should be done via an approval or sign
+// off process"). Final is now captured ONLY by decide_wbs_closure, fired
+// from an approved Closure Request on the WBS Planning page -- see
+// [[project_capaciq_phase6_retire_old_flow]]. This page is now pure
+// reporting: it reads whatever Baseline/Final rows exist and shows the
+// live plan as a preview until a closure is actually approved.
+//
+// Baseline itself now also reads the ACTIVE baseline row (is_active =
+// true) rather than assuming exactly one ever exists -- Phase 5's
+// re-baselining can supersede an old baseline with a new version, so
+// there can be more than one project_baselines row per project now.
+//
+// Reached via a "Report" link next to the WBS Status column on the
+// Projects page (shown once wbs_status has moved past Draft, i.e. once a
 // baseline exists).
 
 const MODE_LABEL: Record<string, string> = { full_capacity: "Full Effort", standard: "Conservative Effort" };
@@ -28,7 +35,7 @@ const MODE_LABEL: Record<string, string> = { full_capacity: "Full Effort", stand
 interface ProjectRow {
   id: string;
   name: string;
-  timelines_locked: boolean;
+  wbs_status: WbsStatus;
 }
 interface TaskRow {
   id: string;
@@ -42,6 +49,7 @@ interface TaskRow {
 }
 interface BaselineRow {
   id: string;
+  version_number: number;
   captured_at: string;
   mode: string;
   total_est_hours: number;
@@ -79,9 +87,6 @@ function liveTotals(tasks: TaskRow[]) {
 
 export default function BaselineReport() {
   const { projectId } = useParams<{ projectId: string }>();
-  const navigate = useNavigate();
-  const { person: me } = useSession();
-  const { confirm, alert, dialog } = useConfirm();
 
   const [project, setProject] = useState<ProjectRow | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -90,19 +95,23 @@ export default function BaselineReport() {
   const [closeout, setCloseout] = useState<CloseoutRow | null>(null);
   const [closeoutTasks, setCloseoutTasks] = useState<SnapshotTaskRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [closingOut, setClosingOut] = useState(false);
 
   async function loadAll() {
     if (!projectId) return;
     setLoading(true);
     const [{ data: proj }, { data: tks }, { data: bl }, { data: co }] = await Promise.all([
-      supabase.from("projects").select("id,name,timelines_locked").eq("id", projectId).single(),
+      supabase.from("projects").select("id,name,wbs_status").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select("id,project_id,parent_task_id,name,estimated_hours,start_date,current_due_date,is_archived")
         .eq("project_id", projectId)
         .eq("is_archived", false),
-      supabase.from("project_baselines").select("id,captured_at,mode,total_est_hours,task_count,start_date,end_date").eq("project_id", projectId).maybeSingle(),
+      supabase
+        .from("project_baselines")
+        .select("id,version_number,captured_at,mode,total_est_hours,task_count,start_date,end_date")
+        .eq("project_id", projectId)
+        .eq("is_active", true)
+        .maybeSingle(),
       supabase.from("project_closeouts").select("id,closed_at,mode,total_est_hours,task_count,start_date,end_date").eq("project_id", projectId).maybeSingle(),
     ]);
     setProject((proj as ProjectRow) ?? null);
@@ -130,97 +139,28 @@ export default function BaselineReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  async function closeOutProject() {
-    if (!project || !projectId) return;
-    const live = liveTotals(tasks);
-    const verb = closeout ? "Re-run close-out" : "Close out";
-    if (
-      !(await confirm(
-        `${verb} "${project.name}"?\n\nThis records the current totals as Final performance: ${live.totalEstHours} est. hours across ${live.taskCount} task(s)${
-          live.endDate ? `, ending ${formatDate(live.endDate)}` : ""
-        }.${closeout ? " This replaces the previous close-out numbers." : ""}`
-      ))
-    )
-      return;
-
-    setClosingOut(true);
-    try {
-      const mode = baseline?.mode === "standard" ? "standard" : "full_capacity";
-      let closeoutId = closeout?.id ?? null;
-      if (closeoutId) {
-        const { error } = await supabase
-          .from("project_closeouts")
-          .update({
-            closed_at: new Date().toISOString(),
-            mode,
-            total_est_hours: live.totalEstHours,
-            task_count: live.taskCount,
-            start_date: live.startDate,
-            end_date: live.endDate,
-          })
-          .eq("id", closeoutId);
-        if (error) {
-          await alert(`Couldn't close out: ${error.message}`);
-          return;
-        }
-        await supabase.from("project_closeout_tasks").delete().eq("closeout_id", closeoutId);
-      } else {
-        const { data, error } = await supabase
-          .from("project_closeouts")
-          .insert({
-            project_id: projectId,
-            closed_by: me?.id ?? null,
-            mode,
-            total_est_hours: live.totalEstHours,
-            task_count: live.taskCount,
-            start_date: live.startDate,
-            end_date: live.endDate,
-          })
-          .select("id")
-          .single();
-        if (error || !data) {
-          await alert(`Couldn't close out: ${error?.message ?? "unknown error"}`);
-          return;
-        }
-        closeoutId = data.id;
-      }
-
-      await supabase.from("project_closeout_tasks").insert(
-        tasks.map((t) => ({
-          closeout_id: closeoutId,
-          task_id: t.id,
-          name: t.name,
-          estimated_hours: t.estimated_hours,
-        }))
-      );
-      await loadAll();
-    } finally {
-      setClosingOut(false);
-    }
-  }
-
   if (loading) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>;
   if (!project) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Project not found.</div>;
 
   if (!baseline) {
     return (
       <div>
-        {dialog}
         <Link to={`/projects/${projectId}`} className="back-link" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 12.5 }}>
           <ArrowLeft size={13} /> Back to {project.name}
         </Link>
         <h1>Baseline vs Final — {project.name}</h1>
         <div className="card" style={{ padding: 14, fontSize: 12.5, color: "var(--muted)" }}>
-          No baseline yet -- lock this project's timelines from the Projects table (or the WBS page) to capture one automatically.
+          No baseline yet -- go to this project's WBS Planning page and Lock Baseline to capture one.
         </div>
       </div>
     );
   }
 
   const live = liveTotals(tasks);
-  // "Final" numbers are the frozen close-out snapshot once it exists; the
-  // live totals are shown alongside as a preview so Sandra can see what
-  // Close out WOULD record before committing to it.
+  const isClosed = project.wbs_status === "closed";
+  // "Final" numbers are the frozen close-out snapshot once Closure has
+  // been approved; before that, the live totals are shown alongside as a
+  // preview of what Final WOULD look like right now.
   const finalTotals = closeout ? { totalEstHours: closeout.total_est_hours, taskCount: closeout.task_count, endDate: closeout.end_date } : null;
 
   const hoursDelta = (finalTotals ? finalTotals.totalEstHours : live.totalEstHours) - baseline.total_est_hours;
@@ -256,18 +196,17 @@ export default function BaselineReport() {
 
   return (
     <div>
-      {dialog}
       <Link to={`/projects/${projectId}`} className="back-link" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 12.5 }}>
         <ArrowLeft size={13} /> Back to {project.name}
       </Link>
       <h1>Baseline vs Final — {project.name}</h1>
       <p className="subtitle">
-        Baseline was captured automatically when timelines were locked and never changes. Final is captured by the "Close out" action below and can be
-        re-run if numbers need correcting.
+        Baseline is captured when this project's plan is Locked (or Re-baselined) on the WBS Planning page and never changes on its own. Final is
+        captured only once a Closure Request is approved there -- final and not re-runnable.
       </p>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-        {statCard("Baseline (at lock)", <Lock size={13} />, "var(--navy)", [
+        {statCard(`Baseline V${baseline.version_number} (at lock)`, <Lock size={13} />, "var(--navy)", [
           { label: "Captured", value: formatDate(baseline.captured_at.slice(0, 10)) },
           { label: "Mode", value: MODE_LABEL[baseline.mode] ?? baseline.mode },
           { label: "Est. hours", value: `${baseline.total_est_hours}` },
@@ -290,10 +229,29 @@ export default function BaselineReport() {
         ])}
       </div>
 
-      <div style={{ marginBottom: 14 }}>
-        <button className="btn-primary" onClick={closeOutProject} disabled={closingOut} style={{ fontSize: 12.5 }}>
-          {closingOut ? "Closing out…" : closeout ? "Re-run close-out" : "Close out project"}
-        </button>
+      <div
+        className="card"
+        style={{
+          padding: "8px 14px",
+          marginBottom: 14,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          background: WBS_STATUS_META[project.wbs_status]?.bg,
+          borderColor: WBS_STATUS_META[project.wbs_status]?.border,
+        }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 700, color: WBS_STATUS_META[project.wbs_status]?.color }}>
+          {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
+        </span>
+        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+          {isClosed
+            ? "Final Scope is locked -- the numbers above are permanent."
+            : "Final isn't captured yet -- Request Closure on the WBS Planning page to lock it in once this project is done."}
+        </span>
+        <Link to={`/projects/${projectId}/wbs`} className="back-link" style={{ marginLeft: "auto", fontSize: 12 }}>
+          Go to WBS Planning →
+        </Link>
       </div>
 
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
