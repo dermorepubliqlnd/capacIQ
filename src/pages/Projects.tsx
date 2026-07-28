@@ -1777,31 +1777,15 @@ export default function Projects() {
               >
                 {meta?.label ?? p.wbs_status}
               </span>
-              <button
-                onClick={() => navigate(`/projects/${p.id}/wbs`)}
-                title="Open WBS Planning -- status, Lock Baseline, Revisions, and Compare with Baseline all live there"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "2px 8px",
-                  fontSize: 11,
-                  fontWeight: 500,
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--accent, #2563eb)",
-                  cursor: "pointer",
-                }}
-              >
-                WBS
-              </button>
-              {/* Sandra, 2026-07-24: Baseline vs Final report link -- only
-                  appears once a baseline exists (i.e. wbs_status has moved
-                  past Draft at least once). Kept on wbs_status rather than
-                  timelines_locked so it also shows during an in-progress
-                  revision, when timelines_locked is briefly false again. */}
-              {p.wbs_status !== "draft" && (
+              {/* Sandra, 2026-07-29: removed the separate "WBS" button --
+                  the Project name cell (Round 21) already navigates to
+                  /projects/:id/wbs, so this was a duplicate affordance. */}
+              {/* Sandra, 2026-07-29: Report link now gated to Closed only
+                  (was "any non-draft status") -- the redesigned WBS page
+                  itself now surfaces baseline/revision/variance info
+                  in-place, so this report is reserved for the final,
+                  closed-project performance summary. */}
+              {p.wbs_status === "closed" && (
                 <button
                   onClick={() => navigate(`/projects/${p.id}/baseline`)}
                   title="View this project's Baseline vs Final performance report"

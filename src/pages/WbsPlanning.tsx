@@ -1256,6 +1256,14 @@ export default function WbsPlanning() {
   // DECISIONS additionally open up to anyone flagged can_approve_closures.
   const canManageWbs = isFullAccess || me?.id === project.owner_id;
   const canDecideClosure = isFullAccess || !!me?.can_approve_closures || me?.id === project.owner_id;
+  // Sandra, 2026-07-29: locked/closed no longer means "show nothing" --
+  // the whole content section below now always renders; this flag just
+  // switches every InlineText/InlineSelect/InlineDate/InlineNumber in it
+  // (plus add/delete/reorder/dependency controls) between editable and a
+  // greyed, disabled read-only look. Only Draft and an in-progress
+  // Revision allow edits -- Baseline Locked/Changed After Baseline/Closed
+  // are all view-only.
+  const canEditWbs = project.wbs_status === "draft" || project.wbs_status === "revision_in_progress";
 
   function modeColStyle(m: Mode): CSSProperties {
     return m === activeMode ? { background: "#eaf1fb" } : {};
@@ -1268,7 +1276,17 @@ export default function WbsPlanning() {
   // indistinguishable from static text. A permanent, subtle border makes
   // clear these are fillable fields even at rest; an unfilled field gets
   // a dashed border in the muted/warning tone as a nudge to fill it in.
-  function fieldBoxStyle(isFilled: boolean, minWidth = 110): CSSProperties {
+  function fieldBoxStyle(isFilled: boolean, minWidth = 110, locked = false): CSSProperties {
+    if (locked) {
+      return {
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        padding: "1px 4px",
+        minWidth,
+        background: "var(--surface-muted, #f3f4f6)",
+        color: "var(--muted)",
+      };
+    }
     return {
       border: `1px ${isFilled ? "solid" : "dashed"} ${isFilled ? "var(--border)" : "var(--warning-text, #b45309)"}`,
       borderRadius: 6,
@@ -1303,7 +1321,7 @@ export default function WbsPlanning() {
           >
             <InlineDate
               value={t[field]}
-              editable={!isParent}
+              editable={canEditWbs && !isParent}
               onCommit={(v) =>
                 // A manual edit here means this Start is no longer "on
                 // auto-pilot" for this mode -- stop the sync effect above
@@ -1666,32 +1684,39 @@ export default function WbsPlanning() {
 
       {showCompareBaseline && <CompareWithBaselinePanel projectId={project.id} liveTasks={buildTaskSnapshotPayload()} />}
 
-      {project.timelines_locked && project.wbs_status !== "revision_in_progress" ? (
-        <div className="card" style={{ padding: 14, fontSize: 12.5, color: "var(--muted)" }}>
-          {project.wbs_status === "closed"
-            ? "This project is closed. Final Scope is locked and cannot be reopened."
-            : "This project's baseline is locked. Start a Revision above to make changes."}
+      {/* Sandra, 2026-07-29: previously this whole section (fields, effort
+          summary, task table, Gantt, Utilization) only rendered when NOT
+          locked -- a locked/closed project showed nothing but a one-line
+          message instead of its actual plan. Now the message is a slim
+          banner and the full content always renders underneath, with
+          canEditWbs gating individual field/control editability instead
+          of gating visibility of the whole page. */}
+      {project.wbs_status === "revision_in_progress" && (
+        <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
+          Revision in progress -- editing is unlocked. Use Apply Revision above when done, or Discard Revision to undo everything back to before this revision started.
         </div>
-      ) : (
-        <>
-          {project.wbs_status === "revision_in_progress" && (
-            <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
-              Revision in progress -- editing is unlocked. Use Apply Revision above when done, or Discard Revision to undo everything back to before this revision started.
-            </div>
-          )}
+      )}
+      {!canEditWbs && (
+        <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
+          {project.wbs_status === "closed"
+            ? "This project is closed. Final Scope is locked and cannot be reopened -- shown below read-only."
+            : "This project's baseline is locked -- shown below read-only. Start a Revision above to make changes."}
+        </div>
+      )}
+      <>
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(!!project.name, 170)}>
-                <InlineText value={project.name} editable onCommit={(v) => saveProjectField({ name: v })} />
+              <div className="wbs-field-box" style={fieldBoxStyle(!!project.name, 170, !canEditWbs)}>
+                <InlineText value={project.name} editable={canEditWbs} onCommit={(v) => saveProjectField({ name: v })} />
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Owner:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(true)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 110, !canEditWbs)}>
                 <InlineSelect
                   value={owner?.name ?? ""}
-                  editable
+                  editable={canEditWbs}
                   allowEmpty
                   emptyLabel="No owner"
                   options={people.map((p) => p.name)}
@@ -1704,8 +1729,8 @@ export default function WbsPlanning() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(true)}>
-                <InlineDate value={project.start_date} editable onCommit={(v) => saveProjectField({ start_date: v })} />
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 110, !canEditWbs)}>
+                <InlineDate value={project.start_date} editable={canEditWbs} onCommit={(v) => saveProjectField({ start_date: v })} />
               </div>
               <span
                 title="Your own plotted anchor -- used as the default Start for the very first task in each mode when there's nothing earlier to chain from. No longer auto-pulled from tasks."
@@ -1716,10 +1741,10 @@ export default function WbsPlanning() {
             </div>
             <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(true, 150)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 150, !canEditWbs)}>
                 <InlineSelect
                   value={MODE_LABEL[activeMode]}
-                  editable
+                  editable={canEditWbs}
                   options={MODES.map((m) => MODE_LABEL[m])}
                   onCommit={(label) => {
                     const m = MODES.find((mm) => MODE_LABEL[mm] === label);
@@ -1737,9 +1762,11 @@ export default function WbsPlanning() {
               >
                 <Info size={13} style={{ color: "var(--muted)" }} />
               </span>
-              <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
-                {saving ? "Saving…" : "Save"}
-              </button>
+              {canEditWbs && (
+                <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              )}
             </div>
           </div>
 
@@ -2061,13 +2088,14 @@ export default function WbsPlanning() {
                         <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
                             className="row-grip-btn"
-                            draggable
-                            onDragStart={() => setDraggedTaskId(t.id)}
+                            draggable={canEditWbs}
+                            onDragStart={() => canEditWbs && setDraggedTaskId(t.id)}
                             onDragEnd={() => {
                               setDraggedTaskId(null);
                               setDragOverTaskId(null);
                             }}
-                            title="Drag to reorder (among its own siblings)"
+                            title={canEditWbs ? "Drag to reorder (among its own siblings)" : undefined}
+                            style={canEditWbs ? undefined : { opacity: 0.35, cursor: "default" }}
                           >
                             <GripVertical size={13} />
                           </span>
@@ -2076,23 +2104,25 @@ export default function WbsPlanning() {
                       <td>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <InlineText value={t.name} editable bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
+                            <InlineText value={t.name} editable={canEditWbs} bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
                           </div>
-                          {t.depth === 0 && (
+                          {canEditWbs && t.depth === 0 && (
                             <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
                               <Plus size={14} />
                             </button>
                           )}
-                          <button className="add-subtask-btn" onClick={() => deleteTask(t)} title={isParent ? "Delete task (and its sub-tasks)" : "Delete task"}>
-                            <Trash2 size={14} />
-                          </button>
+                          {canEditWbs && (
+                            <button className="add-subtask-btn" onClick={() => deleteTask(t)} title={isParent ? "Delete task (and its sub-tasks)" : "Delete task"}>
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td>
                         <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
-                            editable={!isParent}
+                            editable={canEditWbs && !isParent}
                             onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })}
                           />
                         </span>
@@ -2105,7 +2135,7 @@ export default function WbsPlanning() {
                         ) : (
                           <InlineSelect
                             value={t.effort ?? ""}
-                            editable
+                            editable={canEditWbs}
                             allowEmpty
                             emptyLabel="Pick effort"
                             options={TASK_EFFORT_OPTIONS}
@@ -2140,7 +2170,7 @@ export default function WbsPlanning() {
                         ) : (
                           <InlineSelect
                             value={assignee?.name ?? ""}
-                            editable
+                            editable={canEditWbs}
                             allowEmpty
                             emptyLabel="Unassigned"
                             options={people.map((p) => p.name)}
@@ -2175,6 +2205,7 @@ export default function WbsPlanning() {
                           allTasks={orderedTasks}
                           dependsOnIds={dependsOnIds}
                           isOpen={depPickerOpenFor === t.id}
+                          editable={canEditWbs}
                           onToggle={() => setDepPickerOpenFor((prev) => (prev === t.id ? null : t.id))}
                           onClose={() => setDepPickerOpenFor(null)}
                           onAdd={(depId) => addDependency(t.id, depId)}
@@ -2186,14 +2217,16 @@ export default function WbsPlanning() {
                     </tr>
                   );
                 })}
-                <tr>
-                  <td colSpan={12} className="add-row-cell">
-                    <div className="add-row-trigger" onClick={addTopLevelTask}>
-                      <Plus size={12} />
-                      New task
-                    </div>
-                  </td>
-                </tr>
+                {canEditWbs && (
+                  <tr>
+                    <td colSpan={12} className="add-row-cell">
+                      <div className="add-row-trigger" onClick={addTopLevelTask}>
+                        <Plus size={12} />
+                        New task
+                      </div>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -2369,7 +2402,6 @@ export default function WbsPlanning() {
           })}
 
         </>
-      )}
     </div>
   );
 }
@@ -2523,6 +2555,7 @@ function DependsOnPicker({
   allTasks,
   dependsOnIds,
   isOpen,
+  editable = true,
   onToggle,
   onClose,
   onAdd,
@@ -2532,6 +2565,7 @@ function DependsOnPicker({
   allTasks: (TaskRow & { depth: number })[];
   dependsOnIds: string[];
   isOpen: boolean;
+  editable?: boolean;
   onToggle: () => void;
   onClose: () => void;
   onAdd: (depId: string) => void;
@@ -2566,7 +2600,8 @@ function DependsOnPicker({
       <button
         ref={btnRef}
         type="button"
-        onClick={handleToggle}
+        disabled={!editable}
+        onClick={editable ? handleToggle : undefined}
         style={{
           display: "flex",
           alignItems: "center",
@@ -2575,13 +2610,13 @@ function DependsOnPicker({
           textAlign: "left",
           background: "transparent",
           border: "none",
-          cursor: "pointer",
+          cursor: editable ? "pointer" : "default",
           padding: "3px 4px",
           borderRadius: 4,
           fontSize: 11.5,
           color: selectedNames.length ? "var(--text)" : "var(--muted)",
         }}
-        title={selectedNames.length ? selectedNames.join(", ") : "No dependencies -- click to add"}
+        title={editable ? (selectedNames.length ? selectedNames.join(", ") : "No dependencies -- click to add") : selectedNames.join(", ") || undefined}
       >
         <Link2 size={12} style={{ flexShrink: 0, color: "var(--muted)" }} />
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2589,7 +2624,8 @@ function DependsOnPicker({
         </span>
       </button>
 
-      {isOpen &&
+      {editable &&
+        isOpen &&
         pos &&
         createPortal(
           <>
