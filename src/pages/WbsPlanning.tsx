@@ -29,6 +29,12 @@ interface ProjectRow {
   timelines_locked: boolean;
   phase: string | null;
   status: string | null;
+  // Draft / Baseline Locked / Revision in Progress / Changed After
+  // Baseline / Closed -- a distinct axis from Phase/Status above (Phase 1
+  // migration, 2026-07-28). Drives the status banner and which actions
+  // (Lock Baseline / Start Revision / Apply/Discard / Request Closure)
+  // show below.
+  wbs_status: "draft" | "baseline_locked" | "revision_in_progress" | "changed_after_baseline" | "closed";
   // Persists whichever mode Save last actually wrote onto the tasks
   // (migration 2026-07-28) -- shown read-back in the header as "Scoping
   // Effort" so a project's officially-saved mode stays visible on return
@@ -79,6 +85,31 @@ interface PersonRow {
   is_active: boolean;
   color: string | null;
 }
+// Phase 2 (2026-07-28): Draft/Baseline/Revision/Final-Scope workflow rows.
+// Only the ONE in-progress revision and ONE pending closure request (if
+// any) matter to this page -- both are DB-enforced to be unique per
+// project (partial unique indexes), so at most one of each ever exists.
+interface RevisionRow {
+  id: string;
+  revision_number: number;
+  reason: string;
+  status: "in_progress" | "applied" | "discarded";
+  started_at: string;
+}
+interface RevisionChangeRow {
+  id: string;
+  task_name: string;
+  change_type: string;
+  field: string | null;
+  previous_value: unknown;
+  new_value: unknown;
+}
+interface ClosureRequestRow {
+  id: string;
+  status: "pending" | "approved" | "rejected";
+  requested_at: string;
+  requested_by: string | null;
+}
 interface AvailabilityRow {
   person_id: string;
   date: string;
@@ -111,6 +142,47 @@ const MODE_LABEL: Record<Mode, string> = {
   standard: "Conservative Effort",
 };
 const MODES: Mode[] = ["full_capacity", "standard"];
+
+// Phase 3 (2026-07-28): status banner copy/colors for the Draft/Baseline/
+// Revision/Final-Scope workflow. Deliberately reuses the app's existing
+// --navy/--muted/--warning-text CSS vars rather than inventing new colors.
+const WBS_STATUS_META: Record<string, { label: string; hint: string; color: string; bg: string; border: string }> = {
+  draft: {
+    label: "Draft",
+    hint: "Plan freely -- nothing is committed yet.",
+    color: "var(--navy)",
+    bg: "var(--card-bg, #fff)",
+    border: "var(--border)",
+  },
+  baseline_locked: {
+    label: "Baseline Locked",
+    hint: "This is the official commitment. Start a Revision to change it.",
+    color: "var(--navy)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+  revision_in_progress: {
+    label: "Revision in Progress",
+    hint: "Editing is unlocked for this revision only.",
+    color: "var(--warning-text, #b45309)",
+    bg: "var(--warning-bg, #fff7ed)",
+    border: "var(--warning-text, #b45309)",
+  },
+  changed_after_baseline: {
+    label: "Changed After Baseline",
+    hint: "A revision has been applied -- this differs from the original Baseline.",
+    color: "var(--navy)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+  closed: {
+    label: "Closed",
+    hint: "Final Scope is locked. This project cannot be reopened.",
+    color: "var(--muted)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+};
 
 interface ChainEntry {
   start: string;
@@ -197,11 +269,21 @@ export default function WbsPlanning() {
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
 
+  // Phase 2/3 workflow state.
+  const [activeRevision, setActiveRevision] = useState<RevisionRow | null>(null);
+  const [pendingClosure, setPendingClosure] = useState<ClosureRequestRow | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [showRevisionHistory, setShowRevisionHistory] = useState(false);
+  const [revisionHistory, setRevisionHistory] = useState<RevisionRow[]>([]);
+  const [revisionChangesById, setRevisionChangesById] = useState<Record<string, RevisionChangeRow[]>>({});
+  const [expandedRevisionId, setExpandedRevisionId] = useState<string | null>(null);
+  const [showCompareBaseline, setShowCompareBaseline] = useState(false);
+
   async function loadAll() {
     if (!projectId) return;
     setLoading(true);
     const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }] = await Promise.all([
-      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode").eq("id", projectId).single(),
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select(
@@ -235,7 +317,51 @@ export default function WbsPlanning() {
     } else {
       setDependencies([]);
     }
+
+    const [{ data: revRow }, { data: closureRow }] = await Promise.all([
+      supabase
+        .from("project_revisions")
+        .select("id,revision_number,reason,status,started_at")
+        .eq("project_id", projectId)
+        .eq("status", "in_progress")
+        .maybeSingle(),
+      supabase
+        .from("project_closure_requests")
+        .select("id,status,requested_at,requested_by")
+        .eq("project_id", projectId)
+        .eq("status", "pending")
+        .maybeSingle(),
+    ]);
+    setActiveRevision((revRow as RevisionRow) ?? null);
+    setPendingClosure((closureRow as ClosureRequestRow) ?? null);
+
     setLoading(false);
+  }
+
+  async function loadRevisionHistory() {
+    if (!projectId) return;
+    const { data } = await supabase
+      .from("project_revisions")
+      .select("id,revision_number,reason,status,started_at")
+      .eq("project_id", projectId)
+      .order("revision_number", { ascending: false });
+    setRevisionHistory((data as RevisionRow[]) ?? []);
+  }
+
+  async function toggleRevisionExpand(revisionId: string) {
+    if (expandedRevisionId === revisionId) {
+      setExpandedRevisionId(null);
+      return;
+    }
+    setExpandedRevisionId(revisionId);
+    if (!revisionChangesById[revisionId]) {
+      const { data } = await supabase
+        .from("project_revision_changes")
+        .select("id,task_name,change_type,field,previous_value,new_value")
+        .eq("revision_id", revisionId)
+        .order("changed_at");
+      setRevisionChangesById((prev) => ({ ...prev, [revisionId]: (data as RevisionChangeRow[]) ?? [] }));
+    }
   }
 
   function dependsOnIdsFor(taskId: string): string[] {
@@ -538,6 +664,138 @@ export default function WbsPlanning() {
     full_capacity: fullChain,
     standard: standardChain,
   };
+
+  // Phase 2 (2026-07-28): builds the exact per-task snapshot the
+  // lock/apply/decide RPCs persist. Deliberately reuses the SAME
+  // fullChain/standardChain maps already computed above for the on-screen
+  // table -- rather than recomputing scheduling in SQL (which would
+  // duplicate refreshDates'/computeEntry's real business logic in two
+  // places and risk drift), the RPC just persists whatever is already
+  // showing on screen at the moment of Lock/Apply/Close.
+  function buildTaskSnapshotPayload() {
+    return orderedTasks.map((t) => {
+      const fullEntry = fullChain.get(t.id);
+      const standardEntry = standardChain.get(t.id);
+      return {
+        task_id: t.id,
+        parent_task_id: t.parent_task_id,
+        name: t.name,
+        estimated_hours: t.estimated_hours,
+        assignee_name: people.find((p) => p.id === t.assignee_id)?.name ?? null,
+        effort: t.effort,
+        depends_on: dependsOnIdsFor(t.id),
+        start_date_full: fullEntry?.start ?? null,
+        end_date_full: fullEntry?.end ?? null,
+        start_date_standard: standardEntry?.start ?? null,
+        end_date_standard: standardEntry?.end ?? null,
+      };
+    });
+  }
+
+  async function handleLockBaseline() {
+    if (!project) return;
+    if (orderedTasks.length === 0) {
+      await alert("Add at least one task before locking a baseline.");
+      return;
+    }
+    if (
+      !(await confirm(
+        `Lock ${MODE_LABEL[activeMode]} as this project's Baseline?\n\nThis records the current plan as the official commitment. The page becomes read-only until you Start a Revision.`
+      ))
+    )
+      return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("lock_wbs_baseline", {
+      p_project_id: project.id,
+      p_mode: activeMode,
+      p_reason: null,
+      p_tasks: buildTaskSnapshotPayload(),
+    });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't lock baseline: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleStartRevision() {
+    if (!project) return;
+    if (!(await confirm("Start a revision on this project? This unlocks editing until you Apply or Discard the revision."))) return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("start_wbs_revision", { p_project_id: project.id, p_reason: "Revision started from WBS page" });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't start revision: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleApplyRevision() {
+    if (!project || !activeRevision) return;
+    if (!(await confirm(`Apply this revision? This re-locks the project as the new Current Plan (status becomes Changed After Baseline).`))) return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("apply_wbs_revision", {
+      p_revision_id: activeRevision.id,
+      p_tasks: buildTaskSnapshotPayload(),
+    });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't apply revision: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleDiscardRevision() {
+    if (!project || !activeRevision) return;
+    if (
+      !(await confirm(
+        `Discard this revision? Every change made since Start Revision -- edited tasks, added tasks, removed tasks -- will be undone back to how it was before. This cannot be undone.`
+      ))
+    )
+      return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("discard_wbs_revision", { p_revision_id: activeRevision.id });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't discard revision: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleRequestClosure() {
+    if (!project) return;
+    if (!(await confirm(`Request closure for "${project.name}"? This asks an approver to lock in the current plan as Final Scope.`))) return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("request_wbs_closure", { p_project_id: project.id });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't request closure: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleDecideClosure(approve: boolean) {
+    if (!project || !pendingClosure) return;
+    if (!(await confirm(approve ? "Approve this closure? This locks in the current plan as Final Scope -- final, no re-opening." : "Reject this closure request?"))) return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("decide_wbs_closure", {
+      p_request_id: pendingClosure.id,
+      p_approve: approve,
+      p_reason: null,
+      p_tasks: buildTaskSnapshotPayload(),
+    });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't decide closure: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
 
   // Round 11 (Sandra): the project's own Start date is now MANUAL again --
   // "the user can plot the start onset in the top bar. Start will no
@@ -987,6 +1245,13 @@ export default function WbsPlanning() {
   if (loading) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>;
   if (!project) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Project not found.</div>;
 
+  // Phase 2/3 authorization -- mirrors can_manage_wbs()/can_decide_closure()
+  // on the DB side (flat tiering, Sandra 2026-07-28): Full Access or the
+  // project's own owner can drive Lock/Revision/Closure-request; closure
+  // DECISIONS additionally open up to anyone flagged can_approve_closures.
+  const canManageWbs = isFullAccess || me?.id === project.owner_id;
+  const canDecideClosure = isFullAccess || !!me?.can_approve_closures || me?.id === project.owner_id;
+
   function modeColStyle(m: Mode): CSSProperties {
     return m === activeMode ? { background: "#eaf1fb" } : {};
   }
@@ -1264,12 +1529,141 @@ export default function WbsPlanning() {
       </Link>
       <h1>WBS Planning — {project.name}</h1>
 
-      {project.timelines_locked ? (
+      {/* Phase 3 (2026-07-28): status banner for the Draft/Baseline/
+          Revision/Final-Scope workflow -- see [[project_capaciq_wbs_planning]].
+          Colors/labels mirror WBS_STATUS_META below. */}
+      <div
+        className="card"
+        style={{
+          padding: "8px 14px",
+          marginBottom: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+          background: WBS_STATUS_META[project.wbs_status]?.bg,
+          borderColor: WBS_STATUS_META[project.wbs_status]?.border,
+        }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 700, color: WBS_STATUS_META[project.wbs_status]?.color }}>
+          {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
+        </span>
+        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{WBS_STATUS_META[project.wbs_status]?.hint}</span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {canManageWbs && project.wbs_status === "draft" && (
+            <button className="btn-primary" disabled={workflowBusy} onClick={handleLockBaseline}>
+              Lock Baseline
+            </button>
+          )}
+          {canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && (
+            <button className="btn-secondary" disabled={workflowBusy} onClick={handleStartRevision}>
+              Start Revision
+            </button>
+          )}
+          {canManageWbs &&
+            (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
+            !pendingClosure && (
+              <button className="btn-secondary" disabled={workflowBusy} onClick={handleRequestClosure}>
+                Request Closure
+              </button>
+            )}
+          {project.wbs_status === "revision_in_progress" && canManageWbs && (
+            <>
+              <button className="btn-secondary" disabled={workflowBusy} onClick={handleDiscardRevision}>
+                Discard Revision
+              </button>
+              <button className="btn-primary" disabled={workflowBusy} onClick={handleApplyRevision}>
+                Apply Revision
+              </button>
+            </>
+          )}
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              setShowRevisionHistory((v) => !v);
+              if (!showRevisionHistory) loadRevisionHistory();
+            }}
+          >
+            Revision History
+          </button>
+          {project.wbs_status !== "draft" && (
+            <button className="btn-secondary" onClick={() => setShowCompareBaseline((v) => !v)}>
+              Compare with Baseline
+            </button>
+          )}
+        </div>
+      </div>
+
+      {pendingClosure && (
+        <div
+          className="card"
+          style={{ padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "var(--warning-bg, #fff7ed)" }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--warning-text, #b45309)" }}>Closure requested</span>
+          <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Awaiting approval to lock in Final Scope.</span>
+          {canDecideClosure && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <button className="btn-secondary" disabled={workflowBusy} onClick={() => handleDecideClosure(false)}>
+                Reject
+              </button>
+              <button className="btn-primary" disabled={workflowBusy} onClick={() => handleDecideClosure(true)}>
+                Approve &amp; Close
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showRevisionHistory && (
+        <div className="card" style={{ padding: 14, marginBottom: 10 }}>
+          <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
+          {revisionHistory.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No revisions yet.</div>
+          ) : (
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              {revisionHistory.map((r) => (
+                <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => toggleRevisionExpand(r.id)}>
+                    <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
+                    <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.status} · {formatDate(r.started_at.slice(0, 10))}</span>
+                    <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.reason}</span>
+                  </div>
+                  {expandedRevisionId === r.id && (
+                    <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--muted)" }}>
+                      {(revisionChangesById[r.id] ?? []).length === 0 ? (
+                        <div>No changes recorded (applied with no diff, or still in progress).</div>
+                      ) : (
+                        (revisionChangesById[r.id] ?? []).map((c) => (
+                          <div key={c.id} style={{ padding: "2px 0" }}>
+                            <strong>{c.task_name}</strong> — {c.change_type}
+                            {c.field ? ` (${c.field})` : ""}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {showCompareBaseline && <CompareWithBaselinePanel projectId={project.id} liveTasks={buildTaskSnapshotPayload()} />}
+
+      {project.timelines_locked && project.wbs_status !== "revision_in_progress" ? (
         <div className="card" style={{ padding: 14, fontSize: 12.5, color: "var(--muted)" }}>
-          Timelines for this project are already locked. Unlock from the Projects table first if you need to re-plan.
+          {project.wbs_status === "closed"
+            ? "This project is closed. Final Scope is locked and cannot be reopened."
+            : "This project's baseline is locked. Start a Revision above to make changes."}
         </div>
       ) : (
         <>
+          {project.wbs_status === "revision_in_progress" && (
+            <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
+              Revision in progress -- editing is unlocked. Use Apply Revision above when done, or Discard Revision to undo everything back to before this revision started.
+            </div>
+          )}
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
@@ -1990,6 +2384,125 @@ export default function WbsPlanning() {
 // ancestor's overflow/clipping rule can touch it. Also flips to render
 // ABOVE the button instead of below when there isn't enough room left in
 // the viewport underneath it.
+// Phase 3 (2026-07-28): generalized "Compare with Baseline" -- unlike
+// BaselineReport.tsx (which only ever compares against the FINAL close-out
+// snapshot), this can be opened at any point once a baseline exists, and
+// diffs the active Baseline (project_baselines, is_active = true) against
+// whatever is live on screen right now (passed in as `liveTasks`, the same
+// snapshot shape the lock/apply/decide RPCs persist -- see
+// buildTaskSnapshotPayload above).
+interface BaselineTaskSnapshot {
+  task_id: string;
+  name: string;
+  estimated_hours: number | null;
+}
+interface LiveTaskSnapshot {
+  task_id: string;
+  name: string;
+  estimated_hours: number | null;
+  parent_task_id: string | null;
+}
+function CompareWithBaselinePanel({ projectId, liveTasks }: { projectId: string; liveTasks: LiveTaskSnapshot[] }) {
+  const [baseline, setBaseline] = useState<{ version_number: number; total_est_hours: number; task_count: number; captured_at: string } | null>(null);
+  const [baselineTasks, setBaselineTasks] = useState<BaselineTaskSnapshot[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      const { data: bl } = await supabase
+        .from("project_baselines")
+        .select("id,version_number,total_est_hours,task_count,captured_at")
+        .eq("project_id", projectId)
+        .eq("is_active", true)
+        .maybeSingle();
+      if (!active) return;
+      if (bl) {
+        setBaseline(bl as { version_number: number; total_est_hours: number; task_count: number; captured_at: string });
+        const { data: blt } = await supabase.from("project_baseline_tasks").select("task_id,name,estimated_hours").eq("baseline_id", (bl as { id: string }).id);
+        if (active) setBaselineTasks((blt as BaselineTaskSnapshot[]) ?? []);
+      } else {
+        setBaseline(null);
+        setBaselineTasks([]);
+      }
+      if (active) setLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
+
+  const liveTotalHours = liveTasks.filter((t) => !t.parent_task_id).reduce((sum, t) => sum + (t.estimated_hours ?? 0), 0);
+  const liveTaskCount = liveTasks.length;
+
+  const baselineIds = new Set(baselineTasks.map((t) => t.task_id));
+  const liveIds = new Set(liveTasks.map((t) => t.task_id));
+  const added = liveTasks.filter((t) => !baselineIds.has(t.task_id));
+  const removed = baselineTasks.filter((t) => !liveIds.has(t.task_id));
+  const changed = liveTasks
+    .filter((t) => baselineIds.has(t.task_id))
+    .map((t) => ({ live: t, base: baselineTasks.find((b) => b.task_id === t.task_id)! }))
+    .filter(({ live, base }) => (live.estimated_hours ?? 0) !== (base.estimated_hours ?? 0));
+
+  return (
+    <div className="card" style={{ padding: 14, marginBottom: 10 }}>
+      <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Compare with Baseline</strong>
+      {loading ? (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>Loading…</div>
+      ) : !baseline ? (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No baseline locked yet.</div>
+      ) : (
+        <div style={{ marginTop: 8, fontSize: 12 }}>
+          <div style={{ display: "flex", gap: 24, marginBottom: 8 }}>
+            <div>
+              <div style={{ color: "var(--muted)", fontSize: 11 }}>Total Est. Hours</div>
+              <div>
+                <strong>{liveTotalHours}h</strong>
+                <span style={{ color: "var(--muted)" }}> (baseline {baseline.total_est_hours}h)</span>
+                {liveTotalHours !== baseline.total_est_hours && (
+                  <span style={{ color: "var(--warning-text, #b45309)", marginLeft: 6 }}>
+                    {liveTotalHours > baseline.total_est_hours ? "+" : ""}
+                    {liveTotalHours - baseline.total_est_hours}h
+                  </span>
+                )}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: "var(--muted)", fontSize: 11 }}>Task Count</div>
+              <div>
+                <strong>{liveTaskCount}</strong>
+                <span style={{ color: "var(--muted)" }}> (baseline {baseline.task_count})</span>
+              </div>
+            </div>
+          </div>
+          {added.length === 0 && removed.length === 0 && changed.length === 0 ? (
+            <div style={{ color: "var(--muted)" }}>No variance from baseline -- current plan matches exactly.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {added.map((t) => (
+                <div key={t.task_id} style={{ color: "var(--muted)" }}>
+                  + <strong>{t.name}</strong> added since baseline ({t.estimated_hours ?? 0}h)
+                </div>
+              ))}
+              {removed.map((t) => (
+                <div key={t.task_id} style={{ color: "var(--muted)" }}>
+                  − <strong>{t.name}</strong> removed since baseline
+                </div>
+              ))}
+              {changed.map(({ live, base }) => (
+                <div key={live.task_id} style={{ color: "var(--muted)" }}>
+                  <strong>{live.name}</strong>: {base.estimated_hours ?? 0}h → {live.estimated_hours ?? 0}h
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DependsOnPicker({
   task,
   allTasks,

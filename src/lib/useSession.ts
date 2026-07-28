@@ -12,6 +12,7 @@ export interface Person {
   is_active: boolean;
   auth_user_id: string;
   color: string | null;
+  can_approve_closures: boolean;
 }
 
 // Tracks the current Supabase Auth session and the matching `people` row
