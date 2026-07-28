@@ -1109,16 +1109,32 @@ export default function WbsPlanning() {
         // this page for secondary text -- still reads as "light/quiet"
         // next to the bold amber conflict color, just not literally
         // invisible) and widening the minimum jog to 14px.
-        const midX = x1 + Math.max((x2 - x1) / 2, 14);
+        //
+        // Round 16 (Sandra, after arrowheads shipped): the strict H-V-H
+        // elbow above looked "crooked"/boxy whenever the predecessor and
+        // successor sit several rows apart (e.g. routing past an
+        // in-between parent row) while their bars are horizontally close
+        // -- a long vertical run bookended by two short horizontal jogs
+        // reads as an awkward rectangle rather than a connector. Sandra
+        // confirmed she doesn't need the line to originate from the exact
+        // pixel of the bar's own edge if that's what it takes to look
+        // cleaner, so this switched to a smooth cubic-bezier S-curve
+        // instead of a rigid right-angle path -- no jog-length tuning
+        // needed, and it naturally looks fine regardless of how many rows
+        // apart the two tasks are. Control points pull the curve
+        // horizontally out from each endpoint by up to a third of the
+        // total horizontal gap (min 14px, same floor as before) before
+        // bending toward the other end.
         const conflict = succEntry.start <= predEntry.end;
-        const path = `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`;
+        const dx = Math.max((x2 - x1) / 3, 14);
+        const path = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
         elems.push(
           <path
             key={`${depId}->${t.id}`}
             d={path}
             fill="none"
             stroke={conflict ? "var(--warning-text, #b45309)" : "var(--muted, #8a94a6)"}
-            strokeWidth={conflict ? 1.5 : 1.25}
+            strokeWidth={conflict ? 1.1 : 0.9}
             strokeDasharray={conflict ? undefined : "4,3"}
             markerEnd={`url(#${conflict ? `gantt-arrow-conflict-${mode}` : `gantt-arrow-neutral-${mode}`})`}
           />
