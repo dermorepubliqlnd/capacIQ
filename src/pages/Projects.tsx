@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, Lock, Unlock, X, RotateCcw } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, X, RotateCcw } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -18,6 +18,20 @@ import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell"
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows, sortRowsHierarchical, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
+import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
+
+// Tone-palette mapping for wbs_status (Phase 4, 2026-07-28) -- WBS_STATUS_META
+// carries its own bg/color/border for the WBS Planning page's banner, but
+// Table/Board group headers and Kanban columns here use the shared
+// TONE_STYLES palette (see tableTypes.ts) instead, so this is a separate,
+// small mapping onto that existing vocabulary.
+const WBS_STATUS_TONES: Record<WbsStatus, string> = {
+  draft: "neutral",
+  baseline_locked: "accent",
+  revision_in_progress: "warning",
+  changed_after_baseline: "gold",
+  closed: "neutral",
+};
 import { rollupHoursFor, ownHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { Play, Square } from "lucide-react";
@@ -69,6 +83,7 @@ interface ProjectRow {
   timelines_locked: boolean;
   original_start_date: string | null;
   original_due_date: string | null;
+  wbs_status: WbsStatus;
 }
 
 interface TaskRow {
@@ -114,14 +129,14 @@ interface ExtensionRequestLite {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "timelines_locked"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "wbs_status"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
 // timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
 // createView) -- per Sandra's curated Timeline-chip spec, Category/Effort/
 // Timelines(lock state)/Days Extended start hidden but stay available to
 // turn on via Properties; Status/Owner/Priority/Health start visible.
-const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
 // Same idea for Tasks Timeline: "Days +/-" (Sandra: a signed day-count is
 // redundant once you can already see a bar's length/position on the
 // chart), Hrs Variance/%/Est./Spent (effort-tracking detail, not
@@ -412,7 +427,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // enumerable set of Kanban columns); anything else (free text, dates,
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
-const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "effort_level", "owner", "timelines_locked"];
+const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "effort_level", "owner", "wbs_status"];
 const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing", "due_date_ext"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
@@ -1232,6 +1247,11 @@ export default function Projects() {
     return true;
   }
 
+  // Phase 4 (2026-07-28): no longer called from anywhere in this file --
+  // the Timelines column's manual Lock/Unlock button is gone (replaced by
+  // the WBS Status column) and guardDesignPhaseLock no longer auto-locks
+  // either. Left in place, not deleted, since retiring this whole old
+  // lock/captureProjectBaseline path is explicitly scoped to Phase 6.
   async function lockProjectTimelines(p: ProjectRow, locked: boolean) {
     const verb = locked ? "Lock" : "Unlock";
     const detail = locked
@@ -1253,13 +1273,29 @@ export default function Projects() {
   // file), and gating a multi-card Board drag felt like a separate,
   // riskier decision to make without her sign-off, so it's left alone for
   // now.
+  // Phase 4 (2026-07-28): rewritten per Sandra's call on how Design-phase
+  // moves interact with WBS Status now that it's the source of truth
+  // ("redirect to WBS page"). This no longer auto-locks anything itself --
+  // baseline locking needs a full dependency-aware task snapshot that only
+  // the WBS Planning page can build (buildTaskSnapshotPayload), so silently
+  // calling the old set_project_timelines_locked RPC here would leave
+  // wbs_status stuck on Draft while timelines_locked flipped true, exactly
+  // the mismatch this whole column swap was meant to avoid. A project
+  // that's already past Draft (Baseline Locked/Revision in Progress/
+  // Changed After Baseline/Closed) has a real baseline already, so the
+  // move is allowed through untouched; a still-Draft project blocks the
+  // Phase change (same "block it" policy as before) and offers to jump to
+  // the WBS Planning page to Lock Baseline there instead.
   async function guardDesignPhaseLock(p: ProjectRow): Promise<boolean> {
-    if (p.timelines_locked) return true;
-    return performTimelinesLock(
-      p,
-      true,
-      `Moving "${p.name}" to Design locks its timelines first -- this freezes every task's current due date as the committed baseline, same as the Timelines column's own Lock action.\n\nLock timelines now and move to Design?`
-    );
+    if (p.wbs_status !== "draft") return true;
+    if (
+      await confirm(
+        `Moving "${p.name}" to Design first needs its WBS Baseline locked -- that's now done from the WBS Planning page (it needs the full task plan, not just a quick toggle here).\n\nGo to WBS Planning now to Lock Baseline?`
+      )
+    ) {
+      navigate(`/projects/${p.id}/wbs`);
+    }
+    return false;
   }
 
   async function updateProject(id: string, patch: Partial<ProjectRow>) {
@@ -1854,63 +1890,48 @@ export default function Projects() {
         },
       },
       {
-        key: "timelines_locked",
-        label: "Timelines",
-        defaultWidth: 200,
-        maxWidth: 240,
-        render: (p) => (
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-            <button
-              onClick={() => {
-                if (!canEditProject(p)) return;
-                // Locked + not Full Access: there's no self-service unlock
-                // any more (see set_project_timelines_locked's governance
-                // change) -- clicking opens a Request Timeline Change
-                // instead of a bare toggle.
-                if (p.timelines_locked && !isFullAccess) {
-                  setExtensionProject(p);
-                  return;
-                }
-                lockProjectTimelines(p, !p.timelines_locked);
-              }}
-              disabled={!canEditProject(p)}
-              title={
-                canEditProject(p)
-                  ? p.timelines_locked
-                    ? isFullAccess
-                      ? "Timelines locked -- click to unlock (Full Access override)"
-                      : "Timelines locked -- click to request a timeline change (goes to your manager for approval)"
-                    : "Timelines unlocked (scoping) -- click to lock and require Extension Requests"
-                  : p.timelines_locked
-                  ? "Timelines locked"
-                  : "Timelines unlocked (scoping)"
-              }
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "2px 8px",
-                fontSize: 11,
-                fontWeight: 500,
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border)",
-                background: p.timelines_locked ? "var(--surface)" : "var(--surface-hover, var(--surface))",
-                color: p.timelines_locked ? "var(--text-secondary)" : "#9A6B00",
-                cursor: canEditProject(p) ? "pointer" : "default",
-              }}
-            >
-              {p.timelines_locked ? <Lock size={11} /> : <Unlock size={11} />}
-              {p.timelines_locked ? "Locked" : "Scoping"}
-            </button>
-            {/* Sandra, 2026-07-23: an entry point into the new WBS planning
-                page, alongside (not replacing) the direct Lock button above
-                -- only makes sense before timelines are locked, since the
-                WBS page's own Finalize action is itself the other route to
-                the exact same locked state. */}
-            {!p.timelines_locked && canEditProject(p) && (
+        // Phase 4 (2026-07-28): the old "Timelines" column (Locked/Scoping
+        // pill + inline Lock/Unlock button) is replaced outright by the
+        // WBS Status badge -- Sandra's explicit call ("we can replace the
+        // timeline property now with the WBS status"). Baseline locking
+        // itself now only ever happens through the WBS Planning page's
+        // Lock Baseline action (it needs a full dependency-aware task
+        // snapshot -- see buildTaskSnapshotPayload -- that this table
+        // can't build), so there's no inline lock/unlock control here any
+        // more; this column is a status readout plus links into the page
+        // where the actual actions live. timelines_locked itself keeps
+        // working unchanged under the hood (Extension Requests, the
+        // Design-phase guardrail's date checks, and inline date editing
+        // all still read it directly), since the Phase 2 RPCs already
+        // keep it in sync with wbs_status one-for-one.
+        key: "wbs_status",
+        label: "WBS Status",
+        defaultWidth: 210,
+        maxWidth: 260,
+        render: (p) => {
+          const meta = WBS_STATUS_META[p.wbs_status];
+          return (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span
+                title={meta?.hint}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  borderRadius: "var(--radius-sm)",
+                  border: `1px solid ${meta?.border ?? "var(--border)"}`,
+                  background: meta?.bg ?? "var(--surface)",
+                  color: meta?.color ?? "var(--text-secondary)",
+                }}
+              >
+                {meta?.label ?? p.wbs_status}
+              </span>
               <button
                 onClick={() => navigate(`/projects/${p.id}/wbs`)}
-                title="Plan this project's timelines on the WBS page (Full Capacity / Standard / Capacity-Based)"
+                title="Open WBS Planning -- status, Lock Baseline, Revisions, and Compare with Baseline all live there"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1927,34 +1948,35 @@ export default function Projects() {
               >
                 WBS
               </button>
-            )}
-            {/* Sandra, 2026-07-24: Baseline vs Final report link -- only
-                appears once a baseline exists (i.e. once locked at least
-                once), same "New link next to WBS/Tasks per project"
-                placement she chose live via AskUserQuestion. */}
-            {p.timelines_locked && (
-              <button
-                onClick={() => navigate(`/projects/${p.id}/baseline`)}
-                title="View this project's Baseline vs Final performance report"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "2px 8px",
-                  fontSize: 11,
-                  fontWeight: 500,
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--accent, #2563eb)",
-                  cursor: "pointer",
-                }}
-              >
-                Report
-              </button>
-            )}
-          </div>
-        ),
+              {/* Sandra, 2026-07-24: Baseline vs Final report link -- only
+                  appears once a baseline exists (i.e. wbs_status has moved
+                  past Draft at least once). Kept on wbs_status rather than
+                  timelines_locked so it also shows during an in-progress
+                  revision, when timelines_locked is briefly false again. */}
+              {p.wbs_status !== "draft" && (
+                <button
+                  onClick={() => navigate(`/projects/${p.id}/baseline`)}
+                  title="View this project's Baseline vs Final performance report"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 8px",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--accent, #2563eb)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Report
+                </button>
+              )}
+            </div>
+          );
+        },
       },
       {
         key: "days_extended",
@@ -2042,10 +2064,10 @@ export default function Projects() {
       getTone: (p) => healthOf(p, tasks, holidayDates).tone,
     },
     {
-      key: "timelines_locked",
-      label: "Timelines",
-      getGroup: (p) => (p.timelines_locked ? "Locked" : "Scoping"),
-      getTone: (p) => (p.timelines_locked ? "neutral" : "warning"),
+      key: "wbs_status",
+      label: "WBS Status",
+      getGroup: (p) => WBS_STATUS_META[p.wbs_status]?.label ?? p.wbs_status,
+      getTone: (p) => WBS_STATUS_TONES[p.wbs_status] ?? "neutral",
     },
   ];
 
@@ -2104,10 +2126,10 @@ export default function Projects() {
     { key: "start_date", label: "Start", getGroup: () => "", boardGroupable: false },
     { key: "end_date", label: "Due", getGroup: () => "", boardGroupable: false },
     {
-      key: "timelines_locked",
-      label: "Timelines",
-      getGroup: (p) => (p.timelines_locked ? "Locked" : "Scoping"),
-      getTone: (p) => (p.timelines_locked ? "neutral" : "warning"),
+      key: "wbs_status",
+      label: "WBS Status",
+      getGroup: (p) => WBS_STATUS_META[p.wbs_status]?.label ?? p.wbs_status,
+      getTone: (p) => WBS_STATUS_TONES[p.wbs_status] ?? "neutral",
       boardGroupable: true,
     },
   ];
@@ -2118,10 +2140,11 @@ export default function Projects() {
   // COLUMNS); Priority/Category/Effort reuse their own enum option lists;
   // Owner is built from the live people list (value = person id, so
   // drag-drop writes back an unambiguous id rather than a display name).
-  const TIMELINES_BOARD_COLUMNS: BoardColumnDef[] = [
-    { value: "scoping", label: "Scoping", tone: "warning" },
-    { value: "locked", label: "Locked", tone: "neutral" },
-  ];
+  const WBS_STATUS_BOARD_COLUMNS: BoardColumnDef[] = (Object.keys(WBS_STATUS_META) as WbsStatus[]).map((status) => ({
+    value: status,
+    label: WBS_STATUS_META[status].label,
+    tone: WBS_STATUS_TONES[status] ?? "neutral",
+  }));
 
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: priorityLabel(v), tone: priorityTone(v) }));
@@ -2129,7 +2152,7 @@ export default function Projects() {
     if (groupBy === "effort_level")
       return PROJECT_EFFORT_LEVEL_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_EFFORT_LEVEL_TONES[v] ?? "neutral" }));
     if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
-    if (groupBy === "timelines_locked") return TIMELINES_BOARD_COLUMNS;
+    if (groupBy === "wbs_status") return WBS_STATUS_BOARD_COLUMNS;
     if (groupBy === "status") return PROJECT_BOARD_STATUS_COLUMNS;
     return PROJECT_BOARD_PHASE_COLUMNS; // default board grouping is Phase -- the real pipeline view
   }
@@ -2139,7 +2162,7 @@ export default function Projects() {
     if (groupBy === "category") return p.category;
     if (groupBy === "effort_level") return p.effort_level;
     if (groupBy === "owner") return p.owner_id;
-    if (groupBy === "timelines_locked") return p.timelines_locked ? "locked" : "scoping";
+    if (groupBy === "wbs_status") return p.wbs_status;
     if (groupBy === "status") return p.status;
     return p.phase;
   }
@@ -2149,7 +2172,7 @@ export default function Projects() {
     if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
     if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
     if (groupBy === "owner") return (p, v) => updateProject(p.id, { owner_id: v || null });
-    if (groupBy === "timelines_locked") return undefined; // drag-drop locking skips the confirm/reset ceremony -- use the Timelines column button instead
+    if (groupBy === "wbs_status") return undefined; // baseline/revision transitions run through the WBS Planning page's RPCs (task snapshot required) -- not a plain field write, so no drag-drop here
     // Dragging a card between Status columns goes through changeProjectStatus
     // so Phase cascades correctly (see its own doc comment); dragging
     // between Phase columns writes phase directly and never touches Status.
@@ -2181,7 +2204,7 @@ export default function Projects() {
       label: "Hrs Variance %",
       getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries))?.percent ?? -1,
     },
-    { key: "timelines_locked", label: "Timelines", getValue: (p) => (p.timelines_locked ? 1 : 0) },
+    { key: "wbs_status", label: "WBS Status", getValue: (p) => (Object.keys(WBS_STATUS_META) as WbsStatus[]).indexOf(p.wbs_status) },
   ];
 
   // Round 21 (Sandra): "New project" now goes straight into the WBS page
@@ -2953,7 +2976,7 @@ export default function Projects() {
   // NOT the same left-to-right order as PROJECT_COLUMN_ORDER (which drives
   // Table view and lists Owner before Status), so Table's own column order
   // is untouched by this Timeline-only preference.
-  const PROJECT_TIMELINE_CHIP_ORDER = ["status", "phase", "owner", "priority", "health", "category", "effort_level", "timelines_locked", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+  const PROJECT_TIMELINE_CHIP_ORDER = ["status", "phase", "owner", "priority", "health", "category", "effort_level", "wbs_status", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
   const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView)
     .filter((c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key))
     .slice()

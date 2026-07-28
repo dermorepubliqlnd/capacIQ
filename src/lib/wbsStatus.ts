@@ -1,0 +1,45 @@
+// Shared WBS status metadata for the Draft / Baseline Locked / Revision in
+// Progress / Changed After Baseline / Closed workflow (see
+// [[project_capaciq_wbs_planning]]). Extracted out of WbsPlanning.tsx
+// (Phase 4, 2026-07-28) so the Projects & Tasks page's WBS Status column
+// can render the exact same labels/colors instead of re-declaring them --
+// one status vocabulary, two places it's shown.
+export type WbsStatus = "draft" | "baseline_locked" | "revision_in_progress" | "changed_after_baseline" | "closed";
+
+export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; color: string; bg: string; border: string }> = {
+  draft: {
+    label: "Draft",
+    hint: "Plan freely -- nothing is committed yet.",
+    color: "var(--navy)",
+    bg: "var(--card-bg, #fff)",
+    border: "var(--border)",
+  },
+  baseline_locked: {
+    label: "Baseline Locked",
+    hint: "This is the official commitment. Start a Revision to change it.",
+    color: "var(--navy)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+  revision_in_progress: {
+    label: "Revision in Progress",
+    hint: "Editing is unlocked for this revision only.",
+    color: "var(--warning-text, #b45309)",
+    bg: "var(--warning-bg, #fff7ed)",
+    border: "var(--warning-text, #b45309)",
+  },
+  changed_after_baseline: {
+    label: "Changed After Baseline",
+    hint: "A revision has been applied -- this differs from the original Baseline.",
+    color: "var(--navy)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+  closed: {
+    label: "Closed",
+    hint: "Final Scope is locked. This project cannot be reopened.",
+    color: "var(--muted)",
+    bg: "var(--hover-bg, #f3f4f6)",
+    border: "var(--border)",
+  },
+};

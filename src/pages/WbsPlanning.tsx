@@ -19,6 +19,7 @@ import {
   type UtilPersonRow,
 } from "../lib/utilizationCalc";
 import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
+import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
 
 interface ProjectRow {
   id: string;
@@ -34,7 +35,7 @@ interface ProjectRow {
   // migration, 2026-07-28). Drives the status banner and which actions
   // (Lock Baseline / Start Revision / Apply/Discard / Request Closure)
   // show below.
-  wbs_status: "draft" | "baseline_locked" | "revision_in_progress" | "changed_after_baseline" | "closed";
+  wbs_status: WbsStatus;
   // Persists whichever mode Save last actually wrote onto the tasks
   // (migration 2026-07-28) -- shown read-back in the header as "Scoping
   // Effort" so a project's officially-saved mode stays visible on return
@@ -146,43 +147,8 @@ const MODES: Mode[] = ["full_capacity", "standard"];
 // Phase 3 (2026-07-28): status banner copy/colors for the Draft/Baseline/
 // Revision/Final-Scope workflow. Deliberately reuses the app's existing
 // --navy/--muted/--warning-text CSS vars rather than inventing new colors.
-const WBS_STATUS_META: Record<string, { label: string; hint: string; color: string; bg: string; border: string }> = {
-  draft: {
-    label: "Draft",
-    hint: "Plan freely -- nothing is committed yet.",
-    color: "var(--navy)",
-    bg: "var(--card-bg, #fff)",
-    border: "var(--border)",
-  },
-  baseline_locked: {
-    label: "Baseline Locked",
-    hint: "This is the official commitment. Start a Revision to change it.",
-    color: "var(--navy)",
-    bg: "var(--hover-bg, #f3f4f6)",
-    border: "var(--border)",
-  },
-  revision_in_progress: {
-    label: "Revision in Progress",
-    hint: "Editing is unlocked for this revision only.",
-    color: "var(--warning-text, #b45309)",
-    bg: "var(--warning-bg, #fff7ed)",
-    border: "var(--warning-text, #b45309)",
-  },
-  changed_after_baseline: {
-    label: "Changed After Baseline",
-    hint: "A revision has been applied -- this differs from the original Baseline.",
-    color: "var(--navy)",
-    bg: "var(--hover-bg, #f3f4f6)",
-    border: "var(--border)",
-  },
-  closed: {
-    label: "Closed",
-    hint: "Final Scope is locked. This project cannot be reopened.",
-    color: "var(--muted)",
-    bg: "var(--hover-bg, #f3f4f6)",
-    border: "var(--border)",
-  },
-};
+// WBS_STATUS_META moved to ../lib/wbsStatus (Phase 4, 2026-07-28) so the
+// Projects page's WBS Status column can share the exact same labels/colors.
 
 interface ChainEntry {
   start: string;
