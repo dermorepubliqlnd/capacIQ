@@ -1553,3 +1553,15 @@ create policy project_closeout_tasks_delete on project_closeout_tasks for delete
 -- happens to be set to right now. No RLS change needed -- covered by the
 -- existing projects_select/projects_update policies.
 alter table projects add column if not exists scoping_effort_mode text;
+
+-- Migration 2026-07-28i: Phase 1 DB foundation for the Draft / Baseline /
+-- Revision / Final-Scope workflow (Sandra's spec, 2026-07-28). See
+-- supabase/phase1_migration.sql for the full annotated migration (kept as
+-- its own file since it's long); applied live via the Supabase SQL editor
+-- and verified: wbs_status backfilled correctly on all projects (one
+-- pre-existing data issue found and fixed in the same session -- Project 1
+-- had a stray project_closeouts row from 2026-07-24 testing, which the
+-- naive "closeout exists => closed" backfill rule would have mismarked as
+-- CLOSED even though it was never locked; corrected to 'draft' and the
+-- backfill logic should treat timelines_locked=false as authoritative over
+-- a stray closeout row if this migration is ever re-derived from scratch).
