@@ -677,68 +677,127 @@ export default function WbsPlanning() {
 
   // "Refresh dates" (Sandra, 2026-07-28): the grip-handle reorder above is
   // purely visual -- it doesn't recompute anyone's Start. This button
-  // re-seeds Start for whichever tasks are still eligible (no dependency
-  // set -- those already auto-track live via the existing effect above --
-  // AND still on "auto pilot," i.e. not manually overridden) to
-  // "day after the previous task in the NEW order finishes," exactly the
-  // same default-seeding math `addTopLevelTask`/`addSubtask` already use
-  // for a brand-new task, just re-run across the whole current list order
-  // on demand rather than only once at creation. Root tasks chain among
+  // re-seeds Start for every task still on "auto pilot" (not manually
+  // overridden) to a fresh, internally-consistent schedule: a task with a
+  // "Depends on" link starts the day after that dependency's (freshly
+  // recomputed) End; a task with no dependency chains after the previous
+  // task in schedule order, same default-seeding math `addTopLevelTask`/
+  // `addSubtask` already use for a brand-new task. Root tasks chain among
   // other root tasks; a parent's own sub-tasks chain only among their own
   // siblings (mirrors buildChain's own two-tier structure).
   async function refreshDates() {
-    // Bugfix (Sandra, 2026-07-28): clicking Refresh repeatedly kept pushing
-    // tasks further out instead of settling on a stable answer. Root cause
-    // -- a genuine feedback loop, not just "needs re-running": this walks
-    // ROOT tasks in LIST order, but a task's real causal position can come
-    // from an explicit "Depends on" link instead, and those two orderings
-    // don't have to agree (e.g. "New Task Insert" sat AFTER "Task 3" in
-    // the row list, but Task 3's own sub-task actually depended ON "New
-    // Task Insert"). Every click re-chained "New Task Insert" to start
-    // right after Task 3's (list-order) predecessor -- which pushed it
-    // LATER -- which then, on the NEXT click, pushed Task 3's own span
-    // later too (via the separate live dependency-tracking effect above,
-    // since Task 3's child's Start auto-follows New Task Insert's End) --
-    // which pushed New Task Insert later again the click after that, and
-    // so on, forever. Fixed by never letting Refresh re-seed any task that
-    // is itself the DEPENDS-ON TARGET of some other task (i.e. anything
-    // that appears as a `depends_on_task_id`) -- those already have a
-    // real, authoritative source for their position (the dependency
-    // system itself, [[project_capaciq_wbs_planning]] Round 9-12), so
-    // Refresh leaves them exactly where they are and only re-chains the
-    // tasks that have nothing else driving their Start.
-    const predecessorIds = new Set(dependencies.map((d) => d.depends_on_task_id));
+    // Round 17 bugfix (Sandra): repeated clicks kept pushing tasks further
+    // out. Round 17's first fix just froze any task that was itself a
+    // dependency TARGET (e.g. "New Task Insert", depended on by "Task 3
+    // Sub 1") -- stable, but frozen at whatever stale value it already
+    // had, which is exactly why Task 3's whole branch kept showing
+    // October dates that didn't trace back to anything on screen.
+    //
+    // Round 18 (this fix, Sandra: "check start and end dates... it's not
+    // making sense anymore"): the real problem was re-chaining ROOT tasks
+    // in raw LIST order while a "Depends on" link can point in a
+    // different structural direction than that list order (a task can
+    // depend on something listed AFTER it). Rather than freezing the
+    // predecessor, schedule ROOT-level groups in an order that respects
+    // BOTH constraints: whatever a group's members depend on (via an
+    // explicit "Depends on" link crossing into another group) must be
+    // computed first, before that group itself, regardless of row
+    // position; ties break by the existing row order. Dependency-driven
+    // tasks (a child or root with a real "Depends on" link) then get
+    // their Start recomputed from that predecessor's freshly-computed End
+    // in THIS SAME PASS -- not left frozen -- so Refresh always produces
+    // one coherent, non-circular schedule instead of silently reusing
+    // whatever value happened to be sitting in the DB before.
     const patches = new Map<string, Partial<TaskRow>>();
     function patchFor(id: string): Partial<TaskRow> {
       const existing = patches.get(id) ?? {};
       patches.set(id, existing);
       return existing;
     }
+    // Any task id -> the id of its own top-level root ancestor (itself if
+    // it already is one) -- used to compare a dependency's target against
+    // which ROOT GROUP it structurally belongs to.
+    function rootIdOf(taskId: string): string {
+      const t = orderedTasks.find((x) => x.id === taskId);
+      if (!t) return taskId;
+      return t.depth === 0 ? t.id : t.parent_task_id ?? t.id;
+    }
+    const roots = orderedTasks.filter((x) => x.depth === 0);
+    // Root-level dependency graph: rootId -> set of OTHER root ids it (or
+    // any of its own sub-tasks) has a real "Depends on" link into.
+    const rootDeps = new Map<string, Set<string>>();
+    for (const root of roots) {
+      const members = hasChildren(root.id)
+        ? [root, ...orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id)]
+        : [root];
+      const depSet = new Set<string>();
+      for (const m of members) {
+        for (const depId of dependsOnIdsFor(m.id)) {
+          const depRoot = rootIdOf(depId);
+          if (depRoot !== root.id) depSet.add(depRoot);
+        }
+      }
+      rootDeps.set(root.id, depSet);
+    }
+    // Topological order over root groups (dependency targets first),
+    // falling back to original row order whenever nothing is blocking (or
+    // to break an unresolved cycle, so this can never hang).
+    const scheduleOrder: typeof roots = [];
+    const placed = new Set<string>();
+    while (scheduleOrder.length < roots.length) {
+      let pick = roots.find(
+        (r) => !placed.has(r.id) && [...(rootDeps.get(r.id) ?? [])].every((d) => placed.has(d))
+      );
+      if (!pick) pick = roots.find((r) => !placed.has(r.id));
+      if (!pick) break;
+      scheduleOrder.push(pick);
+      placed.add(pick.id);
+    }
     for (const mode of MODES) {
       const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
       const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
+      const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
       function entryWithOverride(t: TaskRow, overrideStart?: string): ChainEntry | null {
         if (!overrideStart) return computeEntry(t, mode);
         if (t.estimated_hours === null || t.estimated_hours === undefined) return null;
-        const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
         const r = scenario(t.estimated_hours, overrideStart, holidaySet);
         return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
       }
-      function eligible(t: TaskRow): boolean {
-        return dependsOnIdsFor(t.id).length === 0 && t[autoField] !== false && !predecessorIds.has(t.id);
+      // Entries computed so far THIS pass, keyed by task id (root ids and
+      // child ids alike) -- lets a dependency lookup see a predecessor's
+      // brand-new End even when that predecessor is being recomputed in
+      // this very same Refresh click.
+      const entries = new Map<string, ChainEntry>();
+      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null): ChainEntry | null {
+        const depIds = dependsOnIdsFor(t.id);
+        const isAuto = t[autoField] !== false;
+        let overrideStart: string | undefined;
+        if (depIds.length && isAuto) {
+          let latest: string | null = null;
+          for (const depId of depIds) {
+            const depEntry = entries.get(depId);
+            if (!depEntry) continue;
+            const candidate = nextWorkingDayAfter(depEntry.end, holidaySet);
+            if (!latest || candidate > latest) latest = candidate;
+          }
+          if (latest) overrideStart = latest;
+        } else if (!depIds.length && isAuto && chainPrev) {
+          overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
+        }
+        const entry = entryWithOverride(t, overrideStart);
+        if (overrideStart && entry) (patchFor(t.id) as Record<string, unknown>)[startField] = overrideStart;
+        return entry;
       }
       let lastRootEntry: ChainEntry | null = null;
-      for (const root of orderedTasks.filter((x) => x.depth === 0)) {
+      for (const root of scheduleOrder) {
         if (hasChildren(root.id)) {
           let lastSiblingEntry: ChainEntry | null = null;
           const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id);
           const childEntries: ChainEntry[] = [];
           for (const child of children) {
-            let overrideStart: string | undefined;
-            if (eligible(child) && lastSiblingEntry) overrideStart = nextWorkingDayAfter(lastSiblingEntry.end, holidaySet);
-            const entry = entryWithOverride(child, overrideStart);
-            if (overrideStart && entry) (patchFor(child.id) as Record<string, unknown>)[startField] = overrideStart;
+            const entry = scheduledEntry(child, lastSiblingEntry);
             if (entry) {
+              entries.set(child.id, entry);
               lastSiblingEntry = entry;
               childEntries.push(entry);
             }
@@ -746,14 +805,16 @@ export default function WbsPlanning() {
           if (childEntries.length) {
             const start = childEntries.reduce((min, e) => (e.start < min ? e.start : min), childEntries[0].start);
             const end = childEntries.reduce((max, e) => (e.end > max ? e.end : max), childEntries[0].end);
-            lastRootEntry = { start, end, durationDays: 0 };
+            const groupEntry = { start, end, durationDays: 0 };
+            entries.set(root.id, groupEntry);
+            lastRootEntry = groupEntry;
           }
         } else {
-          let overrideStart: string | undefined;
-          if (eligible(root) && lastRootEntry) overrideStart = nextWorkingDayAfter(lastRootEntry.end, holidaySet);
-          const entry = entryWithOverride(root, overrideStart);
-          if (overrideStart && entry) (patchFor(root.id) as Record<string, unknown>)[startField] = overrideStart;
-          if (entry) lastRootEntry = entry;
+          const entry = scheduledEntry(root, lastRootEntry);
+          if (entry) {
+            entries.set(root.id, entry);
+            lastRootEntry = entry;
+          }
         }
       }
     }
@@ -1534,36 +1595,39 @@ export default function WbsPlanning() {
                   const isParent = t.depth === 0 && hasChildren(t.id);
                   const assignee = people.find((p) => p.id === t.assignee_id);
                   const dependsOnIds = dependsOnIdsFor(t.id);
+                  const draggedTask = draggedTaskId ? orderedTasks.find((x) => x.id === draggedTaskId) : undefined;
+                  const validDropTarget =
+                    !!draggedTask && draggedTask.id !== t.id && draggedTask.depth === t.depth && draggedTask.parent_task_id === t.parent_task_id;
                   return (
                     <tr
                       key={t.id}
-                      className={dragOverTaskId === t.id && draggedTaskId !== t.id ? "row-drop-target" : undefined}
-                      style={draggedTaskId === t.id ? { opacity: 0.5 } : undefined}
+                      className={dragOverTaskId === t.id && validDropTarget ? "row-drop-target" : undefined}
                       onDragOver={(e) => {
                         e.preventDefault();
                         if (dragOverTaskId !== t.id) setDragOverTaskId(t.id);
                       }}
                       onDragLeave={() => setDragOverTaskId((prev) => (prev === t.id ? null : prev))}
                       onDrop={() => {
-                        if (draggedTaskId) reorderTask(draggedTaskId, t.id);
+                        if (draggedTaskId && validDropTarget) reorderTask(draggedTaskId, t.id);
                         setDraggedTaskId(null);
                         setDragOverTaskId(null);
                       }}
                     >
-                      {/* Round (2026-07-28): grip moved into its own
-                          dedicated gutter cell, matching DataTable.tsx's
-                          proven-working row-reorder pattern exactly
-                          (`.row-gutter-cell`/`.row-grip-btn`, plus
-                          onDragLeave + a drop-target highlight) --
-                          Sandra found the version embedded inside the
-                          busy Task-name cell (alongside InlineText and
-                          the add-subtask/delete buttons) simply didn't
-                          drag at all in this page, while the same pattern
-                          already works fine on the Projects & Tasks
-                          table. Isolating it in its own simple cell,
-                          identical in structure to the working one, is
-                          the safest fix rather than guessing further at
-                          what specifically conflicted in the shared cell. */}
+                      {/* Round 18 (2026-07-28): removed the dragged row's
+                          own opacity restyle -- DataTable.tsx's proven
+                          row-drag (used on Projects & Tasks, where the
+                          grip works) never restyles the SOURCE row mid-
+                          drag, only the drop target; re-rendering the
+                          dragged element's own style while its native
+                          drag is in flight is a plausible reason a
+                          structurally-identical gutter column still
+                          didn't drag on this page. Also: the drop-target
+                          highlight now only lights up on a row that's
+                          actually a valid target (same depth + same
+                          parent -- reorder is siblings-only), so hovering
+                          over an invalid target (e.g. a different
+                          task's sub-task) no longer looks like a normal
+                          drop zone that silently does nothing. */}
                       <td className="row-gutter-cell" onClick={(e) => e.stopPropagation()}>
                         <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
