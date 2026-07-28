@@ -3048,10 +3048,6 @@ export default function Projects() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h1>Projects</h1>
-          <p className="subtitle">
-            Every project and its tasks in one place. Owners can edit their project; anyone can edit their own tasks. Click any cell to edit it,
-            like Notion.
-          </p>
         </div>
         <button
           onClick={() => {

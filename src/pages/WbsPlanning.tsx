@@ -1263,15 +1263,6 @@ export default function WbsPlanning() {
         <ArrowLeft size={13} /> Back to {project.name}
       </Link>
       <h1>WBS Planning — {project.name}</h1>
-      <p className="subtitle">
-        Plot the project's own Start date above -- it anchors the first task in each mode when there's nothing earlier to chain from. Full Effort and
-        Conservative Effort each get their own independent Start/End/Duration below (7.5h/day vs 4h/day), since the same task can genuinely start on a
-        different day under each mode. Set "Depends on" to flag a task that should follow another -- doing so moves that dependency's Start (under
-        each mode, independently) to right after its predecessor's own End under that same mode, but it stays yours to edit afterward; a task starting
-        on or before its dependency's own End gets a warning icon. "Scoping Effort" (top right) picks which mode Save actually commits, and is recorded
-        as this project's official mode once you Save -- the Utilization snapshot below has its own separate Full/Conservative preview toggle, and both
-        Gantts below are always shown together regardless of either one.
-      </p>
 
       {project.timelines_locked ? (
         <div className="card" style={{ padding: 14, fontSize: 12.5, color: "var(--muted)" }}>
@@ -1811,9 +1802,6 @@ export default function WbsPlanning() {
               <div key={mode} className="card" style={{ padding: 14, marginTop: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                   <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Timeline (Gantt) — {MODE_LABEL[mode]}</strong>
-                  <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                    Bars are colored by Assignee -- set colors in User management.
-                  </span>
                 </div>
                 {ganttDays.length === 0 ? (
                   <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
