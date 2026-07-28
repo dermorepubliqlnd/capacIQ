@@ -768,7 +768,19 @@ export default function WbsPlanning() {
       // brand-new End even when that predecessor is being recomputed in
       // this very same Refresh click.
       const entries = new Map<string, ChainEntry>();
-      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null): ChainEntry | null {
+      // Round 19 (Sandra: "Refresh dates does not reset the first task on
+      // the list to follow the start date set in the project details"):
+      // the very first task in the whole schedule had nothing to chain
+      // from (`chainPrev` null), so it always fell back to whatever its
+      // OWN stored Start field already was -- silently ignoring the
+      // project's own Start date field entirely, even though
+      // `addTopLevelTask`/`addSubtask` already treat that field as the
+      // anchor for a brand-new first task. `anchorStart` now plays that
+      // same role inside Refresh: only used the one time there's truly
+      // nothing earlier (first root, or first child of the first root
+      // group) to chain from.
+      const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
+      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string): ChainEntry | null {
         const depIds = dependsOnIdsFor(t.id);
         const isAuto = t[autoField] !== false;
         let overrideStart: string | undefined;
@@ -781,8 +793,9 @@ export default function WbsPlanning() {
             if (!latest || candidate > latest) latest = candidate;
           }
           if (latest) overrideStart = latest;
-        } else if (!depIds.length && isAuto && chainPrev) {
-          overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
+        } else if (!depIds.length && isAuto) {
+          if (chainPrev) overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
+          else if (anchorStart) overrideStart = anchorStart;
         }
         const entry = entryWithOverride(t, overrideStart);
         if (overrideStart && entry) (patchFor(t.id) as Record<string, unknown>)[startField] = overrideStart;
@@ -790,12 +803,14 @@ export default function WbsPlanning() {
       }
       let lastRootEntry: ChainEntry | null = null;
       for (const root of scheduleOrder) {
+        const isFirstGroup = lastRootEntry === null;
         if (hasChildren(root.id)) {
           let lastSiblingEntry: ChainEntry | null = null;
           const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id);
           const childEntries: ChainEntry[] = [];
           for (const child of children) {
-            const entry = scheduledEntry(child, lastSiblingEntry);
+            const isFirstChild = lastSiblingEntry === null;
+            const entry = scheduledEntry(child, lastSiblingEntry, isFirstGroup && isFirstChild ? projectAnchor : undefined);
             if (entry) {
               entries.set(child.id, entry);
               lastSiblingEntry = entry;
@@ -810,7 +825,7 @@ export default function WbsPlanning() {
             lastRootEntry = groupEntry;
           }
         } else {
-          const entry = scheduledEntry(root, lastRootEntry);
+          const entry = scheduledEntry(root, lastRootEntry, isFirstGroup ? projectAnchor : undefined);
           if (entry) {
             entries.set(root.id, entry);
             lastRootEntry = entry;
@@ -1547,7 +1562,7 @@ export default function WbsPlanning() {
               <RefreshCw size={13} /> Refresh dates
             </button>
           </div>
-          <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+          <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
                 <tr>
