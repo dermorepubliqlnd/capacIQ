@@ -351,12 +351,26 @@ export default function WbsPlanning() {
   // they happened to be stored in, NOT creation order. Explicit
   // `.order("sort_order")` fixes this the same way Projects.tsx's own
   // Tasks query already does).
+  // Round 20 (Sandra: "grip movement works but only reflects upon
+  // refresh -- if I move the bottom task one row above, it doesn't move
+  // real time"). Root cause: this used to rely entirely on `tasks`
+  // already arriving pre-sorted by `sort_order` from the initial fetch
+  // (`.order("sort_order")` in loadAll) -- true on page load, but
+  // `reorderTask`'s own optimistic `setTasks((prev) => prev.map(...))`
+  // only updates each row's `sort_order` VALUE in place, it doesn't
+  // reorder the underlying array itself, so the on-screen row order
+  // didn't change until the next full reload re-fetched (and re-sorted)
+  // from the DB. Sorting explicitly by `sort_order` here -- exactly like
+  // the Projects & Tasks page's own table already does -- makes the
+  // drop feel instant instead of needing a refresh, and is harmless on
+  // page load too (the fetch is already sorted, so this is a no-op then).
   function computeOrderedTasks(): (TaskRow & { depth: number })[] {
-    const roots = tasks.filter((t) => !t.parent_task_id);
+    const bySortOrder = (a: TaskRow, b: TaskRow) => (a.sort_order ?? 0) - (b.sort_order ?? 0);
+    const roots = tasks.filter((t) => !t.parent_task_id).sort(bySortOrder);
     const out: (TaskRow & { depth: number })[] = [];
     for (const r of roots) {
       out.push({ ...r, depth: 0 });
-      for (const c of tasks.filter((t) => t.parent_task_id === r.id)) out.push({ ...c, depth: 1 });
+      for (const c of tasks.filter((t) => t.parent_task_id === r.id).sort(bySortOrder)) out.push({ ...c, depth: 1 });
     }
     return out;
   }
