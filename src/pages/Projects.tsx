@@ -1692,22 +1692,16 @@ export default function Projects() {
         label: "Start",
         defaultWidth: 110,
         maxWidth: 140,
+        // Governance lockdown (Sandra, 2026-07-29): Start/Due are structural
+        // planning fields now owned exclusively by the WBS page (its own
+        // Start-date field, plus dates computed/written from the task plan)
+        // -- same rationale as Name/Owner going WBS-only in Round 21. This
+        // page is read-only for both dates regardless of canEditProject.
         render: (p) => {
           const computed = projectDatesFromTasks(p.id);
-          const editable = canEditProject(p) && !p.timelines_locked && !computed;
           return (
-            <span title={computed ? "Computed from this project's own tasks (earliest task start)" : undefined}>
-              <InlineDate
-                value={p.start_date}
-                editable={editable}
-                onCommit={(v) => {
-                  if (v && p.end_date && v > p.end_date) {
-                    alert("Start date can't be after the due date.");
-                    return;
-                  }
-                  updateProject(p.id, { start_date: v || null });
-                }}
-              />
+            <span title={computed ? "Computed from this project's own tasks (earliest task start)" : "Set in this project's WBS page"}>
+              <InlineDate value={p.start_date} editable={false} onCommit={() => {}} />
             </span>
           );
         },
@@ -1717,22 +1711,13 @@ export default function Projects() {
         label: "Due",
         defaultWidth: 110,
         maxWidth: 140,
+        // Governance lockdown (Sandra, 2026-07-29): see start_date above --
+        // Due is also WBS-only now, not editable from this page.
         render: (p) => {
           const computed = projectDatesFromTasks(p.id);
-          const editable = canEditProject(p) && !p.timelines_locked && !computed;
           return (
-            <span title={computed ? "Computed from this project's own tasks (latest task due date)" : undefined}>
-              <InlineDate
-                value={p.end_date}
-                editable={editable}
-                onCommit={(v) => {
-                  if (v && p.start_date && v < p.start_date) {
-                    alert("Due date can't be before the start date.");
-                    return;
-                  }
-                  updateProject(p.id, { end_date: v || null });
-                }}
-              />
+            <span title={computed ? "Computed from this project's own tasks (latest task due date)" : "Set in this project's WBS page"}>
+              <InlineDate value={p.end_date} editable={false} onCommit={() => {}} />
             </span>
           );
         },
@@ -2024,7 +2009,10 @@ export default function Projects() {
     if (groupBy === "priority") return (p, v) => updateProject(p.id, { priority: (v || null) as ProjectRow["priority"] });
     if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
     if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
-    if (groupBy === "owner") return (p, v) => updateProject(p.id, { owner_id: v || null });
+    // Owner is WBS-only (Round 21) -- dragging a card grouped by Owner used
+    // to silently reassign it here too, bypassing that lockdown. No
+    // drag-drop handler for this grouping any more (2026-07-29).
+    if (groupBy === "owner") return undefined;
     if (groupBy === "wbs_status") return undefined; // baseline/revision transitions run through the WBS Planning page's RPCs (task snapshot required) -- not a plain field write, so no drag-drop here
     // Dragging a card between Status columns goes through changeProjectStatus
     // so Phase cascades correctly (see its own doc comment); dragging
