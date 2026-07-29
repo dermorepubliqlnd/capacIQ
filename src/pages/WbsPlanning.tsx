@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
 import { formatDate } from "../lib/formatDate";
+import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { standardScenario, fullCapacityScenario } from "../lib/taskScheduling";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
@@ -240,6 +241,10 @@ export default function WbsPlanning() {
   const [allTasks, setAllTasks] = useState<UtilTaskRow[]>([]);
   const [allProjects, setAllProjects] = useState<UtilProjectRow[]>([]);
   const [dependencies, setDependencies] = useState<DependencyRow[]>([]);
+  // Sandra, 2026-07-29: Spent Hrs (actual logged time) shown alongside
+  // Est. hrs in the WBS task table -- same rollup helper/shape as the
+  // main Projects & Tasks page's own Spent Hrs column.
+  const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
   const [depPickerOpenFor, setDepPickerOpenFor] = useState<string | null>(null);
   // Grip-handle drag reorder (Sandra, 2026-07-28): constrained to siblings
   // -- a top-level task can only reorder among other top-level tasks, a
@@ -312,10 +317,15 @@ export default function WbsPlanning() {
     // id list first.
     const taskIds = ((tks as TaskRow[]) ?? []).map((t) => t.id);
     if (taskIds.length) {
-      const { data: deps } = await supabase.from("task_dependencies").select("task_id,depends_on_task_id").in("task_id", taskIds);
+      const [{ data: deps }, { data: entries }] = await Promise.all([
+        supabase.from("task_dependencies").select("task_id,depends_on_task_id").in("task_id", taskIds),
+        supabase.from("time_entries").select("*").in("task_id", taskIds).in("status", ["confirmed", "approved"]),
+      ]);
       setDependencies((deps as DependencyRow[]) ?? []);
+      setTimeEntries((entries as TimeEntryRow[]) ?? []);
     } else {
       setDependencies([]);
+      setTimeEntries([]);
     }
 
     const [{ data: revRow }, { data: closureRow }, { data: baselineRow }] = await Promise.all([
@@ -598,6 +608,21 @@ export default function WbsPlanning() {
 
   function hasChildren(taskId: string): boolean {
     return tasks.some((t) => t.parent_task_id === taskId);
+  }
+
+  // Actual logged time (own + every descendant's), same rollup as the
+  // Projects & Tasks page's Spent Hrs column.
+  function spentHoursFor(taskId: string): number {
+    return rollupHoursFor(taskId, timeEntries, (id) => tasks.filter((t) => t.parent_task_id === id).map((t) => t.id));
+  }
+
+  // Small status glyph shown next to the task Name in the WBS table --
+  // Sandra, 2026-07-29: "even just symbols... gray circle not started,
+  // in progress yellow arrow, green check if done."
+  function statusGlyph(status: string | null) {
+    if (status === "Done") return { Icon: CheckCircle2, color: "var(--success-text)", title: "Done" };
+    if (status === "In Progress") return { Icon: Clock, color: "var(--warning-text)", title: "In Progress" };
+    return { Icon: Circle, color: "var(--muted)", title: "Not Started" };
   }
 
   // Same rollup rule as the Projects & Tasks page -- a parent task's own
@@ -1415,6 +1440,13 @@ export default function WbsPlanning() {
   // Revision allow edits -- Baseline Locked/Changed After Baseline/Closed
   // are all view-only.
   const canEditWbs = project.wbs_status === "draft" || project.wbs_status === "revision_in_progress";
+  // Sandra, 2026-07-29: "if one task has been completed... shall we
+  // still allow changing of project start date?" -- no. Once any task
+  // is Done, the project has genuinely started, so the project's own
+  // Start date becomes historical fact too, same reasoning as the
+  // per-task Done-lock above. Locked regardless of canEditWbs/revision
+  // status.
+  const anyTaskDone = tasks.some((t) => t.status === "Done");
 
   // Design spec item 7 (Sandra, 2026-07-29): group the latest applied
   // revision's changes by task_id for the task list's Changes/Notes
@@ -1946,11 +1978,19 @@ export default function WbsPlanning() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Start date:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(true, 110, !canEditWbs)}>
-                <InlineDate value={project.start_date} editable={canEditWbs} onCommit={(v) => saveProjectField({ start_date: v })} />
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 110, !canEditWbs || anyTaskDone)}>
+                <InlineDate
+                  value={project.start_date}
+                  editable={canEditWbs && !anyTaskDone}
+                  onCommit={(v) => saveProjectField({ start_date: v })}
+                />
               </div>
               <span
-                title="Your own plotted anchor -- used as the default Start for the very first task in each mode when there's nothing earlier to chain from. No longer auto-pulled from tasks."
+                title={
+                  anyTaskDone
+                    ? "Locked -- at least one task is already Done, so the project has genuinely started and this date is now historical."
+                    : "Your own plotted anchor -- used as the default Start for the very first task in each mode when there's nothing earlier to chain from. No longer auto-pulled from tasks."
+                }
                 style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
               >
                 <Info size={13} style={{ color: "var(--muted)" }} />
@@ -2266,6 +2306,9 @@ export default function WbsPlanning() {
                     Est. hrs
                   </th>
                   <th rowSpan={2} style={{ width: 90 }}>
+                    Spent hrs
+                  </th>
+                  <th rowSpan={2} style={{ width: 90 }}>
                     Effort
                   </th>
                   <th rowSpan={2} style={{ width: 150 }}>
@@ -2299,7 +2342,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={14} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={15} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -2311,10 +2354,22 @@ export default function WbsPlanning() {
                   const draggedTask = draggedTaskId ? orderedTasks.find((x) => x.id === draggedTaskId) : undefined;
                   const validDropTarget =
                     !!draggedTask && draggedTask.id !== t.id && draggedTask.depth === t.depth && draggedTask.parent_task_id === t.parent_task_id;
+                  // Sandra, 2026-07-29: a Done task's fields are frozen
+                  // here too, not just its dates (see the computeEntry
+                  // Done-lock above) -- during a revision canEditWbs is
+                  // true for the whole page, but a completed task
+                  // shouldn't still look editable. rowEditable gates
+                  // every editable control in this row; the row itself
+                  // gets a light gray fill so it visually reads as
+                  // locked even while the rest of the table is open.
+                  const rowLocked = t.status === "Done";
+                  const rowEditable = canEditWbs && !rowLocked;
+                  const glyph = statusGlyph(t.status);
                   return (
                     <tr
                       key={t.id}
                       className={dragOverTaskId === t.id && validDropTarget ? "row-drop-target" : undefined}
+                      style={rowLocked ? { background: "var(--hover-bg)" } : undefined}
                       onDragOver={(e) => {
                         e.preventDefault();
                         if (dragOverTaskId !== t.id) setDragOverTaskId(t.id);
@@ -2345,14 +2400,14 @@ export default function WbsPlanning() {
                         <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
                             className="row-grip-btn"
-                            draggable={canEditWbs}
-                            onDragStart={() => canEditWbs && setDraggedTaskId(t.id)}
+                            draggable={rowEditable}
+                            onDragStart={() => rowEditable && setDraggedTaskId(t.id)}
                             onDragEnd={() => {
                               setDraggedTaskId(null);
                               setDragOverTaskId(null);
                             }}
-                            title={canEditWbs ? "Drag to reorder (among its own siblings)" : undefined}
-                            style={canEditWbs ? undefined : { opacity: 0.35, cursor: "default" }}
+                            title={rowEditable ? "Drag to reorder (among its own siblings)" : rowLocked ? "Done -- locked" : undefined}
+                            style={rowEditable ? undefined : { opacity: 0.35, cursor: "default" }}
                           >
                             <GripVertical size={13} />
                           </span>
@@ -2360,15 +2415,18 @@ export default function WbsPlanning() {
                       </td>
                       <td>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
+                          <span title={glyph.title} style={{ display: "inline-flex", flexShrink: 0 }}>
+                            <glyph.Icon size={13} color={glyph.color} />
+                          </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <InlineText value={t.name} editable={canEditWbs} bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
+                            <InlineText value={t.name} editable={rowEditable} bold={t.depth === 0} onCommit={(v) => saveTaskField(t.id, { name: v })} />
                           </div>
-                          {canEditWbs && t.depth === 0 && (
+                          {rowEditable && t.depth === 0 && (
                             <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
                               <Plus size={14} />
                             </button>
                           )}
-                          {canEditWbs && (
+                          {rowEditable && (
                             <button className="add-subtask-btn" onClick={() => deleteTask(t)} title={isParent ? "Delete task (and its sub-tasks)" : "Delete task"}>
                               <Trash2 size={14} />
                             </button>
@@ -2379,11 +2437,12 @@ export default function WbsPlanning() {
                         <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
-                            editable={canEditWbs && !isParent}
+                            editable={rowEditable && !isParent}
                             onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })}
                           />
                         </span>
                       </td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(spentHoursFor(t.id))}</td>
                       <td>
                         {isParent ? (
                           <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own effort is already represented by its sub-tasks' own Effort/points, so it doesn't carry a separate value.">
@@ -2392,7 +2451,7 @@ export default function WbsPlanning() {
                         ) : (
                           <InlineSelect
                             value={t.effort ?? ""}
-                            editable={canEditWbs}
+                            editable={rowEditable}
                             allowEmpty
                             emptyLabel="Pick effort"
                             options={TASK_EFFORT_OPTIONS}
@@ -2427,7 +2486,7 @@ export default function WbsPlanning() {
                         ) : (
                           <InlineSelect
                             value={assignee?.name ?? ""}
-                            editable={canEditWbs}
+                            editable={rowEditable}
                             allowEmpty
                             emptyLabel="Unassigned"
                             options={people.map((p) => p.name)}
@@ -2462,7 +2521,7 @@ export default function WbsPlanning() {
                           allTasks={orderedTasks}
                           dependsOnIds={dependsOnIds}
                           isOpen={depPickerOpenFor === t.id}
-                          editable={canEditWbs}
+                          editable={rowEditable}
                           onToggle={() => setDepPickerOpenFor((prev) => (prev === t.id ? null : t.id))}
                           onClose={() => setDepPickerOpenFor(null)}
                           onAdd={(depId) => addDependency(t.id, depId)}
@@ -2502,7 +2561,7 @@ export default function WbsPlanning() {
                 })}
                 {canEditWbs && (
                   <tr>
-                    <td colSpan={14} className="add-row-cell">
+                    <td colSpan={15} className="add-row-cell">
                       <div className="add-row-trigger" onClick={addTopLevelTask}>
                         <Plus size={12} />
                         New task
