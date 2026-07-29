@@ -1039,12 +1039,19 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 }
 /* Day scale's top header row (see monthGroups in TimelineView.tsx) --
    left-aligned and a touch bolder than the plain day-number cells below
-   it, so the Month/Day two-tier hierarchy reads clearly at a glance. */
+   it, so the Month/Day two-tier hierarchy reads clearly at a glance.
+   overflow/ellipsis added because a month group at the very edge of the
+   scrollable range can be just a few day-columns wide -- too narrow for
+   its own "August 2026"-style label -- and without clipping the text
+   spilled past its own cell into the next month's, visually reading as
+   one run-on "July 2026August 2026" (Sandra, 2026-07-29 screenshot). */
 .timeline-header-cell-month {
   justify-content: flex-start;
   padding-left: 6px;
   font-weight: 700;
   color: var(--navy);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .timeline-row {
   display: flex;

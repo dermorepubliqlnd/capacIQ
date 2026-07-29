@@ -285,17 +285,27 @@ export default function TimelineView<T>({
       if (d) allDates.push(parseLocalDate(d));
     });
 
-    let minD: Date;
-    let maxD: Date;
+    // Floor/ceiling anchor: the range used to be purely data-driven (just
+    // the min/max task date, padded by one scale unit) -- a lightly-
+    // populated portfolio then showed only a near-empty sliver of a week
+    // or two, and scrolling into any month with no rows showed nothing at
+    // all. Sandra (2026-07-29): "make the timeline area show back from
+    // January 1, 2026 and continue for at least the next 12 months from
+    // today's date." So the range now always covers at least January 1 of
+    // the current year through 12 months out from today, regardless of
+    // whether any row actually falls in that window -- real row dates
+    // still extend it further in either direction, this is just a floor.
+    const today = startOfDay(new Date());
+    const anchorStart = new Date(today.getFullYear(), 0, 1);
+    const anchorEnd = addMonths(today, 12);
+
+    let minD: Date = anchorStart;
+    let maxD: Date = anchorEnd;
     if (allDates.length > 0) {
-      minD = new Date(Math.min(...allDates.map((d) => d.getTime())));
-      maxD = new Date(Math.max(...allDates.map((d) => d.getTime())));
-    } else {
-      // No dated rows at all -- fall back to a window centered on today
-      // so the grid still renders something readable instead of an empty
-      // sliver.
-      minD = addMonths(startOfDay(new Date()), -1);
-      maxD = addMonths(startOfDay(new Date()), 2);
+      const dataMin = new Date(Math.min(...allDates.map((d) => d.getTime())));
+      const dataMax = new Date(Math.max(...allDates.map((d) => d.getTime())));
+      if (dataMin < minD) minD = dataMin;
+      if (dataMax > maxD) maxD = dataMax;
     }
 
     const paddedStart = SCALE_PAD[scale](minD, -1);
