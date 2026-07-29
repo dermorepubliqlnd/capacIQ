@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -116,6 +116,7 @@ interface BaselineTaskFull {
 }
 interface RevisionChangeRow {
   id: string;
+  revision_id?: string;
   task_id: string;
   task_name: string;
   change_type: string;
@@ -360,7 +361,31 @@ export default function WbsPlanning() {
       .select("id,revision_number,reason,status,started_at")
       .eq("project_id", projectId)
       .order("revision_number", { ascending: false });
-    setRevisionHistory((data as RevisionRow[]) ?? []);
+    const revs = (data as RevisionRow[]) ?? [];
+    setRevisionHistory(revs);
+    // Sandra, 2026-07-29 follow-up: the right rail's Revision History now
+    // shows each revision's Impact inline (last 5) without a click-to-
+    // expand step, so preload their changes here instead of lazily on
+    // click (toggleRevisionExpand below still works the same way for any
+    // revision not covered by this preload, e.g. beyond the top 5).
+    const last5 = revs.slice(0, 5);
+    if (last5.length > 0) {
+      const { data: changeRows } = await supabase
+        .from("project_revision_changes")
+        .select("id,revision_id,task_id,task_name,change_type,field,previous_value,new_value")
+        .in(
+          "revision_id",
+          last5.map((r) => r.id)
+        );
+      const byRevision: Record<string, RevisionChangeRow[]> = {};
+      for (const c of (changeRows as RevisionChangeRow[]) ?? []) {
+        const key = c.revision_id ?? "";
+        const list = byRevision[key] ?? [];
+        list.push(c);
+        byRevision[key] = list;
+      }
+      setRevisionChangesById((prev) => ({ ...prev, ...byRevision }));
+    }
   }
 
   // Feeds the task list's Changes/Notes columns and the Revision Summary
@@ -1995,75 +2020,58 @@ export default function WbsPlanning() {
                 const rate = m === "full_capacity" ? "7.5 h/day" : "4 h/day";
                 const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, 1);
                 const widthPct = s.durationDays ? Math.max(18, Math.round((s.durationDays / maxDuration) * 100)) : 0;
+                // Sandra, 2026-07-29 follow-up: label moved ABOVE the bar
+                // (was to its left) per her reference mockup -- same
+                // colors, just the layout direction changed.
                 return (
-                  <div
-                    key={m}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 16,
-                      marginBottom: i === MODES.length - 1 ? 0 : 14,
-                    }}
-                  >
-                    <div style={{ width: 165, flexShrink: 0, fontSize: 12, fontWeight: 600, color }}>
+                  <div key={m} style={{ marginBottom: i === MODES.length - 1 ? 0 : 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color, marginBottom: 6 }}>
                       {MODE_LABEL[m]} ({rate})
                     </div>
-                    <div style={{ flex: 1, minWidth: 100 }}>
-                      {s.durationDays ? (
-                        <div
-                          style={{
-                            width: `${widthPct}%`,
-                            minWidth: 90,
-                            background: color,
-                            color: "#fff",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            textAlign: "center",
-                            padding: "6px 8px",
-                            borderRadius: 4,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {s.durationDays} working day{s.durationDays === 1 ? "" : "s"}
+                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                      <div style={{ flex: 1, minWidth: 100 }}>
+                        {s.durationDays ? (
+                          <div
+                            style={{
+                              width: `${widthPct}%`,
+                              minWidth: 90,
+                              background: color,
+                              color: "#fff",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              textAlign: "center",
+                              padding: "6px 8px",
+                              borderRadius: 4,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {s.durationDays} working day{s.durationDays === 1 ? "" : "s"}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }}>no schedule yet</span>
+                        )}
+                      </div>
+                      <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
+                        <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Start</div>
+                        <div>{formatDate(s.start)}</div>
+                      </div>
+                      <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
+                        <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>End</div>
+                        <div>{formatDate(s.end)}</div>
+                      </div>
+                      <div style={{ width: 100, fontSize: 11.5, flexShrink: 0 }}>
+                        <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Duration</div>
+                        <div>
+                          {s.durationDays ? `${s.durationDays} working day${s.durationDays === 1 ? "" : "s"}` : "—"}
+                          {!s.complete && s.end ? " · incomplete" : ""}
                         </div>
-                      ) : (
-                        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>no schedule yet</span>
-                      )}
-                    </div>
-                    <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
-                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Start</div>
-                      <div>{formatDate(s.start)}</div>
-                    </div>
-                    <div style={{ width: 85, fontSize: 11.5, flexShrink: 0 }}>
-                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>End</div>
-                      <div>{formatDate(s.end)}</div>
-                    </div>
-                    <div style={{ width: 100, fontSize: 11.5, flexShrink: 0 }}>
-                      <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Duration</div>
-                      <div>
-                        {s.durationDays ? `${s.durationDays} working day${s.durationDays === 1 ? "" : "s"}` : "—"}
-                        {!s.complete && s.end ? " · incomplete" : ""}
                       </div>
                     </div>
                   </div>
                 );
               })}
-              <div
-                style={{
-                  borderTop: "1px solid var(--border)",
-                  marginTop: 12,
-                  paddingTop: 8,
-                  fontSize: 11,
-                  color: "var(--muted)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <Info size={12} style={{ flexShrink: 0 }} />
-                Total Effort reflects the current plan -- it can change as tasks are added, resized, or actuals come in. Timeline changes based on daily
-                capacity: Full Effort = 7.5h/day, Conservative Effort = 4h/day.
-              </div>
+              {/* Sandra, 2026-07-29 follow-up: removed the "Total Effort
+                  reflects the current plan..." helper line entirely. */}
             </div>
           </div>
           {project.wbs_status !== "draft" && (
@@ -2645,54 +2653,132 @@ export default function WbsPlanning() {
         {project.wbs_status !== "draft" && (
           <div style={{ width: 300, flexShrink: 0 }}>
             <div className="card" style={{ padding: 14 }}>
+              {/* Sandra, 2026-07-29 follow-up: plain icon+label+value rows,
+                  no per-row card/box (per her reference mockup). */}
               {latestRevisionChanges.length > 0 && (
                 <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
                   <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision Summary</strong>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, fontSize: 11.5 }}>
-                    <span><strong>{revisionSummary.tasksAdded}</strong> task(s) added</span>
-                    <span><strong>{revisionSummary.tasksRemoved}</strong> task(s) removed</span>
-                    <span>
-                      <strong>
-                        {revisionSummary.totalAddedHours > 0 ? "+" : ""}
-                        {revisionSummary.totalAddedHours}h
-                      </strong>{" "}
-                      total effort change
-                    </span>
-                    <span><strong>{revisionSummary.hoursIncreased}</strong> estimate(s) increased</span>
-                    <span><strong>{revisionSummary.hoursDecreased}</strong> estimate(s) decreased</span>
-                    <span><strong>{revisionSummary.datesChanged}</strong> date(s) changed</span>
-                    <span><strong>{revisionSummary.dependenciesChanged}</strong> dependenc{revisionSummary.dependenciesChanged === 1 ? "y" : "ies"} changed</span>
-                    <span><strong>{revisionSummary.assigneesChanged}</strong> assignee(s) changed</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, fontSize: 11.5 }}>
+                    {[
+                      { icon: <Clock size={13} />, label: "Total effort change", value: `${revisionSummary.totalAddedHours > 0 ? "+" : ""}${revisionSummary.totalAddedHours}h` },
+                      { icon: <ListPlus size={13} />, label: "Total tasks added", value: revisionSummary.tasksAdded },
+                      { icon: <Trash2 size={13} />, label: "Total tasks removed", value: revisionSummary.tasksRemoved },
+                      { icon: <TrendingUp size={13} />, label: "Estimates increased", value: revisionSummary.hoursIncreased },
+                      { icon: <TrendingDown size={13} />, label: "Estimates decreased", value: revisionSummary.hoursDecreased },
+                      { icon: <Calendar size={13} />, label: "Dates changed", value: revisionSummary.datesChanged },
+                      { icon: <Link2 size={13} />, label: "Dependencies changed", value: revisionSummary.dependenciesChanged },
+                      { icon: <User size={13} />, label: "Assignees changed", value: revisionSummary.assigneesChanged },
+                    ].map((row) => (
+                      <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color: "var(--muted)", flexShrink: 0, display: "inline-flex" }}>{row.icon}</span>
+                        <span style={{ flex: 1, color: "var(--text-secondary)" }}>{row.label}</span>
+                        <strong>{row.value}</strong>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
+              {/* Sandra, 2026-07-29 follow-up: replaced the bordered-box-
+                  per-revision look with a flat timeline (circle marker +
+                  connecting line), Impact shown inline (no click-to-
+                  expand needed), capped to the last 5 revisions, and a
+                  clearer placeholder when nothing's been recorded yet. */}
               {revisionHistory.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No revisions yet.</div>
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No changes made yet.</div>
               ) : (
-                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {revisionHistory.map((r) => (
-                    <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
-                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleRevisionExpand(r.id)}>
-                        <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.status} · {formatDate(r.started_at.slice(0, 10))}</span>
-                      </div>
-                      {expandedRevisionId === r.id && (
-                        <div style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
-                          {(revisionChangesById[r.id] ?? []).length === 0 ? (
-                            <div>No changes recorded (applied with no diff, or still in progress).</div>
-                          ) : (
-                            (revisionChangesById[r.id] ?? []).map((c) => (
-                              <div key={c.id} style={{ padding: "2px 0" }}>
-                                <strong>{c.task_name}</strong> — {c.change_type}
-                                {c.field ? ` (${c.field})` : ""}
-                              </div>
-                            ))
-                          )}
+                <div style={{ marginTop: 10, position: "relative", paddingLeft: 16 }}>
+                  <div style={{ position: "absolute", left: 3, top: 4, bottom: 4, width: 2, background: "var(--border)" }} />
+                  {revisionHistory.slice(0, 5).map((r, idx, arr) => {
+                    const changes = revisionChangesById[r.id] ?? [];
+                    const hoursDelta = changes
+                      .filter((c) => c.change_type === "hours_changed")
+                      .reduce((sum, c) => sum + (Number(c.new_value ?? 0) - Number(c.previous_value ?? 0)), 0);
+                    const tasksAdded = changes.filter((c) => c.change_type === "task_added").length;
+                    const tasksRemoved = changes.filter((c) => c.change_type === "task_removed").length;
+                    const datesChanged = changes.filter((c) => c.change_type === "date_changed").length;
+                    const impactParts = [
+                      hoursDelta !== 0 ? `${hoursDelta > 0 ? "+" : ""}${hoursDelta}h` : null,
+                      tasksAdded > 0 ? `+${tasksAdded} task${tasksAdded === 1 ? "" : "s"}` : null,
+                      tasksRemoved > 0 ? `-${tasksRemoved} task${tasksRemoved === 1 ? "" : "s"}` : null,
+                      datesChanged > 0 ? `${datesChanged} date${datesChanged === 1 ? "" : "s"} changed` : null,
+                    ].filter(Boolean);
+                    const statusTone =
+                      r.status === "applied"
+                        ? { bg: "var(--success-bg)", color: "var(--success-text)" }
+                        : r.status === "discarded"
+                        ? { bg: "var(--hover-bg)", color: "var(--muted)" }
+                        : { bg: "var(--warning-bg)", color: "var(--warning-text)" };
+                    return (
+                      <div key={r.id} style={{ position: "relative", marginBottom: idx === arr.length - 1 ? 0 : 14 }}>
+                        <span
+                          style={{
+                            position: "absolute",
+                            left: -16,
+                            top: 3,
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            background: statusTone.color,
+                          }}
+                        />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              padding: "1px 6px",
+                              borderRadius: "var(--radius-btn)",
+                              background: statusTone.bg,
+                              color: statusTone.color,
+                            }}
+                          >
+                            {r.status}
+                          </span>
                         </div>
-                      )}
+                        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{formatDate(r.started_at.slice(0, 10))}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                          {impactParts.length > 0 ? `Impact: ${impactParts.join(", ")}` : "No changes recorded"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {activeBaseline && (
+                    <div style={{ position: "relative", marginTop: 14 }}>
+                      <span
+                        style={{
+                          position: "absolute",
+                          left: -16,
+                          top: 3,
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: "var(--muted)",
+                        }}
+                      />
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <strong style={{ fontSize: 12 }}>Baseline V{activeBaseline.version_number}</strong>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            padding: "1px 6px",
+                            borderRadius: "var(--radius-btn)",
+                            background: "var(--hover-bg)",
+                            color: "var(--muted)",
+                          }}
+                        >
+                          Locked
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                        {formatDate(activeBaseline.captured_at.slice(0, 10))}
+                      </div>
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
               <button
