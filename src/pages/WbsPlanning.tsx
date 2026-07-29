@@ -1317,12 +1317,11 @@ export default function WbsPlanning() {
     }
 
     const verb = MODE_LABEL[activeMode];
-    if (
-      !(await confirm(
-        `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting. Timelines stay unlocked -- lock from the Tasks page's Timelines column when you're ready to finalize.`
-      ))
-    )
-      return;
+    const applyingRevision = project.wbs_status === "revision_in_progress" && !!activeRevision;
+    const confirmMsg = applyingRevision
+      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, AND applies this revision -- the project re-locks as the new Current Plan (status becomes Changed After Baseline).`
+      : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting. Nothing is locked yet -- lock a Baseline or start/apply a Revision from the actions above when you're ready.`;
+    if (!(await confirm(confirmMsg))) return;
 
     setSaving(true);
     try {
@@ -1352,8 +1351,27 @@ export default function WbsPlanning() {
         if (snapshotRows.length) await supabase.from("task_planning_snapshots").insert(snapshotRows);
       }
       await supabase.from("projects").update({ scoping_effort_mode: activeMode }).eq("id", project.id);
+
+      // Sandra, 2026-07-29: "Make Save also apply the revision" -- saving
+      // mid-revision now also calls apply_wbs_revision so Save re-locks
+      // the project in one step instead of needing a separate Apply click.
+      if (applyingRevision && activeRevision) {
+        const { error } = await supabase.rpc("apply_wbs_revision", {
+          p_revision_id: activeRevision.id,
+          p_tasks: buildTaskSnapshotPayload(),
+        });
+        if (error) {
+          await alert(`Timelines were saved, but the revision couldn't be applied: ${error.message}`);
+          await loadAll();
+          return;
+        }
+        await loadAll();
+        await alert(`Saved and applied using ${verb}. This revision is now locked in as the Current Plan.`);
+        return;
+      }
+
       await loadAll();
-      await alert(`Saved using ${verb}. Timelines are still unlocked -- finalize from the Tasks page when ready.`);
+      await alert(`Saved using ${verb}. Nothing is locked yet -- lock a Baseline or start/apply a Revision from the actions above when ready.`);
     } finally {
       setSaving(false);
     }
@@ -2059,13 +2077,9 @@ export default function WbsPlanning() {
                         <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>End</div>
                         <div>{formatDate(s.end)}</div>
                       </div>
-                      <div style={{ width: 100, fontSize: 11.5, flexShrink: 0 }}>
-                        <div style={{ fontWeight: 600, color: "var(--muted)", fontSize: 10 }}>Duration</div>
-                        <div>
-                          {s.durationDays ? `${s.durationDays} working day${s.durationDays === 1 ? "" : "s"}` : "—"}
-                          {!s.complete && s.end ? " · incomplete" : ""}
-                        </div>
-                      </div>
+                      {!s.complete && s.end && (
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", flexShrink: 0 }}>incomplete</div>
+                      )}
                     </div>
                   </div>
                 );
@@ -2989,29 +3003,11 @@ function CompareWithBaselinePanel({ projectId, liveTasks }: { projectId: string;
               </tr>
             </tbody>
           </table>
-          <div style={{ marginTop: 10, fontSize: 11.5 }}>
-            {added.length === 0 && removed.length === 0 && changed.length === 0 ? (
-              <div style={{ color: "var(--muted)" }}>No task-level variance from baseline -- current plan matches exactly.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {added.map((t) => (
-                  <div key={t.task_id} style={{ color: "var(--muted)" }}>
-                    + <strong>{t.name}</strong> added since baseline ({t.estimated_hours ?? 0}h)
-                  </div>
-                ))}
-                {removed.map((t) => (
-                  <div key={t.task_id} style={{ color: "var(--muted)" }}>
-                    − <strong>{t.name}</strong> removed since baseline
-                  </div>
-                ))}
-                {changed.map(({ live, base }) => (
-                  <div key={live.task_id} style={{ color: "var(--muted)" }}>
-                    <strong>{live.name}</strong>: {base.estimated_hours ?? 0}h → {live.estimated_hours ?? 0}h
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* Sandra, 2026-07-29 follow-up: removed the per-task
+              added/removed/changed detail list that used to sit below
+              this table -- redundant now that the task list's own
+              Changes vs Baseline + Notes columns show the same
+              per-task detail directly. */}
         </>
       )}
     </div>

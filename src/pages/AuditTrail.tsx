@@ -53,12 +53,44 @@ interface ChangeRow {
   previous_value: unknown;
   new_value: unknown;
   changed_at: string;
+  changed_by: string | null;
 }
 
+interface PersonRow {
+  id: string;
+  name: string;
+}
+
+// Sandra, 2026-07-29 follow-up: date_changed rows store an object shape
+// ({start_full, end_full, start_standard, end_standard}) rather than a
+// single scalar -- was rendering as raw JSON ("{"end_full":"2026-08-06"...").
+// Pretty-print that shape specifically; fall back to raw JSON for any
+// other unrecognized object shape rather than guessing further.
 function formatValue(v: unknown): string {
   if (v === null || v === undefined) return "—";
-  if (typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const hasDateShape = "start_full" in o || "end_full" in o || "start_standard" in o || "end_standard" in o;
+    if (hasDateShape) {
+      const parts: string[] = [];
+      if (o.start_full || o.start_standard) {
+        parts.push(`Start: ${formatDate(String(o.start_full ?? o.start_standard).slice(0, 10))}`);
+      }
+      if (o.end_full || o.end_standard) {
+        parts.push(`End: ${formatDate(String(o.end_full ?? o.end_standard).slice(0, 10))}`);
+      }
+      return parts.length ? parts.join(" · ") : "—";
+    }
+    return JSON.stringify(v);
+  }
   return String(v);
+}
+
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  const datePart = formatDate(iso.slice(0, 10));
+  const timePart = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${datePart} ${timePart}`;
 }
 
 export default function AuditTrail() {
@@ -66,6 +98,7 @@ export default function AuditTrail() {
   const [project, setProject] = useState<ProjectRow | null>(null);
   const [revisions, setRevisions] = useState<RevisionRow[]>([]);
   const [changes, setChanges] = useState<ChangeRow[]>([]);
+  const [people, setPeople] = useState<PersonRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [revisionFilter, setRevisionFilter] = useState<string>("all");
 
@@ -74,22 +107,24 @@ export default function AuditTrail() {
     let active = true;
     (async () => {
       setLoading(true);
-      const [{ data: projectRow }, { data: revisionRows }] = await Promise.all([
+      const [{ data: projectRow }, { data: revisionRows }, { data: peopleRows }] = await Promise.all([
         supabase.from("projects").select("id,name").eq("id", projectId).single(),
         supabase
           .from("project_revisions")
           .select("id,revision_number,reason,status,started_at,applied_at")
           .eq("project_id", projectId)
           .order("revision_number", { ascending: false }),
+        supabase.from("people").select("id,name"),
       ]);
       if (!active) return;
       setProject((projectRow as ProjectRow) ?? null);
+      setPeople((peopleRows as PersonRow[]) ?? []);
       const revs = (revisionRows as RevisionRow[]) ?? [];
       setRevisions(revs);
       if (revs.length > 0) {
         const { data: changeRows } = await supabase
           .from("project_revision_changes")
-          .select("id,revision_id,task_id,task_name,change_type,field,previous_value,new_value,changed_at")
+          .select("id,revision_id,task_id,task_name,change_type,field,previous_value,new_value,changed_at,changed_by")
           .in(
             "revision_id",
             revs.map((r) => r.id)
@@ -107,6 +142,7 @@ export default function AuditTrail() {
   }, [projectId]);
 
   const revisionById = new Map(revisions.map((r) => [r.id, r]));
+  const personById = new Map(people.map((p) => [p.id, p.name]));
   const visibleChanges = revisionFilter === "all" ? changes : changes.filter((c) => c.revision_id === revisionFilter);
 
   if (loading) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>;
@@ -150,15 +186,16 @@ export default function AuditTrail() {
               <th style={{ width: 90 }}>Revision</th>
               <th style={{ minWidth: 180 }}>Task</th>
               <th style={{ width: 150 }}>Change</th>
-              <th style={{ width: 150 }}>Previous</th>
-              <th style={{ width: 150 }}>New</th>
-              <th style={{ width: 140 }}>When</th>
+              <th style={{ width: 170 }}>Previous</th>
+              <th style={{ width: 170 }}>New</th>
+              <th style={{ width: 130 }}>By</th>
+              <th style={{ width: 160 }}>When</th>
             </tr>
           </thead>
           <tbody>
             {visibleChanges.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                <td colSpan={7} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                   No changes recorded yet.
                 </td>
               </tr>
@@ -172,7 +209,8 @@ export default function AuditTrail() {
                   <td>{CHANGE_TYPE_LABEL[c.change_type] ?? c.change_type}</td>
                   <td style={{ color: "var(--muted)" }}>{formatValue(c.previous_value)}</td>
                   <td>{formatValue(c.new_value)}</td>
-                  <td style={{ color: "var(--muted)", fontSize: 11.5 }}>{formatDate(c.changed_at.slice(0, 10))}</td>
+                  <td style={{ color: "var(--muted)", fontSize: 11.5 }}>{c.changed_by ? personById.get(c.changed_by) ?? "—" : "—"}</td>
+                  <td style={{ color: "var(--muted)", fontSize: 11.5 }}>{formatWhen(c.changed_at)}</td>
                 </tr>
               );
             })}
