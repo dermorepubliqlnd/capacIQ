@@ -717,10 +717,27 @@ export default function WbsPlanning() {
   // where over-allocation actually shows up, not a scheduling
   // constraint here).
   function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
-    const hours = t.estimated_hours;
     const rawStart = mode === "full_capacity" ? t.start_date_full : t.start_date_standard;
     const start = rawStart ? rawStart.slice(0, 10) : null;
-    if (hours === null || hours === undefined || !start) return null;
+    if (!start) return null;
+
+    // Sandra, 2026-07-29 (design discussion on switching effort mode
+    // mid-project): a Done task's dates are historical fact, not a
+    // forecast -- recomputing them off the new mode's daily rate would
+    // silently rewrite something that already happened. Once a task is
+    // Done, its own Start/End stay exactly as last saved (current_due_date
+    // is the single canonical End written by Save, same value regardless
+    // of which mode is toggled) instead of being re-derived from hours.
+    // It still anchors dependent tasks normally -- only ITS OWN entry is
+    // frozen, nothing downstream changes.
+    if (t.status === "Done" && t.current_due_date) {
+      const end = t.current_due_date.slice(0, 10);
+      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+      return { start, end, durationDays };
+    }
+
+    const hours = t.estimated_hours;
+    if (hours === null || hours === undefined) return null;
     const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
     const r = scenario(hours, start, holidaySet);
     return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
@@ -1170,6 +1187,10 @@ export default function WbsPlanning() {
       // group) to chain from.
       const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
       function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string): ChainEntry | null {
+        // Done tasks are historical -- Refresh dates should never push
+        // their Start to follow a predecessor's new End, same reasoning
+        // as the Done-lock in computeEntry above.
+        if (t.status === "Done") return computeEntry(t, mode);
         const depIds = dependsOnIdsFor(t.id);
         const isAuto = t[autoField] !== false;
         let overrideStart: string | undefined;
