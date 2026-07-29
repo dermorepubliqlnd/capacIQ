@@ -2012,33 +2012,55 @@ export default function WbsPlanning() {
                 </div>
               </div>
             )}
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(true, 150, !canEditWbs)}>
-                <InlineSelect
-                  value={MODE_LABEL[activeMode]}
-                  editable={canEditWbs}
-                  options={MODES.map((m) => MODE_LABEL[m])}
-                  onCommit={(label) => {
-                    const m = MODES.find((mm) => MODE_LABEL[mm] === label);
-                    if (m) setActiveMode(m);
-                  }}
-                />
+            <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
+                <div className="wbs-field-box" style={fieldBoxStyle(true, 150, !canEditWbs)}>
+                  <InlineSelect
+                    value={MODE_LABEL[activeMode]}
+                    editable={canEditWbs}
+                    options={MODES.map((m) => MODE_LABEL[m])}
+                    onCommit={(label) => {
+                      const m = MODES.find((mm) => MODE_LABEL[mm] === label);
+                      if (m) setActiveMode(m);
+                    }}
+                  />
+                </div>
+                <span
+                  title={
+                    project.scoping_effort_mode
+                      ? `Officially saved as ${MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}. Pick a mode here, then Save to change what's officially recorded and written onto every task.`
+                      : "Not saved yet -- pick a mode, then Save to record it as this project's official Scoping Effort and write its dates onto every task."
+                  }
+                  style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
+                >
+                  <Info size={13} style={{ color: "var(--muted)" }} />
+                </span>
+                {canEditWbs && (
+                  <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                )}
               </div>
-              <span
-                title={
-                  project.scoping_effort_mode
-                    ? `Officially saved as ${MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}. Pick a mode here, then Save to change what's officially recorded and written onto every task.`
-                    : "Not saved yet -- pick a mode, then Save to record it as this project's official Scoping Effort and write its dates onto every task."
-                }
-                style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
-              >
-                <Info size={13} style={{ color: "var(--muted)" }} />
-              </span>
-              {canEditWbs && (
-                <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
-                  {saving ? "Saving…" : "Save"}
-                </button>
+              {/* Sandra, 2026-07-29: "what indicator do I have to see the
+                  type of effort currently in place... if I switch to
+                  another I may tend to forget which one was the
+                  previous" -- the Info icon's hover tooltip already said
+                  this but was easy to miss since it's hover-only. This
+                  small always-visible line shows the officially SAVED
+                  mode at a glance, and turns into an explicit amber
+                  "unsaved" callout the moment the picker above no longer
+                  matches it. */}
+              {project.scoping_effort_mode && project.scoping_effort_mode !== activeMode ? (
+                <span style={{ fontSize: 11, color: "var(--warning-text)", fontWeight: 600 }}>
+                  Unsaved -- currently saved as {MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}
+                </span>
+              ) : project.scoping_effort_mode ? (
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  Saved as {MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Not saved yet</span>
               )}
             </div>
           </div>
