@@ -1831,13 +1831,31 @@ export default function Projects() {
     [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay]
   );
 
-  // Board-view card body: picks a handful of the same column render()
-  // functions Table view already uses (bold name, owner picker, priority
-  // pill, due date) so a card is editable exactly like a row is -- no
-  // separate card-editing UI to build or keep in sync.
+  // Board-view card body: a fixed shortlist (bold name, owner picker,
+  // priority pill, due date, progress bar) is laid out specially to match
+  // the original card design, using the same column render() functions
+  // Table view already uses so a card is editable exactly like a row is --
+  // no separate card-editing UI to build or keep in sync. Any OTHER
+  // property toggled visible via Properties (Status, Phase, Health, Est.
+  // hrs, Spent hrs, Hrs Variance, Category, Effort, WBS Status, etc.)
+  // previously had NO effect on the card at all -- the Properties popover
+  // showed it checked/"shown" but this function only ever read the
+  // hardcoded shortlist above, so toggling anything else on did nothing
+  // (Sandra, 2026-07-29: "all are tagged as shown but only a few property
+  // actually shows"). Fixed by rendering every remaining visible column
+  // (via the same visibleOrderedColumns() helper Timeline/Calendar already
+  // use for this) as a plain label/value row below the shortlist, in
+  // PROJECT_COLUMN_ORDER order. The property currently driving the
+  // Kanban grouping is skipped since its value is already the column the
+  // card sits in.
   function renderProjectCard(p: ProjectRow) {
     const hidden = projectViews.activeView.hiddenColumns;
     const find = (key: string) => projectColumns.find((c) => c.key === key);
+    const groupByKey = resolveBoardGroupBy(projectViews.activeView.groupBy, PROJECT_BOARD_GROUPABLE_KEYS, "phase");
+    const cardBuiltInKeys = ["name", "priority", "owner", "end_date", "actual_progress"];
+    const extraColumns = visibleOrderedColumns(projectColumns, projectViews.activeView).filter(
+      (c) => !cardBuiltInKeys.includes(c.key) && c.key !== groupByKey
+    );
     return (
       <>
         {!hidden.includes("name") && <div>{find("name")?.render(p)}</div>}
@@ -1847,6 +1865,12 @@ export default function Projects() {
         </div>
         {!hidden.includes("end_date") && <div>{find("end_date")?.render(p)}</div>}
         {!hidden.includes("actual_progress") && <div>{find("actual_progress")?.render(p)}</div>}
+        {extraColumns.map((c) => (
+          <div key={c.key} className="board-card-property">
+            <span className="board-card-property-label">{c.plainLabel ?? (typeof c.label === "string" ? c.label : c.key)}</span>
+            <span className="board-card-property-value">{c.render(p)}</span>
+          </div>
+        ))}
       </>
     );
   }
@@ -2511,9 +2535,22 @@ export default function Projects() {
   // belong on a compact card and threw off alignment with the rows below
   // it. A sub-task shows its parent's name as a small property instead
   // (Notion-style relation display) rather than an indent/connector icon.
+  //
+  // As with renderProjectCard above, everything past Name/Parent/Project/
+  // Assignee/Due date was previously invisible on the card no matter what
+  // Properties said was shown -- fixed the same way, by appending every
+  // other visible column (Status, Effort, Est. hrs, Spent hrs, Due Date
+  // Ext., Validated, etc.) as a plain label/value row, skipping whichever
+  // field currently drives the Kanban grouping (already shown as the
+  // column itself).
   function renderTaskCard(t: TaskWithDepth) {
     const hidden = taskViews.activeView.hiddenColumns;
     const find = (key: string) => taskColumns.find((c) => c.key === key);
+    const groupByKey = resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status");
+    const cardBuiltInKeys = ["name", "project", "assignee", "current_due_date"];
+    const extraColumns = visibleOrderedColumns(taskColumns, taskViews.activeView).filter(
+      (c) => !cardBuiltInKeys.includes(c.key) && c.key !== groupByKey
+    );
     return (
       <>
         {!hidden.includes("name") && (
@@ -2532,6 +2569,12 @@ export default function Projects() {
           {!hidden.includes("assignee") && find("assignee")?.render(t)}
         </div>
         {!hidden.includes("current_due_date") && <div>{find("current_due_date")?.render(t)}</div>}
+        {extraColumns.map((c) => (
+          <div key={c.key} className="board-card-property">
+            <span className="board-card-property-label">{c.plainLabel ?? (typeof c.label === "string" ? c.label : c.key)}</span>
+            <span className="board-card-property-value">{c.render(t)}</span>
+          </div>
+        ))}
       </>
     );
   }
