@@ -2064,7 +2064,14 @@ export default function WbsPlanning() {
               gridTemplateColumns: project.wbs_status === "draft" ? "1fr" : "1fr 1fr",
               gap: 12,
               marginBottom: 12,
-              alignItems: "start",
+              // Sandra, 2026-07-29: "align the overall variance box
+              // height with the timelines" -- was "start" (each card
+              // sized to its own content, so Overall Variance's shorter
+              // table left visible extra whitespace/mismatch next to
+              // the taller Effort Comparison card). "stretch" makes
+              // both grid cells -- and therefore both .card children --
+              // the same height as whichever is tallest.
+              alignItems: "stretch",
             }}
           >
           <div className="card" style={{ padding: 16, display: "flex", gap: 28, flexWrap: "wrap" }}>
@@ -2255,7 +2262,33 @@ export default function WbsPlanning() {
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+          {/* Sandra, 2026-07-29: "move the refresh dates button a bit
+              lower, aligned with the legends" -- was its own right-
+              aligned row above the legend; now shares one row with the
+              legend (legend left, button right) so they read as a
+              single control strip instead of two stacked ones. */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, marginBottom: 8, flexWrap: "wrap" }}>
+            {Object.keys(baselineTasksById).length > 0 ? (
+              // Design spec item 4/7 (Sandra, 2026-07-29): change-type
+              // legend for the Changes vs Baseline column below.
+              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 11, color: "var(--text-secondary)" }}>
+                {([
+                  ["task_added", "New"],
+                  ["hours_increased", "Increased"],
+                  ["hours_decreased", "Decreased"],
+                  ["date_changed", "Date changed"],
+                  ["dependency_changed", "Dependency changed"],
+                  ["assignee_changed", "Assignee changed"],
+                ] as const).map(([key, label]) => (
+                  <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: CHANGE_DOT_COLOR[key], flexShrink: 0 }} />
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <span />
+            )}
             <button
               onClick={refreshDates}
               title="Recompute Start dates for tasks that are still on auto-pilot (no dependency set, not manually overridden) based on the current row order -- useful after dragging a task into a new position."
@@ -2270,30 +2303,12 @@ export default function WbsPlanning() {
                 background: "var(--surface)",
                 color: "var(--text)",
                 cursor: "pointer",
+                flexShrink: 0,
               }}
             >
               <RefreshCw size={13} /> Refresh dates
             </button>
           </div>
-          {Object.keys(baselineTasksById).length > 0 && (
-            // Design spec item 4/7 (Sandra, 2026-07-29): change-type
-            // legend for the Changes column below -- vs Baseline V<n>.
-            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 8, fontSize: 11, color: "var(--text-secondary)" }}>
-              {([
-                ["task_added", "New"],
-                ["hours_increased", "Increased"],
-                ["hours_decreased", "Decreased"],
-                ["date_changed", "Date changed"],
-                ["dependency_changed", "Dependency changed"],
-                ["assignee_changed", "Assignee changed"],
-              ] as const).map(([key, label]) => (
-                <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: CHANGE_DOT_COLOR[key], flexShrink: 0 }} />
-                  {label}
-                </span>
-              ))}
-            </div>
-          )}
           <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
@@ -2317,11 +2332,8 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 150 }}>
                     Depends on
                   </th>
-                  <th rowSpan={2} style={{ width: 110 }} title="vs the active Baseline">
+                  <th rowSpan={2} style={{ width: 190 }} title="vs the active Baseline">
                     Changes vs Baseline
-                  </th>
-                  <th rowSpan={2} style={{ width: 160 }}>
-                    Notes
                   </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
                     Full Effort
@@ -2342,7 +2354,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={15} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={14} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -2530,26 +2542,25 @@ export default function WbsPlanning() {
                       </td>
                       <td>
                         {(() => {
+                          // Sandra, 2026-07-29: "omit the notes column and
+                          // just put the values in the changes vs baseline,
+                          // following the legend colors in the text" --
+                          // merged the old dot-only Changes column and the
+                          // separate Notes column into one: each note now
+                          // renders as text colored by its own change kind
+                          // (same CHANGE_DOT_COLOR palette as the legend),
+                          // instead of a row of plain dots plus a second
+                          // column repeating the same info as gray text.
                           if (Object.keys(baselineTasksById).length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
-                          const { kinds } = taskBaselineDiff(t, isParent);
+                          const { kinds, notes } = taskBaselineDiff(t, isParent);
                           if (kinds.length === 0) return <span style={{ color: "var(--muted)" }}>No change</span>;
                           return (
-                            <span style={{ display: "inline-flex", gap: 3 }} title={kinds.map((k) => k.replace(/_/g, " ")).join(", ")}>
-                              {kinds.map((k) => (
-                                <span key={k} style={{ width: 7, height: 7, borderRadius: "50%", background: CHANGE_DOT_COLOR[k], flexShrink: 0 }} />
+                            <span style={{ display: "inline-flex", gap: 8, flexWrap: "wrap" }}>
+                              {kinds.map((k, i) => (
+                                <span key={`${k}-${i}`} style={{ fontSize: 11.5, fontWeight: 600, color: CHANGE_DOT_COLOR[k] }} title={k.replace(/_/g, " ")}>
+                                  {notes[i]}
+                                </span>
                               ))}
-                            </span>
-                          );
-                        })()}
-                      </td>
-                      <td>
-                        {(() => {
-                          if (Object.keys(baselineTasksById).length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
-                          const { isNew, notes } = taskBaselineDiff(t, isParent);
-                          if (notes.length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
-                          return (
-                            <span style={{ fontSize: 11.5, color: isNew ? "#3f9d6e" : "var(--text-secondary)", fontWeight: isNew ? 600 : 400 }}>
-                              {isNew ? "NEW" : notes.join(", ")}
                             </span>
                           );
                         })()}
@@ -2561,7 +2572,7 @@ export default function WbsPlanning() {
                 })}
                 {canEditWbs && (
                   <tr>
-                    <td colSpan={15} className="add-row-cell">
+                    <td colSpan={14} className="add-row-cell">
                       <div className="add-row-trigger" onClick={addTopLevelTask}>
                         <Plus size={12} />
                         New task
