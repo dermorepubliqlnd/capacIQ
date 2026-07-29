@@ -2108,13 +2108,16 @@ export default function Projects() {
                 {/* Bold marks a parent task; sub-tasks render at normal
                     weight so the hierarchy reads visually, not just via
                     indentation + the connector glyph. */}
-                <InlineText value={t.name} editable={canEditTask(t)} bold={t._depth === 0} onCommit={(v) => updateTask(t.id, { name: v })} />
+                {/* Sandra, 2026-07-29: the main Projects & Tasks page is now
+                    read-only for structural fields -- Name, Project,
+                    Assignee, Effort, Start, Due, Est. hrs can only be
+                    changed from WBS Planning. This page's own task list
+                    only allows Status, Time Tracking, Due Date
+                    Ext.(request), and Validated. The old inline "add
+                    sub-task" plus button is removed for the same reason
+                    -- structural additions belong in WBS Planning. */}
+                <InlineText value={t.name} editable={false} bold={t._depth === 0} onCommit={(v) => updateTask(t.id, { name: v })} />
               </div>
-              {t._depth === 0 && canManageTasksIn(t.project_id) && (
-                <button className="add-subtask-btn" onClick={() => addSubtask(t)} title="Add sub-task">
-                  <Plus size={16} />
-                </button>
-              )}
             </div>
           );
         },
@@ -2127,7 +2130,7 @@ export default function Projects() {
         render: (t) => (
           <InlineSelect
             value={projectName(t.project_id)}
-            editable={canEditTask(t)}
+            editable={false}
             options={projects.map((p) => p.name)}
             onCommit={(v) => {
               const proj = projects.find((p) => p.name === v);
@@ -2144,7 +2147,7 @@ export default function Projects() {
         render: (t) => (
           <InlineSelect
             value={t.assignee_id ? ownerName(t.assignee_id) : ""}
-            editable={canEditTask(t) && !isTaskLocked(t)}
+            editable={false}
             allowEmpty
             emptyLabel="— none —"
             options={people.map((x) => x.name)}
@@ -2198,7 +2201,7 @@ export default function Projects() {
           return (
             <InlineSelect
               value={t.effort ?? ""}
-              editable={canEditTask(t) && !isTaskLocked(t)}
+              editable={false}
               allowEmpty
               options={TASK_EFFORT_OPTIONS}
               renderReadOnly={() =>
@@ -2227,7 +2230,7 @@ export default function Projects() {
             <span title={computed ? "Computed from this task's own sub-tasks (earliest sub-task start)" : undefined}>
               <InlineDate
                 value={t.start_date}
-                editable={!isParent && canEditTask(t) && !isTaskLocked(t)}
+                editable={false}
                 onCommit={(v) => {
                   if (v && t.current_due_date && v > t.current_due_date) {
                     alert("Start date can't be after the due date.");
@@ -2283,7 +2286,7 @@ export default function Projects() {
             <span title={computed ? "Computed from this task's own sub-tasks (latest sub-task due date)" : undefined}>
               <InlineDate
                 value={t.current_due_date}
-                editable={!isParent && !locked && canEditTask(t) && !isTaskLocked(t)}
+                editable={false}
                 onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
               />
             </span>
@@ -2395,7 +2398,7 @@ export default function Projects() {
             <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
               <InlineNumber
                 value={t.estimated_hours}
-                editable={!isParent && canEditTask(t) && !isTaskLocked(t)}
+                editable={false}
                 onCommit={(v) => updateTask(t.id, { estimated_hours: v })}
               />
             </span>
@@ -2515,7 +2518,7 @@ export default function Projects() {
       <>
         {!hidden.includes("name") && (
           <div style={{ minWidth: 0 }}>
-            <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+            <InlineText value={t.name} editable={false} bold onCommit={(v) => updateTask(t.id, { name: v })} />
           </div>
         )}
         {t.parent_task_id && (
@@ -2659,10 +2662,12 @@ export default function Projects() {
   }
 
   function getTaskBoardMoveHandler(groupBy: string): ((t: TaskWithDepth, newValue: string) => void) | undefined {
-    if (groupBy === "assignee") return (t, v) => updateTask(t.id, { assignee_id: v || null });
-    if (groupBy === "effort") return (t, v) => updateTask(t.id, { effort: v || null });
+    // Sandra, 2026-07-29: this page only allows Status/Time/Extension/
+    // Validation actions now -- dragging a card between Assignee or
+    // Effort board columns used to silently reassign/re-score the task,
+    // which is a structural edit that now belongs in WBS Planning only.
     if (groupBy === "status") return (t, v) => updateTask(t.id, { status: v || null });
-    return undefined; // project, timing, due_date_ext: read-only board
+    return undefined; // assignee, effort, project, timing, due_date_ext: read-only board
   }
 
   // Labels here match each column's own header text exactly (e.g. "Task"
@@ -3227,19 +3232,11 @@ export default function Projects() {
               Clear
             </button>
             <div className="bulk-bar-actions">
+              {/* Sandra, 2026-07-29: bulk Assignee reassignment and bulk
+                  Delete are structural edits, same reasoning as the
+                  per-row changes above -- only Status stays as a bulk
+                  action on this page now. */}
               <FieldPickerButton label="Status" options={TASK_STATUS_OPTIONS} onPick={(v) => bulkUpdateTasks({ status: v || null })} />
-              <FieldPickerButton
-                label="Assignee"
-                options={people.map((x) => x.name)}
-                onPick={(v) => {
-                  const person = people.find((x) => x.name === v);
-                  bulkUpdateTasks({ assignee_id: person?.id ?? null });
-                }}
-              />
-              <button className="bulk-bar-delete" onClick={bulkDeleteTasks}>
-                <Trash2 size={12} />
-                Delete
-              </button>
             </div>
           </div>
         )}
@@ -3256,14 +3253,8 @@ export default function Projects() {
               hiddenColumns={taskViews.activeView.hiddenGroups}
               renderCard={renderTaskCard}
               onMoveCard={getTaskBoardMoveHandler(resolveBoardGroupBy(taskViews.activeView.groupBy, TASK_BOARD_GROUPABLE_KEYS, "status"))}
-              onReorderCard={reorderTasks}
             />
-            {canCreateTask && (
-              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
-                <Plus size={12} />
-                New task
-              </div>
-            )}
+
           </>
         ) : taskViews.activeView.viewType === "timeline" ? (
           <>
@@ -3285,12 +3276,7 @@ export default function Projects() {
               labelWidth={taskViews.activeView.timelineLabelWidth ?? 460}
               onLabelWidthChange={(timelineLabelWidth) => taskViews.updateActiveView({ timelineLabelWidth })}
             />
-            {canCreateTask && (
-              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
-                <Plus size={12} />
-                New task
-              </div>
-            )}
+
           </>
         ) : taskViews.activeView.viewType === "calendar" ? (
           <>
@@ -3298,7 +3284,7 @@ export default function Projects() {
               rows={sortRowsHierarchical(filteredVisibleTasks, taskViews.activeView.sorts, taskSortOptions, (t) => t.id, (t) => t.parent_task_id)}
               rowKey={(t) => t.id}
               renderLabel={(t) => (
-                <InlineText value={t.name} editable={canEditTask(t)} bold onCommit={(v) => updateTask(t.id, { name: v })} />
+                <InlineText value={t.name} editable={false} bold onCommit={(v) => updateTask(t.id, { name: v })} />
               )}
               getParentLabel={(t) => (t.parent_task_id ? tasks.find((pt) => pt.id === t.parent_task_id)?.name ?? null : null)}
               getProjectLabel={(t) => projectName(t.project_id)}
@@ -3313,12 +3299,7 @@ export default function Projects() {
               propertyColumns={taskCalendarPropertyColumns}
               isNonWorkingDay={(d) => !isWorkingDay(d, holidayDates)}
             />
-            {canCreateTask && (
-              <div className="add-row-trigger" style={{ margin: "0 12px 12px" }} onClick={() => createBlankTask(projects[0]?.id ?? "")}>
-                <Plus size={12} />
-                New task
-              </div>
-            )}
+
           </>
         ) : (
           <div className="data-table-dense">
@@ -3337,39 +3318,12 @@ export default function Projects() {
               selectedKeys={selectedTaskIds}
               onToggleSelect={(key) => setSelectedTaskIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
               onToggleSelectAll={toggleTaskSelectAll}
-              orderable
-              onReorder={reorderTasks}
-              footerRow={
-                canCreateTask && taskViews.activeView.groupBy !== "project"
-                  ? (colSpan) => (
-                      <td colSpan={colSpan} className="add-row-cell">
-                        <div className="add-row-trigger" onClick={() => createBlankTask(projects[0]?.id ?? "")}>
-                          <Plus size={12} />
-                          New task
-                        </div>
-                      </td>
-                    )
-                  : undefined
-              }
-              groupFooterRow={
-                taskViews.activeView.groupBy === "project"
-                  ? (colSpan, group) => {
-                      // Empty groups (a project with no tasks yet) have no
-                      // rows to read project_id off of -- fall back to
-                      // matching the group's name against the projects list.
-                      const projectId = group.rows[0]?.project_id ?? projects.find((p) => p.name === group.key)?.id;
-                      if (!projectId || !canManageTasksIn(projectId)) return null;
-                      return (
-                        <td colSpan={colSpan} className="add-row-cell">
-                          <div className="add-row-trigger" onClick={() => createBlankTask(projectId)}>
-                            <Plus size={12} />
-                            New task
-                          </div>
-                        </td>
-                      );
-                    }
-                  : undefined
-              }
+              // Sandra, 2026-07-29: task creation, reordering, and the
+              // "+ New task" row/group-footer trigger are removed from
+              // this page -- structural changes (adding, ordering,
+              // renaming tasks) now happen in WBS Planning only. This
+              // table stays for Status/Time Tracking/Due Date Ext./
+              // Validated actions.
             />
           </div>
         )}
