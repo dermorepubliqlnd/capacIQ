@@ -13,6 +13,12 @@ export interface Person {
   auth_user_id: string;
   color: string | null;
   can_approve_closures: boolean;
+  // Sandra, 2026-07-29: authorization flags for two future approval
+  // workflows (reopening a Closed project, re-baselining) -- same flat,
+  // non-tiered pattern as can_approve_closures above. Not wired to any
+  // actual gating logic yet, just settable from User Management.
+  can_approve_reopening: boolean;
+  can_approve_rebaseline: boolean;
 }
 
 // Tracks the current Supabase Auth session and the matching `people` row

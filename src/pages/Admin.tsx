@@ -130,6 +130,22 @@ export default function Admin() {
     loadPeople();
   }
 
+  // Sandra, 2026-07-29: "add in user management who has authorization to
+  // approve reopening of projects and re-baselining -- no tiering yet."
+  // Flat authorization toggles, same pattern as can_approve_closures --
+  // not wired to any actual approval workflow yet (reopening a closed
+  // project doesn't exist as a feature yet; re-baselining exists but
+  // isn't gated by this flag yet either), just settable here so the
+  // designation exists ahead of that work.
+  async function toggleApprovalFlag(p: Person, field: "can_approve_reopening" | "can_approve_rebaseline", value: boolean) {
+    setPeople((prev) => prev.map((x) => (x.id === p.id ? { ...x, [field]: value } : x)));
+    const { error } = await supabase.from("people").update({ [field]: value }).eq("id", p.id);
+    if (error) {
+      window.alert(`Couldn't save: ${error.message}`);
+      loadPeople();
+    }
+  }
+
   // Per-person color for the WBS Gantt chart's assignee-based bar
   // coloring (Sandra, 2026-07-24) -- stored as a nullable hex string;
   // `null` means "use the deterministic default," not "no color."
@@ -260,6 +276,9 @@ export default function Admin() {
               <th>Access</th>
               <th>Reports to</th>
               <th>Capacity/day</th>
+              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project and re-baselining aren't wired to these yet, this is just the designation ahead of that.">
+                Approvals
+              </th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -267,12 +286,12 @@ export default function Admin() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={8} style={{ color: "var(--muted)" }}>Loading…</td>
+                <td colSpan={9} style={{ color: "var(--muted)" }}>Loading…</td>
               </tr>
             )}
             {!loading && people.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ color: "var(--muted)" }}>No one yet.</td>
+                <td colSpan={9} style={{ color: "var(--muted)" }}>No one yet.</td>
               </tr>
             )}
             {people.map((p) => {
@@ -364,6 +383,26 @@ export default function Admin() {
                     ) : (
                       p.daily_capacity_hours
                     )}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={p.can_approve_reopening}
+                          onChange={(e) => toggleApprovalFlag(p, "can_approve_reopening", e.target.checked)}
+                        />
+                        Reopen projects
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={p.can_approve_rebaseline}
+                          onChange={(e) => toggleApprovalFlag(p, "can_approve_rebaseline", e.target.checked)}
+                        />
+                        Re-baseline
+                      </label>
+                    </div>
                   </td>
                   <td>
                     <span className={`status-pill ${p.is_active ? "success" : "neutral"}`}>
