@@ -97,6 +97,23 @@ interface RevisionRow {
   status: "in_progress" | "applied" | "discarded";
   started_at: string;
 }
+// Design spec item 4 (Sandra, 2026-07-29 follow-up, per her reference
+// mockup): the task list's Changes/Notes columns compare CURRENT live
+// tasks directly against the active Baseline V<n> snapshot -- not the
+// latest-applied-revision log (that's still used for the Revision
+// Summary panel/legend). project_baseline_tasks already captures
+// everything needed for this (parent_task_id/assignee_name/effort/
+// depends_on/start+end dates both modes -- confirmed via
+// supabase/phase1_migration.sql's ALTER TABLE additions), so no schema
+// change was needed.
+interface BaselineTaskFull {
+  task_id: string;
+  estimated_hours: number | null;
+  assignee_name: string | null;
+  depends_on: string[] | null;
+  end_date_full: string | null;
+  end_date_standard: string | null;
+}
 interface RevisionChangeRow {
   id: string;
   task_id: string;
@@ -249,7 +266,6 @@ export default function WbsPlanning() {
   // against, e.g. after a re-baseline event.
   const [activeBaseline, setActiveBaseline] = useState<ActiveBaselineRow | null>(null);
   const [workflowBusy, setWorkflowBusy] = useState(false);
-  const [showRevisionHistory, setShowRevisionHistory] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<RevisionRow[]>([]);
   const [revisionChangesById, setRevisionChangesById] = useState<Record<string, RevisionChangeRow[]>>({});
   const [expandedRevisionId, setExpandedRevisionId] = useState<string | null>(null);
@@ -260,6 +276,7 @@ export default function WbsPlanning() {
   // per-revision project_revision_changes diff, latest revision only --
   // not new per-field diff-scoring against the original baseline).
   const [latestRevisionChanges, setLatestRevisionChanges] = useState<RevisionChangeRow[]>([]);
+  const [baselineTasksById, setBaselineTasksById] = useState<Record<string, BaselineTaskFull>>({});
 
   async function loadAll() {
     if (!projectId) return;
@@ -323,7 +340,15 @@ export default function WbsPlanning() {
     setActiveRevision((revRow as RevisionRow) ?? null);
     setPendingClosure((closureRow as ClosureRequestRow) ?? null);
     setActiveBaseline((baselineRow as ActiveBaselineRow) ?? null);
-    if (baselineRow) loadLatestRevisionChanges();
+    if (baselineRow) {
+      loadLatestRevisionChanges();
+      loadBaselineTaskSnapshot();
+    }
+    // Design spec item 6 follow-up (Sandra, 2026-07-29): Revision Summary
+    // + Revision History now live permanently in the right rail instead
+    // of behind an Actions-menu toggle, so this loads unconditionally
+    // (cheap -- just an empty list on a Draft project with no revisions).
+    loadRevisionHistory();
 
     setLoading(false);
   }
@@ -343,6 +368,34 @@ export default function WbsPlanning() {
   // baseline-vs-current computation. Empty on Draft (no revisions yet)
   // and while a revision is still in_progress (nothing "latest and
   // applied" to show notes for until it's applied).
+  // Design spec item 4 follow-up: full per-task snapshot of the ACTIVE
+  // baseline, keyed by task_id -- feeds the task list's Changes/Notes
+  // columns (current vs Baseline V<n>), separate from
+  // loadLatestRevisionChanges() above (which only covers the latest
+  // applied revision, used for the Revision Summary panel).
+  async function loadBaselineTaskSnapshot() {
+    if (!projectId) return;
+    const { data: activeBl } = await supabase
+      .from("project_baselines")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (!activeBl) {
+      setBaselineTasksById({});
+      return;
+    }
+    const { data } = await supabase
+      .from("project_baseline_tasks")
+      .select("task_id,estimated_hours,assignee_name,depends_on,end_date_full,end_date_standard")
+      .eq("baseline_id", (activeBl as { id: string }).id);
+    const byId: Record<string, BaselineTaskFull> = {};
+    for (const row of (data as BaselineTaskFull[]) ?? []) {
+      byId[row.task_id] = row;
+    }
+    setBaselineTasksById(byId);
+  }
+
   async function loadLatestRevisionChanges() {
     if (!projectId) return;
     const { data: latestRev } = await supabase
@@ -1307,12 +1360,6 @@ export default function WbsPlanning() {
   // project_revision_changes CHECK constraint (phase1_migration.sql):
   // task_added/task_removed/hours_changed/date_changed/
   // dependency_changed/assignee_changed.
-  const changesByTaskId = new Map<string, RevisionChangeRow[]>();
-  for (const c of latestRevisionChanges) {
-    const list = changesByTaskId.get(c.task_id) ?? [];
-    list.push(c);
-    changesByTaskId.set(c.task_id, list);
-  }
   const CHANGE_DOT_COLOR: Record<string, string> = {
     task_added: "#3f9d6e",
     hours_increased: "#3f9d6e",
@@ -1333,25 +1380,59 @@ export default function WbsPlanning() {
     if (c.change_type === "assignee_changed") return "assignee_changed";
     return null;
   }
-  function taskChangeNote(c: RevisionChangeRow): string {
-    switch (c.change_type) {
-      case "task_added":
-        return "New task";
-      case "hours_changed": {
-        const prev = Number(c.previous_value ?? 0);
-        const next = Number(c.new_value ?? 0);
-        return next > prev ? "Increase in estimate" : "Decrease in estimate";
-      }
-      case "date_changed":
-        return "Date changed";
-      case "dependency_changed":
-        return "Dependency changed";
-      case "assignee_changed":
-        return "Assignee changed";
-      default:
-        return "Changed";
+  // Design spec item 4 (Sandra, 2026-07-29 follow-up): per-task diff
+  // against the active Baseline V<n> snapshot -- this is what actually
+  // drives the task list's Changes/Notes columns now (see her reference
+  // mockup screenshot: "Changes vs Baseline V1" + a Notes column, NOT the
+  // latest-revision log). Reuses the same CHANGE_DOT_COLOR palette/legend
+  // as the revision-log-based Revision Summary panel below for visual
+  // consistency, even though the two now read from different sources.
+  function taskBaselineDiff(t: TaskRow & { depth: number }, isParent: boolean): { isNew: boolean; kinds: (keyof typeof CHANGE_DOT_COLOR)[]; notes: string[] } {
+    const baseline = baselineTasksById[t.id];
+    if (!baseline) {
+      return { isNew: true, kinds: ["task_added"], notes: ["New task"] };
     }
+    const kinds: (keyof typeof CHANGE_DOT_COLOR)[] = [];
+    const notes: string[] = [];
+
+    if (!isParent) {
+      const currentHours = t.estimated_hours ?? 0;
+      const baseHours = baseline.estimated_hours ?? 0;
+      if (currentHours !== baseHours) {
+        const delta = currentHours - baseHours;
+        if (delta > 0) {
+          kinds.push("hours_increased");
+          notes.push(`+${delta}h`);
+        } else {
+          kinds.push("hours_decreased");
+          notes.push(`${delta}h`);
+        }
+      }
+    }
+
+    const currentEnd = chainByMode.full_capacity.get(t.id)?.end;
+    if (currentEnd && baseline.end_date_full && currentEnd !== baseline.end_date_full) {
+      const deltaDays = Math.round((parseLocalDate(currentEnd).getTime() - parseLocalDate(baseline.end_date_full).getTime()) / 86400000);
+      kinds.push("date_changed");
+      notes.push(`${deltaDays > 0 ? "+" : ""}${deltaDays}d`);
+    }
+
+    const currentAssigneeName = people.find((p) => p.id === t.assignee_id)?.name ?? null;
+    if ((currentAssigneeName ?? null) !== (baseline.assignee_name ?? null)) {
+      kinds.push("assignee_changed");
+      notes.push("Assignee changed");
+    }
+
+    const currentDeps = [...dependsOnIdsFor(t.id)].sort();
+    const baseDeps = [...(baseline.depends_on ?? [])].sort();
+    if (JSON.stringify(currentDeps) !== JSON.stringify(baseDeps)) {
+      kinds.push("dependency_changed");
+      notes.push("Dependency changed");
+    }
+
+    return { isNew: false, kinds, notes };
   }
+
   const revisionSummary = {
     tasksAdded: latestRevisionChanges.filter((c) => c.change_type === "task_added").length,
     tasksRemoved: latestRevisionChanges.filter((c) => c.change_type === "task_removed").length,
@@ -1365,8 +1446,14 @@ export default function WbsPlanning() {
       .reduce((sum, c) => sum + (Number(c.new_value ?? 0) - Number(c.previous_value ?? 0)), 0),
   };
 
+  // Design spec item 3 (Sandra, 2026-07-29 follow-up): the task list's
+  // Full Effort/Conservative Effort column tint now follows utilPreviewMode
+  // (the toggle inside the Utilization snapshot section) instead of
+  // activeMode (the Scoping Effort/Save selector) -- so the two stay
+  // visually linked without duplicating the control itself, per the
+  // original design spec item 3.
   function modeColStyle(m: Mode): CSSProperties {
-    return m === activeMode ? { background: "#eaf1fb" } : {};
+    return m === utilPreviewMode ? { background: "#eaf1fb" } : {};
   }
 
   // A visible box around the header's editable fields (Project name,
@@ -1678,15 +1765,25 @@ export default function WbsPlanning() {
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Round 2 of the WBS UI redesign (Sandra, 2026-07-29): the
-              header's button row used to grow to 5-6 buttons across the
-              locked/revision states. Now it's at most a primary CTA (the
-              one action that actually moves the workflow forward for the
-              current status) plus one "Actions" dropdown holding the rest
-              (Revision History/Compare with Baseline always, Start
-              Revision/Re-baseline while eligible). Discard/Apply Revision
-              stay as direct buttons during an active revision -- it's a
-              short, focused 2-button decision, not worth burying in a menu. */}
+          {/* Round 2 of the WBS UI redesign (Sandra, 2026-07-29), reordered
+              per her 2026-07-29 follow-up (Actions menu before the primary
+              CTA, matching her reference mockup's left-to-right order):
+              Actions dropdown first (Start Revision/Re-baseline while
+              eligible), then the single primary CTA (Lock Baseline / Close
+              Project / Apply Revision, whichever applies) rightmost.
+              Discard/Apply Revision stay as direct buttons during an
+              active revision -- short, focused 2-button decision, not
+              worth burying in a menu. */}
+          <ActionsMenu
+            items={[
+              ...(canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline")
+                ? [
+                    { label: "Start Revision", onClick: handleStartRevision, disabled: workflowBusy },
+                    { label: "Re-baseline", onClick: handleRebaseline, disabled: workflowBusy },
+                  ]
+                : []),
+            ]}
+          />
           {canManageWbs && project.wbs_status === "draft" && (
             <button className="btn-primary" disabled={workflowBusy} onClick={handleLockBaseline}>
               Lock Baseline
@@ -1715,23 +1812,6 @@ export default function WbsPlanning() {
                 Close Project
               </button>
             )}
-          <ActionsMenu
-            items={[
-              ...(canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline")
-                ? [
-                    { label: "Start Revision", onClick: handleStartRevision, disabled: workflowBusy },
-                    { label: "Re-baseline", onClick: handleRebaseline, disabled: workflowBusy },
-                  ]
-                : []),
-              {
-                label: "Revision History",
-                onClick: () => {
-                  setShowRevisionHistory((v) => !v);
-                  if (!showRevisionHistory) loadRevisionHistory();
-                },
-              },
-            ]}
-          />
         </div>
       </div>
 
@@ -1755,68 +1835,6 @@ export default function WbsPlanning() {
         </div>
       )}
 
-      {showRevisionHistory && (
-        <div className="card" style={{ padding: 14, marginBottom: 10 }}>
-          {/* Design spec item 6 (Sandra, 2026-07-29): Revision Summary --
-              aggregate counts from the latest applied revision only (same
-              data source as the task list's Changes/Notes columns, per
-              decision #2 in [[project_capaciq_wbs_ui_redesign_plan]]:
-              full per-field diff-depth across every revision stays
-              deferred, this is the latest-revision aggregate). */}
-          {latestRevisionChanges.length > 0 && (
-            <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
-              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision Summary</strong>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 8, fontSize: 11.5 }}>
-                <span><strong>{revisionSummary.tasksAdded}</strong> task(s) added</span>
-                <span><strong>{revisionSummary.tasksRemoved}</strong> task(s) removed</span>
-                <span>
-                  <strong>
-                    {revisionSummary.totalAddedHours > 0 ? "+" : ""}
-                    {revisionSummary.totalAddedHours}h
-                  </strong>{" "}
-                  total effort change
-                </span>
-                <span><strong>{revisionSummary.hoursIncreased}</strong> estimate(s) increased</span>
-                <span><strong>{revisionSummary.hoursDecreased}</strong> estimate(s) decreased</span>
-                <span><strong>{revisionSummary.datesChanged}</strong> date(s) changed</span>
-                <span><strong>{revisionSummary.dependenciesChanged}</strong> dependenc{revisionSummary.dependenciesChanged === 1 ? "y" : "ies"} changed</span>
-                <span><strong>{revisionSummary.assigneesChanged}</strong> assignee(s) changed</span>
-              </div>
-            </div>
-          )}
-          <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
-          {revisionHistory.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No revisions yet.</div>
-          ) : (
-            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              {revisionHistory.map((r) => (
-                <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => toggleRevisionExpand(r.id)}>
-                    <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
-                    <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.status} · {formatDate(r.started_at.slice(0, 10))}</span>
-                    <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{r.reason}</span>
-                  </div>
-                  {expandedRevisionId === r.id && (
-                    <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--muted)" }}>
-                      {(revisionChangesById[r.id] ?? []).length === 0 ? (
-                        <div>No changes recorded (applied with no diff, or still in progress).</div>
-                      ) : (
-                        (revisionChangesById[r.id] ?? []).map((c) => (
-                          <div key={c.id} style={{ padding: "2px 0" }}>
-                            <strong>{c.task_name}</strong> — {c.change_type}
-                            {c.field ? ` (${c.field})` : ""}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Sandra, 2026-07-29: previously this whole section (fields, effort
           summary, task table, Gantt, Utilization) only rendered when NOT
           locked -- a locked/closed project showed nothing but a one-line
@@ -1829,14 +1847,16 @@ export default function WbsPlanning() {
           Revision in progress -- editing is unlocked. Use Apply Revision above when done, or Discard Revision to undo everything back to before this revision started.
         </div>
       )}
-      {!canEditWbs && (
-        <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
-          {project.wbs_status === "closed"
-            ? "This project is closed. Final Scope is locked and cannot be reopened -- shown below read-only."
-            : "This project's baseline is locked -- shown below read-only. Start a Revision above to make changes."}
-        </div>
-      )}
-      <>
+      {/* Sandra, 2026-07-29: removed the separate locked/closed message
+          card that used to sit here -- redundant with the top status
+          banner's own colored bg + hint text right above it. */}
+      {/* Design spec item 6 follow-up (Sandra, 2026-07-29): Revision
+          Summary + Revision History now live in a genuine right rail
+          alongside the main content (not a full-width toggle panel like
+          before), matching her reference mockup. Main content is the
+          flex:1 left column; the rail is a fixed-width sibling. */}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
@@ -2172,9 +2192,9 @@ export default function WbsPlanning() {
               <RefreshCw size={13} /> Refresh dates
             </button>
           </div>
-          {latestRevisionChanges.length > 0 && (
-            // Design spec item 7 (Sandra, 2026-07-29): change-type legend
-            // for the new Changes column below.
+          {Object.keys(baselineTasksById).length > 0 && (
+            // Design spec item 4/7 (Sandra, 2026-07-29): change-type
+            // legend for the Changes column below -- vs Baseline V<n>.
             <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 8, fontSize: 11, color: "var(--text-secondary)" }}>
               {([
                 ["task_added", "New"],
@@ -2211,8 +2231,8 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 150 }}>
                     Depends on
                   </th>
-                  <th rowSpan={2} style={{ width: 90 }}>
-                    Changes
+                  <th rowSpan={2} style={{ width: 110 }} title="vs the active Baseline">
+                    Changes vs Baseline
                   </th>
                   <th rowSpan={2} style={{ width: 160 }}>
                     Notes
@@ -2408,9 +2428,9 @@ export default function WbsPlanning() {
                       </td>
                       <td>
                         {(() => {
-                          const changes = changesByTaskId.get(t.id) ?? [];
-                          const kinds = Array.from(new Set(changes.map(taskChangeKind).filter((k): k is keyof typeof CHANGE_DOT_COLOR => !!k)));
-                          if (kinds.length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
+                          if (Object.keys(baselineTasksById).length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
+                          const { kinds } = taskBaselineDiff(t, isParent);
+                          if (kinds.length === 0) return <span style={{ color: "var(--muted)" }}>No change</span>;
                           return (
                             <span style={{ display: "inline-flex", gap: 3 }} title={kinds.map((k) => k.replace(/_/g, " ")).join(", ")}>
                               {kinds.map((k) => (
@@ -2422,11 +2442,13 @@ export default function WbsPlanning() {
                       </td>
                       <td>
                         {(() => {
-                          const changes = changesByTaskId.get(t.id) ?? [];
-                          if (changes.length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
-                          const notes = Array.from(new Set(changes.map(taskChangeNote)));
+                          if (Object.keys(baselineTasksById).length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
+                          const { isNew, notes } = taskBaselineDiff(t, isParent);
+                          if (notes.length === 0) return <span style={{ color: "var(--muted)" }}>—</span>;
                           return (
-                            <span style={{ fontSize: 11.5, color: "var(--text-secondary)" }}>{notes.join(", ")}</span>
+                            <span style={{ fontSize: 11.5, color: isNew ? "#3f9d6e" : "var(--text-secondary)", fontWeight: isNew ? 600 : 400 }}>
+                              {isNew ? "NEW" : notes.join(", ")}
+                            </span>
                           );
                         })()}
                       </td>
@@ -2618,8 +2640,72 @@ export default function WbsPlanning() {
               </div>
             );
           })}
+        </div>
 
-        </>
+        {project.wbs_status !== "draft" && (
+          <div style={{ width: 300, flexShrink: 0 }}>
+            <div className="card" style={{ padding: 14 }}>
+              {latestRevisionChanges.length > 0 && (
+                <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
+                  <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision Summary</strong>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, fontSize: 11.5 }}>
+                    <span><strong>{revisionSummary.tasksAdded}</strong> task(s) added</span>
+                    <span><strong>{revisionSummary.tasksRemoved}</strong> task(s) removed</span>
+                    <span>
+                      <strong>
+                        {revisionSummary.totalAddedHours > 0 ? "+" : ""}
+                        {revisionSummary.totalAddedHours}h
+                      </strong>{" "}
+                      total effort change
+                    </span>
+                    <span><strong>{revisionSummary.hoursIncreased}</strong> estimate(s) increased</span>
+                    <span><strong>{revisionSummary.hoursDecreased}</strong> estimate(s) decreased</span>
+                    <span><strong>{revisionSummary.datesChanged}</strong> date(s) changed</span>
+                    <span><strong>{revisionSummary.dependenciesChanged}</strong> dependenc{revisionSummary.dependenciesChanged === 1 ? "y" : "ies"} changed</span>
+                    <span><strong>{revisionSummary.assigneesChanged}</strong> assignee(s) changed</span>
+                  </div>
+                </div>
+              )}
+              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
+              {revisionHistory.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No revisions yet.</div>
+              ) : (
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {revisionHistory.map((r) => (
+                    <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleRevisionExpand(r.id)}>
+                        <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
+                        <span style={{ fontSize: 11, color: "var(--muted)" }}>{r.status} · {formatDate(r.started_at.slice(0, 10))}</span>
+                      </div>
+                      {expandedRevisionId === r.id && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
+                          {(revisionChangesById[r.id] ?? []).length === 0 ? (
+                            <div>No changes recorded (applied with no diff, or still in progress).</div>
+                          ) : (
+                            (revisionChangesById[r.id] ?? []).map((c) => (
+                              <div key={c.id} style={{ padding: "2px 0" }}>
+                                <strong>{c.task_name}</strong> — {c.change_type}
+                                {c.field ? ` (${c.field})` : ""}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                className="btn-secondary"
+                style={{ width: "100%", marginTop: 12 }}
+                onClick={() => navigate(`/projects/${project.id}/audit-trail`)}
+              >
+                View Full Audit Trail
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Design spec item 8 (Sandra, 2026-07-29): bottom status bar --
           mirrors the top banner's status chip but adds forward-looking
