@@ -224,6 +224,15 @@ export interface TableView {
   filterAssignedToMe?: boolean;
   filterPersonIds?: string[];
   filterStatuses?: string[];
+  // Board-only: whether each property row on a Kanban card shows its
+  // field label (e.g. "Phase" / "Health") alongside the value, or just
+  // the bare value. Optional/fallback-safe for the same reason as
+  // progressDisplay/timelineScale above -- undefined (an older saved
+  // view, or a brand-new one) means "on", matching the behavior Sandra
+  // asked for by default (2026-07-29: "property names are shown for the
+  // others, so make it consistent for the rest"). Ignored entirely by
+  // Table/Timeline/Calendar, which have their own header/label handling.
+  boardShowPropertyLabels?: boolean;
 }
 
 // One-line migration for views saved before filterPersonIds existed: if a

@@ -72,6 +72,22 @@ interface ViewControlsProps<T> {
   // grouping specifically, she wants Properties (which lines show on a
   // calendar card) kept.
   hideGroupBy?: boolean;
+  // Board-only "Show property labels on cards" checkbox, rendered inside
+  // the Properties popover. Passed only when the active view is actually
+  // a Board (Table/Timeline/Calendar have no use for it -- Table's
+  // headers already carry labels, Timeline/Calendar have their own chip
+  // label handling), same undefined-means-not-applicable pattern as
+  // propertyLockInfo above.
+  boardLabelToggle?: { checked: boolean; onChange: (value: boolean) => void };
+  // Keys that can still be shown/hidden via the eye toggle but can't be
+  // dragged to a different position in the Properties list -- used for
+  // Board's Name property, which a card always pins to the top/title
+  // regardless of Properties order (Sandra, 2026-07-29: "for project this
+  // is always on top, we can disable movement of project name if viewing
+  // board"). Distinct from propertyLockInfo/alwaysVisible, which also
+  // disable the eye toggle -- Name should stay fully hideable, just not
+  // reorderable.
+  nonReorderableKeys?: string[];
 }
 
 // A single borderless, Notion-style icon trigger + anchored popover. No box
@@ -208,6 +224,8 @@ export default function ViewSettingsMenu<T>({
   onFilterStatusesChange,
   propertyLockInfo,
   hideGroupBy,
+  boardLabelToggle,
+  nonReorderableKeys,
 }: ViewControlsProps<T>) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const groupValues = activeOption
@@ -529,13 +547,17 @@ export default function ViewSettingsMenu<T>({
 
           function renderRow(c: ColumnDef<T>) {
             const locked = isLocked(c);
+            const reorderLocked = nonReorderableKeys?.includes(c.key) ?? false;
             const visible = isVisible(c);
             const lock = propertyLockInfo?.[c.key];
-            const lockTooltip = lock?.reason ?? (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined);
+            const lockTooltip =
+              lock?.reason ??
+              (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined) ??
+              (reorderLocked ? "Always shown first on the card -- position can't be changed" : undefined);
             return (
               <div
                 key={c.key}
-                draggable={!locked}
+                draggable={!locked && !reorderLocked}
                 onDragStart={(e) => {
                   e.stopPropagation();
                   setDraggedPropertyKey(c.key);
@@ -556,7 +578,7 @@ export default function ViewSettingsMenu<T>({
                   color: locked ? "var(--muted)" : "var(--text)",
                 }}
               >
-                <span style={{ display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked ? "default" : "grab" }}>
+                <span style={{ display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked || reorderLocked ? "default" : "grab" }}>
                   <GripVertical size={12} />
                 </span>
                 <span
@@ -580,6 +602,28 @@ export default function ViewSettingsMenu<T>({
           return (
             <>
               <PopoverHeader label="Properties" onClose={close} />
+              {boardLabelToggle && (
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    marginBottom: 8,
+                    padding: "4px 2px",
+                    cursor: "pointer",
+                    borderBottom: "1px solid var(--border)",
+                    paddingBottom: 8,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={boardLabelToggle.checked}
+                    onChange={(e) => boardLabelToggle.onChange(e.target.checked)}
+                  />
+                  Show property labels on cards
+                </label>
+              )}
               <input
                 type="text"
                 value={propertySearch}
