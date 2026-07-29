@@ -124,6 +124,7 @@ interface RevisionChangeRow {
   field: string | null;
   previous_value: unknown;
   new_value: unknown;
+  changed_at?: string;
 }
 interface ClosureRequestRow {
   id: string;
@@ -282,6 +283,17 @@ export default function WbsPlanning() {
   // per-revision project_revision_changes diff, latest revision only --
   // not new per-field diff-scoring against the original baseline).
   const [latestRevisionChanges, setLatestRevisionChanges] = useState<RevisionChangeRow[]>([]);
+  // Sandra, 2026-07-29: "task 5 has been added in v4... I made changes
+  // to the hours in v10... isn't the increase supposed to show?" --
+  // taskBaselineDiff() below used to stop at "New task" forever for any
+  // task added after the baseline, because there's no baseline row to
+  // diff its hours against. That silently hid every real edit made to
+  // that task in later revisions. This holds the FULL change history
+  // (all revisions, not just the last-5 preload used by Revision
+  // History) grouped by task_id, so taskBaselineDiff can check "has
+  // anything actually changed on this task SINCE it was added" and
+  // surface that instead of a stale "New task" tag.
+  const [changesByTaskId, setChangesByTaskId] = useState<Record<string, RevisionChangeRow[]>>({});
   const [baselineTasksById, setBaselineTasksById] = useState<Record<string, BaselineTaskFull>>({});
 
   async function loadAll() {
@@ -395,6 +407,29 @@ export default function WbsPlanning() {
         byRevision[key] = list;
       }
       setRevisionChangesById((prev) => ({ ...prev, ...byRevision }));
+    }
+
+    // Full history across EVERY revision (not just the last 5 above) --
+    // needed so a task added several revisions ago (e.g. V4) still shows
+    // its later edits (e.g. an hours change made at V10) instead of a
+    // stale "New task" tag. See changesByTaskId's own doc comment.
+    if (revs.length > 0) {
+      const { data: allChangeRows } = await supabase
+        .from("project_revision_changes")
+        .select("id,revision_id,task_id,task_name,change_type,field,previous_value,new_value,changed_at")
+        .in(
+          "revision_id",
+          revs.map((r) => r.id)
+        );
+      const byTask: Record<string, RevisionChangeRow[]> = {};
+      for (const c of (allChangeRows as RevisionChangeRow[]) ?? []) {
+        const list = byTask[c.task_id] ?? [];
+        list.push(c);
+        byTask[c.task_id] = list;
+      }
+      setChangesByTaskId(byTask);
+    } else {
+      setChangesByTaskId({});
     }
   }
 
@@ -1464,6 +1499,14 @@ export default function WbsPlanning() {
     dependency_changed: "#7b4fb0",
     assignee_changed: "#2e75b6",
   };
+  const CHANGE_TYPE_SHORT_LABEL: Record<string, string> = {
+    task_added: "New task",
+    hours_increased: "Increased",
+    hours_decreased: "Decreased",
+    date_changed: "Date changed",
+    dependency_changed: "Dependency changed",
+    assignee_changed: "Assignee changed",
+  };
   function taskChangeKind(c: RevisionChangeRow): keyof typeof CHANGE_DOT_COLOR | null {
     if (c.change_type === "task_added") return "task_added";
     if (c.change_type === "hours_changed") {
@@ -1486,6 +1529,28 @@ export default function WbsPlanning() {
   function taskBaselineDiff(t: TaskRow & { depth: number }, isParent: boolean): { isNew: boolean; kinds: (keyof typeof CHANGE_DOT_COLOR)[]; notes: string[] } {
     const baseline = baselineTasksById[t.id];
     if (!baseline) {
+      // Sandra, 2026-07-29: don't just say "New task" forever -- check
+      // whether anything has actually changed on this task SINCE it was
+      // added (e.g. added at V4, hours bumped at V10). If so, show that
+      // latest real change instead; "New task" only for a task that's
+      // genuinely untouched since its own addition.
+      const ownChanges = (changesByTaskId[t.id] ?? [])
+        .filter((c) => c.change_type !== "task_added")
+        .sort((a, b) => (b.changed_at ?? "").localeCompare(a.changed_at ?? ""));
+      if (ownChanges.length > 0) {
+        const latest = ownChanges[0];
+        const kind = taskChangeKind(latest);
+        if (kind) {
+          let note = CHANGE_TYPE_SHORT_LABEL[kind] ?? kind.replace(/_/g, " ");
+          if (latest.change_type === "hours_changed") {
+            const prev = Number(latest.previous_value ?? 0);
+            const next = Number(latest.new_value ?? 0);
+            const delta = Math.round((next - prev) * 100) / 100;
+            note = `${delta > 0 ? "+" : ""}${delta}h`;
+          }
+          return { isNew: false, kinds: [kind], notes: [note] };
+        }
+      }
       return { isNew: true, kinds: ["task_added"], notes: ["New task"] };
     }
     const kinds: (keyof typeof CHANGE_DOT_COLOR)[] = [];
