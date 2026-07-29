@@ -2908,6 +2908,14 @@ interface LiveTaskSnapshot {
 function CompareWithBaselinePanel({ projectId, liveTasks }: { projectId: string; liveTasks: LiveTaskSnapshot[] }) {
   const [baseline, setBaseline] = useState<{ version_number: number; total_est_hours: number; task_count: number; captured_at: string } | null>(null);
   const [baselineTasks, setBaselineTasks] = useState<BaselineTaskSnapshot[]>([]);
+  // Sandra, 2026-07-29: "Overall Variance" was hardcoding the Current Plan
+  // label as baseline.version_number + 1 -- always "V2" no matter how many
+  // revisions had actually been applied since that baseline was locked
+  // (she was on Revision 5 but the panel still said "Current Plan V2").
+  // Fix: count APPLIED revisions whose applied_at is after this baseline's
+  // captured_at, and add that count on top of the baseline version instead
+  // of always assuming exactly one change.
+  const [appliedSinceBaseline, setAppliedSinceBaseline] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -2922,12 +2930,25 @@ function CompareWithBaselinePanel({ projectId, liveTasks }: { projectId: string;
         .maybeSingle();
       if (!active) return;
       if (bl) {
-        setBaseline(bl as { version_number: number; total_est_hours: number; task_count: number; captured_at: string });
-        const { data: blt } = await supabase.from("project_baseline_tasks").select("task_id,name,estimated_hours").eq("baseline_id", (bl as { id: string }).id);
-        if (active) setBaselineTasks((blt as BaselineTaskSnapshot[]) ?? []);
+        const baselineRow = bl as { id: string; version_number: number; total_est_hours: number; task_count: number; captured_at: string };
+        setBaseline(baselineRow);
+        const [{ data: blt }, { data: appliedRevs }] = await Promise.all([
+          supabase.from("project_baseline_tasks").select("task_id,name,estimated_hours").eq("baseline_id", baselineRow.id),
+          supabase
+            .from("project_revisions")
+            .select("id")
+            .eq("project_id", projectId)
+            .eq("status", "applied")
+            .gt("applied_at", baselineRow.captured_at),
+        ]);
+        if (active) {
+          setBaselineTasks((blt as BaselineTaskSnapshot[]) ?? []);
+          setAppliedSinceBaseline((appliedRevs ?? []).length);
+        }
       } else {
         setBaseline(null);
         setBaselineTasks([]);
+        setAppliedSinceBaseline(0);
       }
       if (active) setLoading(false);
     })();
@@ -2950,7 +2971,7 @@ function CompareWithBaselinePanel({ projectId, liveTasks }: { projectId: string;
 
   const hoursVariance = baseline ? liveTotalHours - baseline.total_est_hours : 0;
   const taskVariance = baseline ? liveTaskCount - baseline.task_count : 0;
-  const currentPlanLabel = baseline ? `Current Plan V${baseline.version_number + 1}` : "Current Plan";
+  const currentPlanLabel = baseline ? `Current Plan V${baseline.version_number + appliedSinceBaseline}` : "Current Plan";
 
   function varianceCell(delta: number, suffix: string) {
     if (delta === 0) return <span style={{ color: "var(--muted)" }}>No variance</span>;
