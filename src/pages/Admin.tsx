@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type CSSProperties } from "react";
-import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy, Trash2 } from "lucide-react";
+import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy, Trash2, KeyRound } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
 import { defaultColorFor, isValidHex } from "../lib/personColors";
@@ -119,6 +119,7 @@ export default function Admin() {
   const [editEmail, setEditEmail] = useState("");
   const [editSaving, setEditSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [resettingId, setResettingId] = useState<string | null>(null);
 
   // CSV bulk import (see doc comment above CSV_TEMPLATE_HEADERS).
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -166,13 +167,20 @@ export default function Admin() {
   if (sessionLoading) return null;
   if (!me || me.access_level !== "full") return <AccessDenied />;
 
+  // Sandra, 2026-08-14: an invite-email link expired on her ("otp_expired")
+  // -- she doesn't want email-link auth at all, same as another app (LEAP)
+  // she uses: new accounts get a random password shown once, she shares it
+  // herself. Grant-access now creates the login the same way the CSV path
+  // already does (admin-create-user), instead of admin-invite-user's email
+  // link. admin-invite-user itself is left in place/deployed but unused by
+  // this UI now, in case a real-inbox-based invite is wanted again later.
   async function handleInvite(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
     setFormSuccess(null);
     setSubmitting(true);
 
-    const { data, error } = await supabase.functions.invoke("admin-invite-user", {
+    const { data, error } = await supabase.functions.invoke("admin-create-user", {
       body: {
         name,
         email,
@@ -186,11 +194,12 @@ export default function Admin() {
 
     setSubmitting(false);
 
-    if (error || (data as { error?: string })?.error) {
+    const result = data as { error?: string; password?: string } | null;
+    if (error || result?.error) {
       // supabase-js only gives a generic "non-2xx" message on `error` — the
       // real reason is in the JSON body of the failed response, reachable via
       // error.context (the raw Response object).
-      let message = (data as { error?: string })?.error || error?.message || "Failed to invite user.";
+      let message = result?.error || error?.message || "Failed to create login.";
       const context = (error as { context?: Response } | undefined)?.context;
       if (context && typeof context.json === "function") {
         try {
@@ -204,7 +213,10 @@ export default function Admin() {
       return;
     }
 
-    setFormSuccess(`Invited ${name}. They'll get an email to set their password.`);
+    // Reuses the CSV-results modal (single row) to show the generated
+    // password once, with the same "copy name/link/password" button.
+    setCsvResults([{ rowNumber: 1, name, email, action: "created", password: result?.password }]);
+    setFormSuccess(null);
     setName("");
     setEmail("");
     setAccessLevel("limited");
@@ -214,6 +226,24 @@ export default function Admin() {
     setJobTitle("");
     setFormOpen(false);
     loadPeople();
+  }
+
+  async function resetPassword(p: Person) {
+    if (!window.confirm(`Reset ${p.name}'s password? Their old password stops working immediately -- you'll need to share the new one with them yourself.`)) {
+      return;
+    }
+    setResettingId(p.id);
+    const { data, error } = await supabase.functions.invoke("admin-reset-password", {
+      body: { person_id: p.id },
+    });
+    setResettingId(null);
+    const result = data as { error?: string; password?: string } | null;
+    if (error || result?.error) {
+      const message = await extractFunctionError(error, data, "Failed to reset password.");
+      window.alert(`Couldn't reset password for ${p.name}: ${message}`);
+      return;
+    }
+    setCsvResults([{ rowNumber: 1, name: p.name, email: p.email, action: "updated", message: "Password reset.", password: result?.password }]);
   }
 
   async function toggleActive(p: Person) {
@@ -919,6 +949,15 @@ export default function Admin() {
                             {p.is_active ? "Deactivate" : "Reactivate"}
                           </button>
                           <button
+                            onClick={() => resetPassword(p)}
+                            disabled={resettingId === p.id}
+                            title="Generate a new password to share with this person -- no email sent"
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--navy)", fontSize: 11 }}
+                          >
+                            <KeyRound size={13} />
+                            {resettingId === p.id ? "Resetting…" : "Reset password"}
+                          </button>
+                          <button
                             onClick={() => deletePerson(p)}
                             disabled={deletingId === p.id}
                             title="Permanently delete -- only for mistaken entries with no history"
@@ -939,12 +978,16 @@ export default function Admin() {
       </div>
 
       {csvResults && (
-        <Modal title="CSV import results" onClose={() => setCsvResults(null)} width={620}>
+        <Modal title={csvResults.length === 1 ? "Login details" : "CSV import results"} onClose={() => setCsvResults(null)} width={620}>
           <p style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 0 }}>
-            {csvResults.filter((r) => r.action === "created").length} created,{" "}
-            {csvResults.filter((r) => r.action === "updated").length} updated,{" "}
-            {csvResults.filter((r) => r.action === "error").length} failed. For each newly created login below, copy
-            the password and share it (and the app link) with that person yourself -- nothing was emailed.
+            {csvResults.length === 1
+              ? "Copy the password below and share it (and the app link) with this person yourself -- nothing was emailed."
+              : <>
+                  {csvResults.filter((r) => r.action === "created").length} created,{" "}
+                  {csvResults.filter((r) => r.action === "updated").length} updated,{" "}
+                  {csvResults.filter((r) => r.action === "error").length} failed. For each newly created login below, copy
+                  the password and share it (and the app link) with that person yourself -- nothing was emailed.
+                </>}
           </p>
           <div style={{ maxHeight: 360, overflowY: "auto" }}>
             <table className="data-table">
