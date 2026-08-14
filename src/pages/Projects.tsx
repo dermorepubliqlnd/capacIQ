@@ -1845,7 +1845,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts]
   );
 
   // Board-view card body. Name always renders first/bold as the card's
