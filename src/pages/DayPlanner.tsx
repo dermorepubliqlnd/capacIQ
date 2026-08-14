@@ -46,6 +46,22 @@ interface HolidayRow {
   name: string;
   category: "legal_ph" | "local" | "internal";
 }
+// Ownership/assignment history (2026-08-14): a project-owner/task-assignee
+// transfer must freeze already-elapsed days under the ORIGINAL person, not
+// silently move them to the new one -- same fix as Utilization.tsx, and
+// same DB tables (see supabase/policies.sql "Migration 2026-08-14b").
+interface OwnerHistoryRow {
+  project_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+interface AssigneeHistoryRow {
+  task_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
 
 type SubItem = { type: "adhoc" | "project" | "task"; id: string | null; label: string; project?: string; start: string | null; end: string | null };
 
@@ -139,6 +155,8 @@ export default function DayPlanner() {
   const [allocations, setAllocations] = useState<AllocationRow[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
+  const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
+  const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
@@ -149,13 +167,15 @@ export default function DayPlanner() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,is_archived").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,name,assignee_id,start_date,current_due_date,is_archived").eq("is_archived", false),
       supabase.from("time_allocations").select("*"),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
+      supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
+      supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
@@ -163,6 +183,8 @@ export default function DayPlanner() {
     setAllocations((al as AllocationRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
+    setOwnerHistory((ownHist as OwnerHistoryRow[]) ?? []);
+    setAssigneeHistory((assHist as AssigneeHistoryRow[]) ?? []);
     setLoading(false);
   }
 
@@ -198,11 +220,28 @@ export default function DayPlanner() {
     return availability.find((a) => a.person_id === personId && a.date === dateStr);
   }
 
+  // "Ever associated" -- 2026-08-14: a person's expandable row lists every
+  // project/task their history shows they EVER owned/were assigned, not
+  // just whoever currently holds it. Otherwise a transfer would silently
+  // drop a manually-logged hour allocation for the OLD person (it still
+  // exists in time_allocations, but with no matching sub-item to attach it
+  // to, personTotalFor would simply never sum it -- the exact "sticks then
+  // disappears" bug Sandra flagged). The PM-overhead default hours (below,
+  // in personTotalFor) are separately gated to only apply on days history
+  // says this person actually held ownership.
+  function ownerMatchesOnDate(p: ProjectRow, personId: string, dateStr: string): boolean {
+    const rows = ownerHistory.filter((h) => h.project_id === p.id);
+    if (rows.length === 0) return p.owner_id === personId;
+    return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
+  }
+
   function subItemsFor(personId: string): SubItem[] {
     const items: SubItem[] = [{ type: "adhoc", id: null, label: "Adhoc", start: null, end: null }];
-    projects.filter((p) => p.owner_id === personId).forEach((p) => items.push({ type: "project", id: p.id, label: p.name, start: p.start_date, end: p.end_date }));
+    projects
+      .filter((p) => p.owner_id === personId || ownerHistory.some((h) => h.project_id === p.id && h.person_id === personId))
+      .forEach((p) => items.push({ type: "project", id: p.id, label: p.name, start: p.start_date, end: p.end_date }));
     tasks
-      .filter((t) => t.assignee_id === personId)
+      .filter((t) => t.assignee_id === personId || assigneeHistory.some((h) => h.task_id === t.id && h.person_id === personId))
       .forEach((t) => {
         const proj = projects.find((p) => p.id === t.project_id);
         items.push({ type: "task", id: t.id, label: t.name, project: proj?.name, start: t.start_date, end: t.current_due_date });
@@ -231,7 +270,10 @@ export default function DayPlanner() {
     return subItemsFor(personId).reduce((sum, item) => {
       const alloc = allocFor(personId, item.type, item.id, dateStr);
       if (alloc) return sum + Number(alloc.hours);
-      if (item.type === "project" && inWindow(item, dateStr)) return sum + PROJECT_PM_DEFAULT_HOURS;
+      if (item.type === "project" && inWindow(item, dateStr)) {
+        const proj = projects.find((p) => p.id === item.id);
+        if (proj && ownerMatchesOnDate(proj, personId, dateStr)) return sum + PROJECT_PM_DEFAULT_HOURS;
+      }
       return sum;
     }, 0);
   }
@@ -572,7 +614,11 @@ export default function DayPlanner() {
                               const win = inWindow(item, dateStr);
                               const alloc = allocFor(person.id, item.type, item.id, dateStr);
                               const draftKey = `${person.id}|${item.type}|${item.id ?? "adhoc"}|${dateStr}`;
-                              const defaultValue = item.type === "project" ? String(PROJECT_PM_DEFAULT_HOURS) : "";
+                              const itemProject = item.type === "project" ? projects.find((p) => p.id === item.id) : undefined;
+                              const defaultValue =
+                                item.type === "project" && itemProject && ownerMatchesOnDate(itemProject, person.id, dateStr)
+                                  ? String(PROJECT_PM_DEFAULT_HOURS)
+                                  : "";
                               const value = drafts[draftKey] ?? (alloc ? String(alloc.hours) : defaultValue);
                               const openForEntry = !blocked && win;
                               return (

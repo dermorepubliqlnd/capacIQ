@@ -65,6 +65,33 @@ export function rollupHoursFor(taskId: string, entries: TimeEntryRow[], children
   return Math.round(((own + childMinutes) / 60) * 100) / 100;
 }
 
+export interface PersonHoursEntry {
+  personId: string;
+  hours: number;
+}
+
+// Per-person breakdown behind a task's own Spent Hrs total (2026-08-14,
+// Sandra: "I want to see total hours spent on the task, but also see how
+// much each person spent on it"). Mirrors rollupHoursFor's own+descendant
+// scope exactly (so the breakdown's own numbers always sum to the same
+// total already shown in the Spent Hrs cell) but grouped by person_id
+// instead of collapsed into one number. Hours logged are keyed to
+// whoever actually logged them (time_entries.person_id), never derived
+// from the task's current assignee -- so a later assignee transfer never
+// resets or reattributes historical hours, it just keeps accumulating.
+export function personHoursBreakdownFor(taskId: string, entries: TimeEntryRow[], childrenOf: (id: string) => string[]): PersonHoursEntry[] {
+  const relevantTaskIds = new Set([taskId, ...childrenOf(taskId)]);
+  const minutesByPerson = new Map<string, number>();
+  entries
+    .filter((e) => relevantTaskIds.has(e.task_id) && isCountedEntry(e))
+    .forEach((e) => {
+      minutesByPerson.set(e.person_id, (minutesByPerson.get(e.person_id) ?? 0) + (e.duration_minutes ?? 0));
+    });
+  return Array.from(minutesByPerson.entries())
+    .map(([personId, minutes]) => ({ personId, hours: Math.round((minutes / 60) * 100) / 100 }))
+    .sort((a, b) => b.hours - a.hours);
+}
+
 export function formatDuration(minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined) return "—";
   const h = Math.floor(minutes / 60);

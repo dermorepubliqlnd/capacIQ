@@ -33,7 +33,7 @@ const WBS_STATUS_TONES: Record<WbsStatus, string> = {
   changed_after_baseline: "gold",
   closed: "neutral",
 };
-import { rollupHoursFor, ownHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
+import { rollupHoursFor, ownHoursFor, formatHours, personHoursBreakdownFor, type TimeEntryRow } from "../lib/timeTracking";
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { Play, Square } from "lucide-react";
 import {
@@ -721,6 +721,9 @@ export default function Projects() {
   // by NotesSidebar itself calling onCountChange whenever it loads/posts.
   const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
   const [notesSidebarProjectId, setNotesSidebarProjectId] = useState<string | null>(null);
+  // Per-person Spent Hrs breakdown popup (2026-08-14) -- which task's
+  // breakdown modal (if any) is currently open.
+  const [hoursBreakdownTaskId, setHoursBreakdownTaskId] = useState<string | null>(null);
   const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
   const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer, version: timeTrackingVersion } = useTimeTracking();
   // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
@@ -2494,7 +2497,31 @@ export default function Projects() {
                   lands in the same spot whether the value is "0" or
                   "123.45" -- assume a max of hhh.mm hours. Right-aligned
                   so the digits still read naturally against that box. */}
-              <span style={{ fontVariantNumeric: "tabular-nums", width: 46, flexShrink: 0, textAlign: "right" }}>{formatHours(hours)}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHoursBreakdownTaskId(t.id);
+                }}
+                title="See who logged time on this task"
+                style={{
+                  fontVariantNumeric: "tabular-nums",
+                  width: 46,
+                  flexShrink: 0,
+                  textAlign: "right",
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  font: "inherit",
+                  color: hours > 0 ? "var(--accent)" : "inherit",
+                  cursor: hours > 0 ? "pointer" : "default",
+                  textDecoration: hours > 0 ? "underline" : "none",
+                  textDecorationColor: hours > 0 ? "var(--border)" : undefined,
+                  textUnderlineOffset: 2,
+                }}
+                disabled={hours === 0}
+              >
+                {formatHours(hours)}
+              </button>
               {isMine && !t.is_archived && (
                 <button
                   onClick={async () => {
@@ -3527,6 +3554,36 @@ export default function Projects() {
           onCountChange={(projectId, count) => setNoteCounts((prev) => ({ ...prev, [projectId]: count }))}
         />
       )}
+
+      {hoursBreakdownTaskId && (() => {
+        const task = tasks.find((t) => t.id === hoursBreakdownTaskId);
+        if (!task) return null;
+        const breakdown = personHoursBreakdownFor(task.id, timeEntries, (id) => tasks.filter((tt) => tt.parent_task_id === id).map((tt) => tt.id));
+        const total = breakdown.reduce((sum, b) => sum + b.hours, 0);
+        return (
+          <Modal title={`Time spent -- ${task.name}`} onClose={() => setHoursBreakdownTaskId(null)}>
+            {breakdown.length === 0 ? (
+              <p style={{ fontSize: 12, color: "var(--muted)" }}>No confirmed time logged on this task yet.</p>
+            ) : (
+              <>
+                {breakdown.map((b) => (
+                  <div
+                    key={b.personId}
+                    style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 12.5 }}
+                  >
+                    <span>{people.find((p) => p.id === b.personId)?.name ?? "Unknown"}</span>
+                    <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatHours(b.hours)}h</span>
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 12.5, fontWeight: 700 }}>
+                  <span>Total</span>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(total)}h</span>
+                </div>
+              </>
+            )}
+          </Modal>
+        );
+      })()}
 
       {extDetailTask && (
         <Modal title={`Extension history -- ${extDetailTask.name}`} onClose={() => setExtDetailTask(null)}>

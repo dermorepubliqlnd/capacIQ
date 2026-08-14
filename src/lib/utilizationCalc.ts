@@ -36,6 +36,44 @@ export interface UtilPersonRow {
   daily_capacity_hours: number;
 }
 
+// Ownership/assignment history (2026-08-14): when a project's owner or a
+// task's assignee is transferred, days already elapsed must keep
+// attributing to whoever actually held the role on that specific date --
+// not silently move to the new person. These mirror the DB tables
+// project_owner_history/task_assignee_history (see supabase/policies.sql,
+// "Migration 2026-08-14b"), kept in sync automatically by a trigger on
+// projects.owner_id/tasks.assignee_id.
+export interface OwnerHistoryRow {
+  project_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+export interface AssigneeHistoryRow {
+  task_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+// Both history params are optional and default to undefined so existing
+// callers (WbsPlanning's own live/draft preview, which has no reason to
+// care about historical truth -- it's editing the CURRENT plan) keep
+// working unchanged: with no history array supplied, this just checks the
+// row's current owner_id/assignee_id field directly, exactly as before.
+function ownerMatchesOnDate(p: UtilProjectRow, personId: string, dateStr: string, history?: OwnerHistoryRow[]): boolean {
+  if (!history) return p.owner_id === personId;
+  const rows = history.filter((h) => h.project_id === p.id);
+  if (rows.length === 0) return p.owner_id === personId;
+  return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
+}
+function assigneeMatchesOnDate(t: UtilTaskRow, personId: string, dateStr: string, history?: AssigneeHistoryRow[]): boolean {
+  if (!history) return t.assignee_id === personId;
+  const rows = history.filter((h) => h.task_id === t.id);
+  if (rows.length === 0) return t.assignee_id === personId;
+  return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
+}
+
 // A "standard" workday, used only to normalize daily point-capacity -- a
 // person whose own daily capacity equals this has a capacity of exactly 1
 // point/day (one Heavy/2-pt task every other day). Matches Utilization.tsx.
@@ -83,18 +121,29 @@ function isOpenTask(t: UtilTaskRow): boolean {
 
 /** A task's points on a specific date -- 0 if that date isn't one of its
  * own working days (out of window, or effort not set yet). */
-export function taskPointsOnDate(t: UtilTaskRow, dateStr: string): number {
+export function taskPointsOnDate(
+  t: UtilTaskRow,
+  dateStr: string,
+  forPersonId?: string,
+  assigneeHistory?: AssigneeHistoryRow[]
+): number {
   const points = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
   if (points === 0) return 0;
   const workingDays = taskWorkingDays(t);
   if (!workingDays.includes(dateStr)) return 0;
+  if (forPersonId && !assigneeMatchesOnDate(t, forPersonId, dateStr, assigneeHistory)) return 0;
   return points / workingDays.length;
 }
 
 /** PM-overhead points for everything a person owns on a given date, with
  * the combined cap applied proportionally across projects. */
-export function pmPointsFor(personId: string, dateStr: string, projects: UtilProjectRow[]): { total: number; perProject: Map<string, number> } {
-  const owned = projects.filter((p) => p.owner_id === personId && projectWorkingDays(p).includes(dateStr));
+export function pmPointsFor(
+  personId: string,
+  dateStr: string,
+  projects: UtilProjectRow[],
+  ownerHistory?: OwnerHistoryRow[]
+): { total: number; perProject: Map<string, number> } {
+  const owned = projects.filter((p) => ownerMatchesOnDate(p, personId, dateStr, ownerHistory) && projectWorkingDays(p).includes(dateStr));
   const rawTotal = owned.length * PROJECT_PM_POINTS_PER_DAY;
   const scale = rawTotal > PROJECT_PM_POINTS_CAP_PER_DAY && rawTotal > 0 ? PROJECT_PM_POINTS_CAP_PER_DAY / rawTotal : 1;
   const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_POINTS_PER_DAY * scale]));
@@ -104,11 +153,18 @@ export function pmPointsFor(personId: string, dateStr: string, projects: UtilPro
 /** Total points a person is carrying on a given date, across every open
  * task assigned to them (in the supplied `tasks` list -- callers control
  * what's "real" vs "draft" by what they pass in here) plus PM overhead. */
-export function dailyPointsFor(personId: string, dateStr: string, tasks: UtilTaskRow[], projects: UtilProjectRow[]): number {
+export function dailyPointsFor(
+  personId: string,
+  dateStr: string,
+  tasks: UtilTaskRow[],
+  projects: UtilProjectRow[],
+  assigneeHistory?: AssigneeHistoryRow[],
+  ownerHistory?: OwnerHistoryRow[]
+): number {
   const taskPoints = tasks
-    .filter((t) => t.assignee_id === personId && isOpenTask(t))
+    .filter((t) => assigneeMatchesOnDate(t, personId, dateStr, assigneeHistory) && isOpenTask(t))
     .reduce((sum, t) => sum + taskPointsOnDate(t, dateStr), 0);
-  return taskPoints + pmPointsFor(personId, dateStr, projects).total;
+  return taskPoints + pmPointsFor(personId, dateStr, projects, ownerHistory).total;
 }
 
 export function dailyCapacityFor(person: UtilPersonRow, halfDay: boolean): number {

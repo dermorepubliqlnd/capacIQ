@@ -40,6 +40,22 @@ interface HolidayRow {
   name: string;
   category: "legal_ph" | "local" | "internal";
 }
+// Ownership/assignment history (2026-08-14): a transfer should freeze
+// everything already elapsed under the ORIGINAL owner/assignee, only
+// shifting future days to the new one. Mirrors supabase/policies.sql
+// "Migration 2026-08-14b" and src/lib/utilizationCalc.ts's own shape.
+interface OwnerHistoryRow {
+  project_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+interface AssigneeHistoryRow {
+  task_id: string;
+  person_id: string;
+  effective_from: string;
+  effective_to: string | null;
+}
 
 // Same local-timezone date helpers used everywhere else in the app — never
 // `new Date("YYYY-MM-DD")` directly (parses as UTC midnight, can shift a
@@ -162,6 +178,8 @@ export default function Utilization() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
+  const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
+  const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
@@ -170,18 +188,22 @@ export default function Utilization() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
+      supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
+      supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
     setTasks((tk as TaskRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
+    setOwnerHistory((ownHist as OwnerHistoryRow[]) ?? []);
+    setAssigneeHistory((assHist as AssigneeHistoryRow[]) ?? []);
     setLoading(false);
   }
 
@@ -229,30 +251,65 @@ export default function Utilization() {
   // whoever it's assigned to. `parentTaskIds` is every id that appears as
   // some other task's own parent_task_id.
   const parentTaskIds = new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
+  // "Ever associated" -- 2026-08-14: a person's expandable sub-rows now
+  // list every task/project their history shows they EVER held, not just
+  // whoever currently holds it. Each sub-row's own per-date value is then
+  // gated by history too (assigneeMatchesOnDate/ownerMatchesOnDate below),
+  // so a transferred task/project correctly shows nonzero only across the
+  // date range this specific person actually held it -- the old assignee's
+  // sub-row goes to 0 the day it moves on, the new assignee's sub-row
+  // starts contributing from that same day, and the two together always
+  // sum to the task/project's real total (no double-count, no gap).
+  function historicalOwnerIds(projectId: string): Set<string> {
+    return new Set(ownerHistory.filter((h) => h.project_id === projectId).map((h) => h.person_id));
+  }
+  function historicalAssigneeIds(taskId: string): Set<string> {
+    return new Set(assigneeHistory.filter((h) => h.task_id === taskId).map((h) => h.person_id));
+  }
+  function ownerMatchesOnDate(p: ProjectRow, personId: string, dateStr: string): boolean {
+    const rows = ownerHistory.filter((h) => h.project_id === p.id);
+    if (rows.length === 0) return p.owner_id === personId;
+    return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
+  }
+  function assigneeMatchesOnDate(t: TaskRow, personId: string, dateStr: string): boolean {
+    const rows = assigneeHistory.filter((h) => h.task_id === t.id);
+    if (rows.length === 0) return t.assignee_id === personId;
+    return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
+  }
+
   function openTasksFor(personId: string): TaskRow[] {
     return tasks.filter(
-      (t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete"
+      (t) =>
+        (t.assignee_id === personId || historicalAssigneeIds(t.id).has(personId)) &&
+        !parentTaskIds.has(t.id) &&
+        statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete"
     );
   }
   function ownedProjectsFor(personId: string): ProjectRow[] {
-    return projects.filter((p) => p.owner_id === personId);
+    return projects.filter((p) => p.owner_id === personId || historicalOwnerIds(p.id).has(personId));
   }
 
-  // A task's points on a specific date — 0 if that date isn't one of its
-  // own working days (out of window, or effort not set yet).
-  function taskPointsOnDate(t: TaskRow, dateStr: string): number {
+  // A task's points on a specific date for a specific person -- 0 if that
+  // date isn't one of the task's own working days (out of window, or
+  // effort not set yet), OR if history says this person didn't actually
+  // hold the assignment on that specific date (post-transfer split).
+  function taskPointsOnDate(t: TaskRow, dateStr: string, forPersonId?: string): number {
     const points = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
     if (points === 0) return 0;
     const workingDays = taskWorkingDays(t);
     if (!workingDays.includes(dateStr)) return 0;
+    if (forPersonId && !assigneeMatchesOnDate(t, forPersonId, dateStr)) return 0;
     return points / workingDays.length;
   }
 
   // PM-overhead points for everything a person owns on a given date, with
   // the combined cap applied proportionally across projects so the
   // expanded sub-rows always sum exactly to the rollup's PM contribution.
+  // "Owns" is evaluated per-date via history, not the project's current
+  // owner_id, so a transferred project's PM overhead splits correctly
+  // across the handoff date instead of retroactively moving in full.
   function pmPointsFor(personId: string, dateStr: string): { total: number; perProject: Map<string, number> } {
-    const owned = ownedProjectsFor(personId).filter((p) => projectWorkingDays(p).includes(dateStr));
+    const owned = ownedProjectsFor(personId).filter((p) => ownerMatchesOnDate(p, personId, dateStr) && projectWorkingDays(p).includes(dateStr));
     const rawTotal = owned.length * PROJECT_PM_POINTS_PER_DAY;
     const scale = rawTotal > PROJECT_PM_POINTS_CAP_PER_DAY && rawTotal > 0 ? PROJECT_PM_POINTS_CAP_PER_DAY / rawTotal : 1;
     const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_POINTS_PER_DAY * scale]));
@@ -260,7 +317,7 @@ export default function Utilization() {
   }
 
   function dailyPointsFor(personId: string, dateStr: string): number {
-    const taskPoints = openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr), 0);
+    const taskPoints = openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr, personId), 0);
     return taskPoints + pmPointsFor(personId, dateStr).total;
   }
 
@@ -582,7 +639,7 @@ export default function Utilization() {
                                     const dow = d.getDay();
                                     const blocked = dayBlocked(person.id, dateStr, dow);
                                     const win = workingDays.includes(dateStr);
-                                    const value = taskPointsOnDate(t, dateStr);
+                                    const value = taskPointsOnDate(t, dateStr, person.id);
                                     return (
                                       <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
                                         {value > 0 ? value.toFixed(1) : ""}

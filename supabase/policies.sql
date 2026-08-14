@@ -1598,3 +1598,127 @@ create policy project_notes_select on project_notes for select
 
 create policy project_notes_insert on project_notes for insert
   with check (can_see_project(project_id) and author_id = my_person_id());
+
+-- ============================================================
+-- Migration 2026-08-14b: Project owner / task assignee history
+-- Sandra: when ownership/assignment transfers, historical
+-- Utilization/Day-Planner attribution for days already elapsed
+-- must stay with the ORIGINAL person, not silently move to the
+-- new one. These tables record effective date ranges; a trigger
+-- on owner_id/assignee_id keeps them in sync silently (no new
+-- UI step), transfer always effective "starting today" per
+-- Sandra's explicit choice. Backfilled below for existing rows
+-- (best-effort baseline from each row's own start_date -- true
+-- pre-existing history before this shipped can't be
+-- reconstructed, since it was never recorded).
+-- ============================================================
+
+create table if not exists project_owner_history (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  person_id uuid not null references people(id),
+  effective_from date not null,
+  effective_to date
+);
+create index if not exists project_owner_history_project_id_idx on project_owner_history(project_id);
+
+create table if not exists task_assignee_history (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references tasks(id) on delete cascade,
+  person_id uuid not null references people(id),
+  effective_from date not null,
+  effective_to date
+);
+create index if not exists task_assignee_history_task_id_idx on task_assignee_history(task_id);
+
+alter table project_owner_history enable row level security;
+alter table task_assignee_history enable row level security;
+
+drop policy if exists project_owner_history_select on project_owner_history;
+create policy project_owner_history_select on project_owner_history for select
+  using (can_see_project(project_id));
+
+drop policy if exists task_assignee_history_select on task_assignee_history;
+create policy task_assignee_history_select on task_assignee_history for select
+  using (exists (select 1 from tasks t where t.id = task_id and can_see_project(t.project_id)));
+
+-- No insert/update policy for either table -- rows are written only by
+-- the SECURITY DEFINER trigger functions below, never directly by a
+-- client, same convention as other server-enforced audit tables in this
+-- app (e.g. the due-date lock trigger).
+
+create or replace function record_project_owner_change() returns trigger
+language plpgsql security definer as $$
+begin
+  if TG_OP = 'INSERT' then
+    if new.owner_id is not null then
+      insert into project_owner_history (project_id, person_id, effective_from, effective_to)
+      values (new.id, new.owner_id, coalesce(new.start_date, current_date), null);
+    end if;
+    return new;
+  end if;
+
+  if new.owner_id is distinct from old.owner_id then
+    update project_owner_history
+      set effective_to = greatest(effective_from, current_date - 1)
+      where project_id = new.id and effective_to is null;
+    if new.owner_id is not null then
+      insert into project_owner_history (project_id, person_id, effective_from, effective_to)
+      values (new.id, new.owner_id, current_date, null);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists project_owner_history_trigger on projects;
+create trigger project_owner_history_trigger
+  after insert or update of owner_id on projects
+  for each row execute function record_project_owner_change();
+
+create or replace function record_task_assignee_change() returns trigger
+language plpgsql security definer as $$
+begin
+  if TG_OP = 'INSERT' then
+    if new.assignee_id is not null then
+      insert into task_assignee_history (task_id, person_id, effective_from, effective_to)
+      values (new.id, new.assignee_id, coalesce(new.start_date, current_date), null);
+    end if;
+    return new;
+  end if;
+
+  if new.assignee_id is distinct from old.assignee_id then
+    update task_assignee_history
+      set effective_to = greatest(effective_from, current_date - 1)
+      where task_id = new.id and effective_to is null;
+    if new.assignee_id is not null then
+      insert into task_assignee_history (task_id, person_id, effective_from, effective_to)
+      values (new.id, new.assignee_id, current_date, null);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists task_assignee_history_trigger on tasks;
+create trigger task_assignee_history_trigger
+  after insert or update of assignee_id on tasks
+  for each row execute function record_task_assignee_change();
+
+-- Backfill: any project/task that already has an owner/assignee but no
+-- history row yet (i.e. everything that existed before this migration)
+-- gets one baseline row, dated from its own start_date (or a fixed early
+-- fallback if it has none) through today (open-ended). This is a
+-- best-effort baseline, not reconstructed truth -- ownership/assignment
+-- changes that happened before this feature shipped were never recorded.
+insert into project_owner_history (project_id, person_id, effective_from, effective_to)
+select id, owner_id, coalesce(start_date, date '2020-01-01'), null
+from projects
+where owner_id is not null
+  and not exists (select 1 from project_owner_history h where h.project_id = projects.id);
+
+insert into task_assignee_history (task_id, person_id, effective_from, effective_to)
+select id, assignee_id, coalesce(start_date, date '2020-01-01'), null
+from tasks
+where assignee_id is not null
+  and not exists (select 1 from task_assignee_history h where h.task_id = tasks.id);
