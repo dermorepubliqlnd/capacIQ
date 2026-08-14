@@ -199,7 +199,7 @@ export default function Utilization() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delPts }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delPts }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
@@ -208,14 +208,22 @@ export default function Utilization() {
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
       supabase.from("deleted_person_day_points").select("person_id,date,points"),
+      supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
     setTasks((tk as TaskRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
-    setOwnerHistory((ownHist as OwnerHistoryRow[]) ?? []);
-    setAssigneeHistory((assHist as AssigneeHistoryRow[]) ?? []);
+    // Sandra, 2026-08-14: "we're still playing around with the system" --
+    // a global off switch (app_settings.historical_locking_enabled,
+    // default false) for freezing past ownership/assignee attribution.
+    // While off, leave these empty so ownerMatchesOnDate/
+    // assigneeMatchesOnDate fall back to each project/task's CURRENT
+    // owner_id/assignee_id everywhere below (their pre-history behavior).
+    const historicalLockingEnabled = (settings as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false;
+    setOwnerHistory(historicalLockingEnabled ? (ownHist as OwnerHistoryRow[]) ?? [] : []);
+    setAssigneeHistory(historicalLockingEnabled ? (assHist as AssigneeHistoryRow[]) ?? [] : []);
     setDeletedPoints((delPts as DeletedPointRow[]) ?? []);
     setLoading(false);
   }

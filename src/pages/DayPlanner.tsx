@@ -179,7 +179,7 @@ export default function DayPlanner() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,is_archived").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,name,assignee_id,start_date,current_due_date,is_archived").eq("is_archived", false),
@@ -189,6 +189,7 @@ export default function DayPlanner() {
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
       supabase.from("deleted_person_day_hours").select("person_id,date,hours"),
+      supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
@@ -196,8 +197,11 @@ export default function DayPlanner() {
     setAllocations((al as AllocationRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
-    setOwnerHistory((ownHist as OwnerHistoryRow[]) ?? []);
-    setAssigneeHistory((assHist as AssigneeHistoryRow[]) ?? []);
+    // Sandra, 2026-08-14: same global off switch as Utilization.tsx -- see
+    // that file's loadAll for the full explanation.
+    const historicalLockingEnabled = (settings as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false;
+    setOwnerHistory(historicalLockingEnabled ? (ownHist as OwnerHistoryRow[]) ?? [] : []);
+    setAssigneeHistory(historicalLockingEnabled ? (assHist as AssigneeHistoryRow[]) ?? [] : []);
     setDeletedHours((delHrs as DeletedHourRow[]) ?? []);
     setLoading(false);
   }

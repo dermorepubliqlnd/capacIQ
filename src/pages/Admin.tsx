@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type CSSProperties } from "react";
-import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy } from "lucide-react";
+import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
 import { defaultColorFor, isValidHex } from "../lib/personColors";
@@ -116,12 +116,21 @@ export default function Admin() {
   const [editCapacity, setEditCapacity] = useState("7.5");
   const [editEmployeeId, setEditEmployeeId] = useState("");
   const [editJobTitle, setEditJobTitle] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // CSV bulk import (see doc comment above CSV_TEMPLATE_HEADERS).
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [csvBusy, setCsvBusy] = useState(false);
   const [csvResults, setCsvResults] = useState<CsvRowResult[] | null>(null);
+
+  // Global historical-locking switch (Sandra, 2026-08-14): "we're still
+  // playing around with the system" -- while off, Utilization/Day Planner
+  // ignore ownership/assignee history and just use each project/task's
+  // current owner_id/assignee_id, same as before that feature existed.
+  const [historicalLockingEnabled, setHistoricalLockingEnabled] = useState(false);
+  const [historicalLockingSaving, setHistoricalLockingSaving] = useState(false);
 
   async function loadPeople() {
     setLoading(true);
@@ -130,9 +139,29 @@ export default function Admin() {
     setLoading(false);
   }
 
+  async function loadSettings() {
+    const { data } = await supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single();
+    setHistoricalLockingEnabled((data as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false);
+  }
+
   useEffect(() => {
-    if (me?.access_level === "full") loadPeople();
+    if (me?.access_level === "full") {
+      loadPeople();
+      loadSettings();
+    }
   }, [me?.access_level]);
+
+  async function toggleHistoricalLocking() {
+    const next = !historicalLockingEnabled;
+    setHistoricalLockingSaving(true);
+    const { error } = await supabase.from("app_settings").update({ historical_locking_enabled: next }).eq("id", true);
+    setHistoricalLockingSaving(false);
+    if (error) {
+      window.alert(`Couldn't save: ${error.message}`);
+      return;
+    }
+    setHistoricalLockingEnabled(next);
+  }
 
   if (sessionLoading) return null;
   if (!me || me.access_level !== "full") return <AccessDenied />;
@@ -253,10 +282,28 @@ export default function Admin() {
     setEditCapacity(String(p.daily_capacity_hours));
     setEditEmployeeId(p.employee_id ?? "");
     setEditJobTitle(p.job_title ?? "");
+    setEditEmail(p.email);
   }
 
   function cancelEdit() {
     setEditingId(null);
+  }
+
+  // Pulls the real error message out of a failed Edge Function invoke --
+  // supabase-js only gives a generic "non-2xx" message on `error`, the
+  // actual reason is JSON in the response body (same pattern as handleInvite).
+  async function extractFunctionError(error: unknown, data: unknown, fallback: string): Promise<string> {
+    let message = (data as { error?: string } | null)?.error || (error as Error | undefined)?.message || fallback;
+    const context = (error as { context?: Response } | undefined)?.context;
+    if (context && typeof context.json === "function") {
+      try {
+        const body = await context.clone().json();
+        if (body?.error) message = body.error;
+      } catch {
+        // response wasn't JSON — keep the generic message
+      }
+    }
+    return message;
   }
 
   async function saveEdit(p: Person) {
@@ -265,6 +312,24 @@ export default function Admin() {
       return;
     }
     setEditSaving(true);
+
+    // Email lives on both the people row and the Supabase Auth login, so
+    // changing it goes through the admin-update-email Edge Function (it
+    // updates the login first, then the people row) rather than a plain
+    // table update.
+    const newEmail = editEmail.trim().toLowerCase();
+    if (newEmail && newEmail !== p.email.toLowerCase()) {
+      const { data, error } = await supabase.functions.invoke("admin-update-email", {
+        body: { person_id: p.id, new_email: newEmail },
+      });
+      if (error || (data as { error?: string })?.error) {
+        const message = await extractFunctionError(error, data, "Failed to update email.");
+        setEditSaving(false);
+        window.alert(`Couldn't update email: ${message}`);
+        return;
+      }
+    }
+
     const { error } = await supabase
       .from("people")
       .update({
@@ -281,6 +346,43 @@ export default function Admin() {
       return;
     }
     setEditingId(null);
+    loadPeople();
+  }
+
+  // Hard delete (Sandra, 2026-08-14): "for fixing mistakes -- wrong CSV
+  // row, duplicate, test account." Deliberately does NOT try to reassign
+  // or archive history -- if the person owns/is assigned to anything, has
+  // logged time, or is listed as someone's manager, the people table's own
+  // foreign keys (no ON DELETE CASCADE anywhere) reject the delete and the
+  // Edge Function surfaces that as a friendly error pointing at Deactivate
+  // instead. This keeps the ownership/utilization history features intact.
+  async function deletePerson(p: Person) {
+    if (p.id === me?.id) {
+      window.alert("You can't delete your own account. Ask another Full Access person to do it.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Permanently delete ${p.name}? This removes their login and record entirely and can't be undone. ` +
+          `Only do this for a mistaken entry (wrong CSV row, duplicate, test account) -- if they have any real ` +
+          `history in the system, this will be rejected and you should use Deactivate instead.`
+      )
+    ) {
+      return;
+    }
+    setDeletingId(p.id);
+    const { data, error } = await supabase.functions.invoke("admin-delete-user", {
+      body: { person_id: p.id },
+    });
+    setDeletingId(null);
+    if (error || (data as { error?: string })?.error) {
+      const message = await extractFunctionError(error, data, "Failed to delete person.");
+      window.alert(`Couldn't delete ${p.name}: ${message}`);
+      return;
+    }
+    if ((data as { warning?: string })?.warning) {
+      window.alert((data as { warning: string }).warning);
+    }
     loadPeople();
   }
 
@@ -492,6 +594,41 @@ export default function Admin() {
         </div>
       </div>
 
+      <div
+        className="card"
+        style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
+      >
+        <div>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Lock historical ownership/assignee attribution</div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+            {historicalLockingEnabled
+              ? "On -- Utilization and Day Planner freeze past attribution when a project/task changes owner or assignee."
+              : "Off -- Utilization and Day Planner always show the CURRENT owner/assignee, even for past dates. Turn this on when you're ready to stop testing and go live with real data."}
+          </div>
+        </div>
+        <button
+          onClick={toggleHistoricalLocking}
+          disabled={historicalLockingSaving}
+          title={historicalLockingEnabled ? "Turn off" : "Turn on"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "7px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: historicalLockingEnabled ? "#fff" : "var(--navy)",
+            background: historicalLockingEnabled ? "var(--success-text)" : "var(--surface)",
+            border: "1px solid var(--border)",
+            opacity: historicalLockingSaving ? 0.6 : 1,
+            cursor: historicalLockingSaving ? "default" : "pointer",
+            flexShrink: 0,
+          }}
+        >
+          {historicalLockingSaving ? "Saving…" : historicalLockingEnabled ? "On" : "Off"}
+        </button>
+      </div>
+
       {formOpen && (
         <form onSubmit={handleInvite} className="card" style={{ marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
@@ -649,7 +786,21 @@ export default function Admin() {
                       />
                     </div>
                   </td>
-                  <td>{p.email}</td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        type="email"
+                        value={editEmail}
+                        onChange={(e) => setEditEmail(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        title="Changes their login email too"
+                        style={{ ...inputStyle, marginTop: 0, width: 150 }}
+                      />
+                    ) : (
+                      p.email
+                    )}
+                  </td>
                   <td>
                     <select
                       value={p.access_level}
@@ -766,6 +917,15 @@ export default function Admin() {
                           >
                             {p.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
                             {p.is_active ? "Deactivate" : "Reactivate"}
+                          </button>
+                          <button
+                            onClick={() => deletePerson(p)}
+                            disabled={deletingId === p.id}
+                            title="Permanently delete -- only for mistaken entries with no history"
+                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--danger-text)", fontSize: 11 }}
+                          >
+                            <Trash2 size={13} />
+                            {deletingId === p.id ? "Deleting…" : "Delete"}
                           </button>
                         </>
                       )}

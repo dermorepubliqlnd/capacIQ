@@ -1964,3 +1964,13 @@ grant execute on function delete_project_and_dependents(uuid) to authenticated;
 
 alter table people add column if not exists employee_id text unique;
 alter table people add column if not exists job_title text;
+
+-- Migration 2026-08-14e (Sandra): "we're still playing around with the
+-- system" -- a global off switch for historical ownership/assignee
+-- locking in Utilization/Day Planner. When OFF, those pages fall back to
+-- simply using each project/task's CURRENT owner_id/assignee_id (their
+-- pre-history behavior) instead of freezing past attribution to whoever
+-- held it at the time. Deliberately does NOT touch the deletion archive
+-- or WBS baseline/Done-task locks -- Sandra confirmed only ownership/
+-- assignee history should be gated by this switch.
+alter table app_settings add column if not exists historical_locking_enabled boolean not null default false;
