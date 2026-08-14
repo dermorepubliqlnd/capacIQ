@@ -34,6 +34,19 @@ const WBS_STATUS_TONES: Record<WbsStatus, string> = {
   closed: "neutral",
 };
 import { rollupHoursFor, ownHoursFor, formatHours, personHoursBreakdownFor, type TimeEntryRow } from "../lib/timeTracking";
+// Deletion history archive (2026-08-14c): a permanently-deleted task's own
+// logged Spent Hrs are archived (supabase/policies.sql "Migration
+// 2026-08-14c") as a raw per-project-per-person hours total before the
+// task row disappears, so a project's Spent Hrs rollup doesn't shrink just
+// because one of its tasks was deleted. No FK on its project_id (see the
+// migration) so this row also survives the project itself later being
+// permanently deleted -- an orphaned total with nowhere left to show
+// against, but not lost data.
+interface DeletedSpentHourRow {
+  project_id: string | null;
+  person_id: string;
+  hours: number;
+}
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { Play, Square } from "lucide-react";
 import {
@@ -562,9 +575,15 @@ function projectEstimatedHoursTotal(projectId: string, allTasks: TaskRow[]): num
 // (no rollup), so summing it over every task in the project -- parent and
 // child alike -- gives the true total exactly once, regardless of nesting
 // depth.
-function projectSpentHoursTotal(projectId: string, allTasks: TaskRow[], entries: TimeEntryRow[]): number {
+function projectSpentHoursTotal(projectId: string, allTasks: TaskRow[], entries: TimeEntryRow[], deletedSpent: DeletedSpentHourRow[] = []): number {
   const projectTasks = allTasks.filter((t) => t.project_id === projectId && !t.is_archived);
-  return Math.round(projectTasks.reduce((sum, t) => sum + ownHoursFor(entries, t.id), 0) * 100) / 100;
+  const liveTotal = projectTasks.reduce((sum, t) => sum + ownHoursFor(entries, t.id), 0);
+  // Deletion archive (2026-08-14c): a task that got permanently deleted no
+  // longer has a row in allTasks/entries to sum above -- its own logged
+  // hours were archived (by project) before it disappeared, so add those
+  // back in here rather than letting the project's total silently shrink.
+  const archivedTotal = deletedSpent.filter((d) => d.project_id === projectId).reduce((sum, d) => sum + Number(d.hours), 0);
+  return Math.round((liveTotal + archivedTotal) * 100) / 100;
 }
 
 // Same shape as hoursVarianceOf, just fed project-level totals instead of
@@ -725,6 +744,7 @@ export default function Projects() {
   // breakdown modal (if any) is currently open.
   const [hoursBreakdownTaskId, setHoursBreakdownTaskId] = useState<string | null>(null);
   const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
+  const [deletedSpentHours, setDeletedSpentHours] = useState<DeletedSpentHourRow[]>([]);
   const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer, version: timeTrackingVersion } = useTimeTracking();
   // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
   // Off, from the Holiday calendar module) -- fed into Health's expected-
@@ -810,7 +830,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -828,6 +848,8 @@ export default function Projects() {
       // fetches full note rows (body, timestamps, mentions) lazily only
       // when opened for a given project.
       supabase.from("project_notes").select("project_id"),
+      // Deletion archive (2026-08-14c) -- see DeletedSpentHourRow above.
+      supabase.from("deleted_project_spent_hours_archive").select("project_id,person_id,hours"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -837,6 +859,7 @@ export default function Projects() {
     setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
     setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
     setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
+    setDeletedSpentHours((delSpentData as DeletedSpentHourRow[]) ?? []);
     const nextNoteCounts: Record<string, number> = {};
     for (const row of (noteData as { project_id: string }[]) ?? []) {
       nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
@@ -1243,14 +1266,21 @@ export default function Projects() {
       danger: true,
     });
     if (!ok) return;
-    const projectTaskIds = [...tasks, ...archivedTasks].filter((t) => t.project_id === p.id).map((t) => t.id);
-    await deleteTasksAndDependents(projectTaskIds);
-    const { error } = await supabase.from("projects").delete().eq("id", p.id);
+    // Deletion archive (2026-08-14c): delete_project_and_dependents
+    // (supabase/policies.sql "Migration 2026-08-14c") replaces the old
+    // two-call sequence (deleteTasksAndDependents then a raw projects
+    // delete) with a single RPC that archives this project's own
+    // PM-overhead points/hours AND each of its tasks' Utilization/Spent
+    // Hrs numbers before anything is actually removed -- same
+    // authorization check as the projects_delete RLS policy, just
+    // replicated server-side since a SECURITY DEFINER function bypasses RLS.
+    const { error } = await supabase.rpc("delete_project_and_dependents", { p_project_id: p.id });
     if (error) {
       alert(`Couldn't delete: ${error.message}`);
       return;
     }
     loadArchived();
+    loadAll();
   }
 
   async function bulkUpdateProjects(patch: Partial<ProjectRow>) {
@@ -1654,7 +1684,7 @@ export default function Projects() {
         defaultWidth: 100,
         maxWidth: 130,
         render: (p) => {
-          const total = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          const total = projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours);
           return <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(total)}</span>;
         },
       },
@@ -1665,7 +1695,7 @@ export default function Projects() {
         maxWidth: 130,
         render: (p) => {
           const estimated = projectEstimatedHoursTotal(p.id, tasks);
-          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours);
           const variance = projectHoursVarianceOf(estimated, spent);
           if (!variance) return <span style={{ color: "var(--muted)" }}>—</span>;
           const tone = hoursVarianceTone(variance.percent);
@@ -1680,7 +1710,7 @@ export default function Projects() {
         maxWidth: 150,
         render: (p) => {
           const estimated = projectEstimatedHoursTotal(p.id, tasks);
-          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries);
+          const spent = projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours);
           const variance = projectHoursVarianceOf(estimated, spent);
           const tone = hoursVarianceTone(variance?.percent ?? null);
           return <ProgressCell percent={variance?.percent ?? null} tone={tone} display="bar" />;
@@ -1848,7 +1878,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours]
   );
 
   // Board-view card body. Name always renders first/bold as the card's
@@ -2069,16 +2099,16 @@ export default function Projects() {
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
     { key: "estimated_hours", label: "Est. hrs", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
-    { key: "time_spent_hours", label: "Spent hrs", getValue: (p) => projectSpentHoursTotal(p.id, tasks, timeEntries) },
+    { key: "time_spent_hours", label: "Spent hrs", getValue: (p) => projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours) },
     {
       key: "hours_variance",
       label: "Hrs Variance",
-      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries))?.hours ?? -Infinity,
+      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours))?.hours ?? -Infinity,
     },
     {
       key: "hours_variance_pct",
       label: "Hrs Variance %",
-      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries))?.percent ?? -1,
+      getValue: (p) => projectHoursVarianceOf(projectEstimatedHoursTotal(p.id, tasks), projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours))?.percent ?? -1,
     },
     { key: "wbs_status", label: "WBS Status", getValue: (p) => (Object.keys(WBS_STATUS_META) as WbsStatus[]).indexOf(p.wbs_status) },
   ];

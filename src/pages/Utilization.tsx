@@ -56,6 +56,16 @@ interface AssigneeHistoryRow {
   effective_from: string;
   effective_to: string | null;
 }
+// Deletion history archive (2026-08-14c): when a task/project is
+// permanently deleted, its already-elapsed Utilization points are archived
+// (supabase/policies.sql "Migration 2026-08-14c") as raw per-person-per-day
+// numbers before the row disappears -- deliberately no task/project name
+// retained ("just the numbers", Sandra's explicit choice for this scope).
+interface DeletedPointRow {
+  person_id: string;
+  date: string;
+  points: number;
+}
 
 // Same local-timezone date helpers used everywhere else in the app — never
 // `new Date("YYYY-MM-DD")` directly (parses as UTC midnight, can shift a
@@ -180,6 +190,7 @@ export default function Utilization() {
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
   const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
+  const [deletedPoints, setDeletedPoints] = useState<DeletedPointRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
@@ -188,7 +199,7 @@ export default function Utilization() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delPts }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
@@ -196,6 +207,7 @@ export default function Utilization() {
       supabase.from("holidays").select("*"),
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
+      supabase.from("deleted_person_day_points").select("person_id,date,points"),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
@@ -204,6 +216,7 @@ export default function Utilization() {
     setHolidays((hol as HolidayRow[]) ?? []);
     setOwnerHistory((ownHist as OwnerHistoryRow[]) ?? []);
     setAssigneeHistory((assHist as AssigneeHistoryRow[]) ?? []);
+    setDeletedPoints((delPts as DeletedPointRow[]) ?? []);
     setLoading(false);
   }
 
@@ -277,6 +290,17 @@ export default function Utilization() {
     return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
   }
 
+  // Deletion archive: folds archived points from permanently-deleted
+  // tasks/projects into a person's daily total, and flags whether they
+  // have any at all (to show the generic "Deleted items" sub-row below --
+  // generic because no task/project name was retained for these).
+  function deletedPointsFor(personId: string, dateStr: string): number {
+    return deletedPoints.filter((d) => d.person_id === personId && d.date === dateStr).reduce((sum, d) => sum + Number(d.points), 0);
+  }
+  function hasDeletedHistory(personId: string): boolean {
+    return deletedPoints.some((d) => d.person_id === personId);
+  }
+
   function openTasksFor(personId: string): TaskRow[] {
     return tasks.filter(
       (t) =>
@@ -318,7 +342,7 @@ export default function Utilization() {
 
   function dailyPointsFor(personId: string, dateStr: string): number {
     const taskPoints = openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr, personId), 0);
-    return taskPoints + pmPointsFor(personId, dateStr).total;
+    return taskPoints + pmPointsFor(personId, dateStr).total + deletedPointsFor(personId, dateStr);
   }
 
   function dailyCapacityFor(person: PersonRow, halfDay: boolean): number {
@@ -548,7 +572,7 @@ export default function Utilization() {
                         })}
                       </tr>
                       {isExpanded &&
-                        (ownedProjects.length === 0 && assignedTasks.length === 0 ? (
+                        (ownedProjects.length === 0 && assignedTasks.length === 0 && !hasDeletedHistory(person.id) ? (
                           <tr>
                             <td
                               style={{
@@ -649,6 +673,41 @@ export default function Utilization() {
                                 </tr>
                               );
                             })}
+                            {hasDeletedHistory(person.id) && (
+                              <tr>
+                                <td
+                                  title="Points from tasks/projects that have since been permanently deleted — numbers only, no name retained"
+                                  style={{
+                                    position: "sticky",
+                                    left: 0,
+                                    zIndex: 1,
+                                    background: "var(--surface)",
+                                    padding: "5px 13px 5px 35px",
+                                    fontSize: 11,
+                                    color: "var(--muted)",
+                                    fontStyle: "italic",
+                                    borderBottom: "1px solid var(--border)",
+                                    whiteSpace: "nowrap",
+                                    maxWidth: LABEL_W,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  Deleted items
+                                </td>
+                                {days.map((d, i) => {
+                                  const dateStr = toISO(d);
+                                  const dow = d.getDay();
+                                  const blocked = dayBlocked(person.id, dateStr, dow);
+                                  const value = deletedPointsFor(person.id, dateStr);
+                                  return (
+                                    <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                      {value > 0 ? value.toFixed(2) : ""}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            )}
                           </>
                         ))}
                     </Fragment>

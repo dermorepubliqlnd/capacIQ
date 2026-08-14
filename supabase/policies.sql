@@ -1722,3 +1722,235 @@ select id, assignee_id, coalesce(start_date, date '2020-01-01'), null
 from tasks
 where assignee_id is not null
   and not exists (select 1 from task_assignee_history h where h.task_id = tasks.id);
+
+-- ============================================================
+-- Migration 2026-08-14c: Deletion history archive
+-- Sandra: when a task or project is permanently deleted, its historical
+-- Utilization/Day-Planner points and Spent Hrs should NOT disappear
+-- retroactively. "Just the numbers" scope (her explicit choice): no
+-- task/project name retained, just the raw per-day points/hours per
+-- person, and per-project logged-hours totals. Archived BEFORE the
+-- delete happens, inside the same RPCs that already perform task/project
+-- deletion, so there's no separate path that could delete without
+-- archiving.
+-- ============================================================
+
+create table if not exists deleted_person_day_points (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid not null references people(id),
+  date date not null,
+  points numeric not null
+);
+create index if not exists deleted_person_day_points_idx on deleted_person_day_points(person_id, date);
+
+create table if not exists deleted_person_day_hours (
+  id uuid primary key default gen_random_uuid(),
+  person_id uuid not null references people(id),
+  date date not null,
+  hours numeric not null
+);
+create index if not exists deleted_person_day_hours_idx on deleted_person_day_hours(person_id, date);
+
+-- Deliberately NO foreign key on project_id -- this row must survive even
+-- if the project itself is later permanently deleted too (a plain FK,
+-- even on delete cascade, would just delete this archive right along
+-- with it, defeating the point). It becomes a harmless orphaned total in
+-- that case -- there's no project left to show it against, but the raw
+-- number isn't lost if that ever needs to be surfaced later.
+create table if not exists deleted_project_spent_hours_archive (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid,
+  person_id uuid not null references people(id),
+  hours numeric not null
+);
+create index if not exists deleted_project_spent_hours_archive_idx on deleted_project_spent_hours_archive(project_id, person_id);
+
+alter table deleted_person_day_points enable row level security;
+alter table deleted_person_day_hours enable row level security;
+alter table deleted_project_spent_hours_archive enable row level security;
+
+-- Select-only, visible to anyone (mirrors people_select) -- these are
+-- just numbers with no sensitive content, and any visibility rule tied
+-- to project/task access no longer applies once the row is gone. Only
+-- the SECURITY DEFINER archive functions below ever write to them.
+drop policy if exists deleted_person_day_points_select on deleted_person_day_points;
+create policy deleted_person_day_points_select on deleted_person_day_points for select using (true);
+drop policy if exists deleted_person_day_hours_select on deleted_person_day_hours;
+create policy deleted_person_day_hours_select on deleted_person_day_hours for select using (true);
+drop policy if exists deleted_project_spent_hours_archive_select on deleted_project_spent_hours_archive;
+create policy deleted_project_spent_hours_archive_select on deleted_project_spent_hours_archive for select using (true);
+
+-- Archives one task's Utilization points + Spent Hrs, up through today,
+-- before it's deleted. Mirrors the client-side math: points spread
+-- evenly across the task's own Mon-Fri working days between start_date
+-- and current_due_date, Spent Hrs from confirmed/approved time_entries
+-- only. Per-day attribution walks task_assignee_history so a task
+-- reassigned before deletion still archives each day to whoever actually
+-- held it, not just the final assignee. NOTE: unlike the live JS calc,
+-- this does not exclude holidays (the holidays table isn't consulted) --
+-- a reasonable simplification for a backstop archive, flagged here
+-- rather than silently done.
+create or replace function archive_task_utilization(p_task_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  t record;
+  points numeric;
+  total_days int;
+  d date;
+  window_end date;
+  per_day_person uuid;
+begin
+  select id, project_id, start_date, current_due_date, effort, assignee_id
+    into t
+    from tasks where id = p_task_id;
+  if not found then return; end if;
+
+  points := case t.effort when 'Light' then 0.5 when 'Moderate' then 1 when 'Heavy' then 2 else 0 end;
+
+  if points > 0 then
+    total_days := 0;
+    for d in select generate_series(
+      coalesce(t.start_date, t.current_due_date),
+      t.current_due_date,
+      interval '1 day'
+    )::date
+    loop
+      if extract(dow from d) not in (0, 6) then
+        total_days := total_days + 1;
+      end if;
+    end loop;
+    if total_days = 0 then total_days := 1; end if;
+
+    window_end := least(t.current_due_date, current_date);
+    if window_end >= coalesce(t.start_date, t.current_due_date) then
+      for d in select generate_series(coalesce(t.start_date, t.current_due_date), window_end, interval '1 day')::date
+      loop
+        if extract(dow from d) not in (0, 6) then
+          select person_id into per_day_person
+            from task_assignee_history
+            where task_id = p_task_id and effective_from <= d and (effective_to is null or effective_to >= d)
+            limit 1;
+          per_day_person := coalesce(per_day_person, t.assignee_id);
+          if per_day_person is not null then
+            insert into deleted_person_day_points (person_id, date, points)
+            values (per_day_person, d, points / total_days);
+          end if;
+        end if;
+      end loop;
+    end if;
+  end if;
+
+  insert into deleted_project_spent_hours_archive (project_id, person_id, hours)
+  select t.project_id, te.person_id, sum(coalesce(te.duration_minutes, 0)) / 60.0
+    from time_entries te
+    where te.task_id = p_task_id and te.status in ('confirmed', 'approved')
+    group by te.person_id;
+end;
+$$;
+
+-- Archives one project's own PM-overhead points/hours, up through today,
+-- before it's deleted. Raw per-day contribution only (0.1 pt / 0.5h) --
+-- the cross-project 0.3pt/2h cap that applies when someone owns multiple
+-- projects the same day is enforced at MERGE time in the frontend, not
+-- baked into the archived row, since capping here would freeze in
+-- whatever the person's other project load happened to be at the moment
+-- of deletion rather than staying correct as that other load changes.
+create or replace function archive_project_pm_overhead(p_project_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  p record;
+  d date;
+  window_end date;
+  per_day_person uuid;
+begin
+  select id, owner_id, start_date, end_date into p from projects where id = p_project_id;
+  if not found or p.start_date is null or p.end_date is null then return; end if;
+
+  window_end := least(p.end_date, current_date);
+  if window_end < p.start_date then return; end if;
+
+  for d in select generate_series(p.start_date, window_end, interval '1 day')::date
+  loop
+    if extract(dow from d) not in (0, 6) then
+      select person_id into per_day_person
+        from project_owner_history
+        where project_id = p_project_id and effective_from <= d and (effective_to is null or effective_to >= d)
+        limit 1;
+      per_day_person := coalesce(per_day_person, p.owner_id);
+      if per_day_person is not null then
+        insert into deleted_person_day_points (person_id, date, points) values (per_day_person, d, 0.1);
+        insert into deleted_person_day_hours (person_id, date, hours) values (per_day_person, d, 0.5);
+      end if;
+    end if;
+  end loop;
+end;
+$$;
+
+-- delete_tasks_and_dependents now archives each task's Utilization/Spent
+-- Hrs BEFORE deleting it, so the numbers survive even though the row
+-- itself is gone. Everything else in this function is unchanged from the
+-- prior version (2026-07-24f).
+create or replace function delete_tasks_and_dependents(p_task_ids uuid[]) returns void
+language plpgsql security definer as $$
+declare
+  tid uuid;
+begin
+  if exists (
+    select 1 from tasks t
+    left join projects pr on pr.id = t.project_id
+    where t.id = any(p_task_ids)
+      and not (
+        my_access_level() = 'full'
+        or pr.owner_id = my_person_id()
+      )
+  ) then
+    raise exception 'not authorized to delete one or more of these tasks';
+  end if;
+
+  foreach tid in array p_task_ids loop
+    perform archive_task_utilization(tid);
+  end loop;
+
+  delete from extension_requests where task_id = any(p_task_ids);
+  delete from task_effort_changes where task_id = any(p_task_ids);
+  delete from time_entries where task_id = any(p_task_ids);
+  delete from task_collaborators where task_id = any(p_task_ids);
+  delete from task_planning_snapshots where task_id = any(p_task_ids);
+  delete from task_dependencies where task_id = any(p_task_ids) or depends_on_task_id = any(p_task_ids);
+  delete from tasks where id = any(p_task_ids);
+end;
+$$;
+
+grant execute on function delete_tasks_and_dependents(uuid[]) to authenticated;
+
+-- New: permanent project deletion, as its own RPC (previously done via 2
+-- raw client-side calls -- deleteTasksAndDependents then a plain
+-- `.from("projects").delete()`). Archives the project's own PM-overhead
+-- ledger, reuses delete_tasks_and_dependents (which now also archives)
+-- for its tasks, then removes the project row. Authorization mirrors the
+-- existing projects_delete RLS policy exactly.
+create or replace function delete_project_and_dependents(p_project_id uuid) returns void
+language plpgsql security definer as $$
+declare
+  task_ids uuid[];
+begin
+  if not exists (
+    select 1 from projects
+    where id = p_project_id
+      and (my_access_level() = 'full' or owner_id = my_person_id())
+  ) then
+    raise exception 'not authorized to delete this project';
+  end if;
+
+  perform archive_project_pm_overhead(p_project_id);
+
+  select array_agg(id) into task_ids from tasks where project_id = p_project_id;
+  if task_ids is not null then
+    perform delete_tasks_and_dependents(task_ids);
+  end if;
+
+  delete from projects where id = p_project_id;
+end;
+$$;
+
+grant execute on function delete_project_and_dependents(uuid) to authenticated;
