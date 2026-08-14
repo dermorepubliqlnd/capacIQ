@@ -19,6 +19,12 @@ export interface Person {
   // actual gating logic yet, just settable from User Management.
   can_approve_reopening: boolean;
   can_approve_rebaseline: boolean;
+  // Sandra, 2026-08-14: CSV bulk-import fields for User Management --
+  // Employee ID (org identifier, distinct from the internal uuid) and
+  // Role/job title (function like "Trainer" or "Content Developer",
+  // distinct from access_level's Admin/Limited permission tier).
+  employee_id: string | null;
+  job_title: string | null;
 }
 
 // Tracks the current Supabase Auth session and the matching `people` row

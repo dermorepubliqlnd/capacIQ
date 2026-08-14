@@ -1,8 +1,82 @@
-import { useEffect, useState, type FormEvent, type CSSProperties } from "react";
-import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent, type CSSProperties } from "react";
+import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
 import { defaultColorFor, isValidHex } from "../lib/personColors";
+import { parseCsvToObjects, getField, toCsv } from "../lib/csv";
+import Modal from "../components/Modal";
+
+// CSV bulk-import (Sandra, 2026-08-14): "data only for now, no emails sent
+// -- I'll give pilot users the link and a randomly-generated password
+// myself." A row whose Email doesn't match an existing person creates a
+// brand-new login (via the admin-create-user Edge Function, which
+// generates the password server-side and returns it once so it can be
+// shown here -- Supabase never stores or re-displays a plaintext password
+// after this). A row whose Email DOES match an existing person just
+// updates their roster fields directly (people_update RLS already allows
+// any Full Access person to do this with no Edge Function needed).
+//
+// "Reports To" is given as a name or email, not a raw id, and may refer to
+// someone else who's ALSO new in this same CSV -- so it's resolved in a
+// second pass after every row has been created/updated, once the full
+// people list (including brand-new rows) is available to match against.
+interface CsvRowResult {
+  rowNumber: number;
+  name: string;
+  email: string;
+  action: "created" | "updated" | "error" | "skipped";
+  message?: string;
+  password?: string;
+}
+
+const CSV_TEMPLATE_HEADERS = [
+  "Employee ID",
+  "Full Name",
+  "Email",
+  "Role",
+  "Reports To",
+  "Capacity/Day",
+  "Admin",
+  "Approve Closures",
+  "Approve Reopening",
+  "Approve Rebaseline",
+  "Status",
+];
+
+function parseYesNo(raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  return v === "yes" || v === "y" || v === "true" || v === "1" || v === "admin" || v === "full";
+}
+
+function parseStatus(raw: string): boolean {
+  const v = raw.trim().toLowerCase();
+  if (!v) return true;
+  return !(v === "inactive" || v === "deactivated" || v === "no" || v === "false" || v === "0");
+}
+
+function downloadTemplate() {
+  const exampleRow = [
+    "1001",
+    "Juan Dela Cruz",
+    "juan.delacruz@dermorepubliq.com",
+    "Content Developer",
+    "jo.sanjose@dermorepubliq.com",
+    "7.5",
+    "No",
+    "No",
+    "No",
+    "No",
+    "Active",
+  ];
+  const csv = toCsv(CSV_TEMPLATE_HEADERS, [exampleRow]);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "capaciq_user_management_template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function AccessDenied() {
   return (
@@ -33,12 +107,21 @@ export default function Admin() {
   const [accessLevel, setAccessLevel] = useState<"limited" | "full">("limited");
   const [reportsTo, setReportsTo] = useState("");
   const [capacityHours, setCapacityHours] = useState("7.5");
+  const [employeeId, setEmployeeId] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editReportsTo, setEditReportsTo] = useState("");
   const [editCapacity, setEditCapacity] = useState("7.5");
+  const [editEmployeeId, setEditEmployeeId] = useState("");
+  const [editJobTitle, setEditJobTitle] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+
+  // CSV bulk import (see doc comment above CSV_TEMPLATE_HEADERS).
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [csvResults, setCsvResults] = useState<CsvRowResult[] | null>(null);
 
   async function loadPeople() {
     setLoading(true);
@@ -67,6 +150,8 @@ export default function Admin() {
         access_level: accessLevel,
         reports_to: reportsTo || null,
         daily_capacity_hours: Number(capacityHours) || 7.5,
+        employee_id: employeeId.trim() || null,
+        job_title: jobTitle.trim() || null,
       },
     });
 
@@ -96,6 +181,8 @@ export default function Admin() {
     setAccessLevel("limited");
     setReportsTo("");
     setCapacityHours("7.5");
+    setEmployeeId("");
+    setJobTitle("");
     setFormOpen(false);
     loadPeople();
   }
@@ -137,7 +224,7 @@ export default function Admin() {
   // project doesn't exist as a feature yet; re-baselining exists but
   // isn't gated by this flag yet either), just settable here so the
   // designation exists ahead of that work.
-  async function toggleApprovalFlag(p: Person, field: "can_approve_reopening" | "can_approve_rebaseline", value: boolean) {
+  async function toggleApprovalFlag(p: Person, field: "can_approve_closures" | "can_approve_reopening" | "can_approve_rebaseline", value: boolean) {
     setPeople((prev) => prev.map((x) => (x.id === p.id ? { ...x, [field]: value } : x)));
     const { error } = await supabase.from("people").update({ [field]: value }).eq("id", p.id);
     if (error) {
@@ -164,6 +251,8 @@ export default function Admin() {
     setEditName(p.name);
     setEditReportsTo(p.reports_to ?? "");
     setEditCapacity(String(p.daily_capacity_hours));
+    setEditEmployeeId(p.employee_id ?? "");
+    setEditJobTitle(p.job_title ?? "");
   }
 
   function cancelEdit() {
@@ -182,6 +271,8 @@ export default function Admin() {
         name: editName.trim() || p.name,
         reports_to: editReportsTo || null,
         daily_capacity_hours: Number(editCapacity) || p.daily_capacity_hours,
+        employee_id: editEmployeeId.trim() || null,
+        job_title: editJobTitle.trim() || null,
       })
       .eq("id", p.id);
     setEditSaving(false);
@@ -193,6 +284,137 @@ export default function Admin() {
     loadPeople();
   }
 
+  async function handleCsvFile(file: File) {
+    setCsvBusy(true);
+    setCsvResults(null);
+    try {
+      const text = await file.text();
+      const { headers, rows } = parseCsvToObjects(text);
+      if (headers.length === 0 || rows.length === 0) {
+        window.alert("That file looks empty. Use \"Download template\" for the expected format.");
+        setCsvBusy(false);
+        return;
+      }
+
+      const results: CsvRowResult[] = [];
+      // reportsToByRow tracks each row's raw "Reports To" text (name or
+      // email) alongside the id of the person it applies to, so it can be
+      // resolved in a second pass below once everyone in this batch has a
+      // real people-row id (including brand-new people created moments ago).
+      const reportsToByRow: { personId: string; raw: string }[] = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNumber = i + 2; // +1 for 0-index, +1 for the header row
+        const fullName = getField(row, "Full Name", "Name").trim();
+        const emailRaw = getField(row, "Email").trim();
+        const email = emailRaw.toLowerCase();
+
+        if (!fullName || !emailRaw) {
+          results.push({ rowNumber, name: fullName || "(no name)", email: emailRaw, action: "error", message: "Full Name and Email are required." });
+          continue;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
+          results.push({ rowNumber, name: fullName, email: emailRaw, action: "error", message: "Not a valid email address." });
+          continue;
+        }
+
+        const employee_id = getField(row, "Employee ID", "Employee Id", "EmployeeID").trim() || null;
+        const job_title = getField(row, "Role", "Job Title").trim() || null;
+        const reportsToRaw = getField(row, "Reports To", "Reports to", "Manager").trim();
+        const capacityRaw = getField(row, "Capacity/Day", "Capacity per Day", "Daily Capacity", "Capacity");
+        const daily_capacity_hours = Number(capacityRaw) > 0 ? Number(capacityRaw) : 7.5;
+        const access_level: "full" | "limited" = parseYesNo(getField(row, "Admin", "Access Rights", "Access Level")) ? "full" : "limited";
+        const can_approve_closures = parseYesNo(getField(row, "Approve Closures", "Approval Closures"));
+        const can_approve_reopening = parseYesNo(getField(row, "Approve Reopening"));
+        const can_approve_rebaseline = parseYesNo(getField(row, "Approve Rebaseline"));
+        const is_active = parseStatus(getField(row, "Status"));
+
+        const existing = people.find((p) => p.email.toLowerCase() === email);
+
+        if (existing) {
+          const { error } = await supabase
+            .from("people")
+            .update({
+              name: fullName,
+              employee_id,
+              job_title,
+              daily_capacity_hours,
+              access_level,
+              can_approve_closures,
+              can_approve_reopening,
+              can_approve_rebaseline,
+              is_active,
+            })
+            .eq("id", existing.id);
+          if (error) {
+            results.push({ rowNumber, name: fullName, email: emailRaw, action: "error", message: error.message });
+            continue;
+          }
+          results.push({ rowNumber, name: fullName, email: emailRaw, action: "updated" });
+          if (reportsToRaw) reportsToByRow.push({ personId: existing.id, raw: reportsToRaw });
+        } else {
+          const { data, error } = await supabase.functions.invoke("admin-create-user", {
+            body: {
+              name: fullName,
+              email: emailRaw,
+              access_level,
+              daily_capacity_hours,
+              employee_id,
+              job_title,
+              can_approve_closures,
+              can_approve_reopening,
+              can_approve_rebaseline,
+              is_active,
+            },
+          });
+          const errBody = data as { error?: string; person?: Person; password?: string } | null;
+          if (error || errBody?.error) {
+            let message = errBody?.error || error?.message || "Failed to create login.";
+            const context = (error as { context?: Response } | undefined)?.context;
+            if (context && typeof context.json === "function") {
+              try {
+                const parsedBody = await context.clone().json();
+                if (parsedBody?.error) message = parsedBody.error;
+              } catch {
+                // not JSON -- keep generic message
+              }
+            }
+            results.push({ rowNumber, name: fullName, email: emailRaw, action: "error", message });
+            continue;
+          }
+          results.push({ rowNumber, name: fullName, email: emailRaw, action: "created", password: errBody?.password });
+          if (reportsToRaw && errBody?.person) reportsToByRow.push({ personId: errBody.person.id, raw: reportsToRaw });
+        }
+      }
+
+      // Second pass: resolve "Reports To" now that every row in this batch
+      // has a real people-row id -- matches by email first (unambiguous),
+      // falling back to an exact case-insensitive full-name match.
+      if (reportsToByRow.length > 0) {
+        const { data: freshPeople } = await supabase.from("people").select("*");
+        const all = (freshPeople as Person[]) ?? [];
+        for (const { personId, raw } of reportsToByRow) {
+          const rawLower = raw.toLowerCase();
+          const manager = all.find((p) => p.email.toLowerCase() === rawLower) ?? all.find((p) => p.name.toLowerCase() === rawLower);
+          if (!manager) {
+            const r = results.find((res) => res.email.toLowerCase() === all.find((p) => p.id === personId)?.email.toLowerCase());
+            if (r) r.message = `${r.message ? r.message + " " : ""}Couldn't match "Reports To: ${raw}" to anyone -- left blank.`;
+            continue;
+          }
+          if (manager.id === personId) continue; // can't report to self
+          await supabase.from("people").update({ reports_to: manager.id }).eq("id", personId);
+        }
+      }
+
+      setCsvResults(results);
+      loadPeople();
+    } catch (e) {
+      window.alert(`Couldn't read that file: ${e instanceof Error ? e.message : "unknown error"}`);
+    }
+    setCsvBusy(false);
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -200,23 +422,74 @@ export default function Admin() {
           <h1>User management</h1>
           <p className="subtitle">Full Access only. Grant access, adjust permissions, or deactivate people.</p>
         </div>
-        <button
-          onClick={() => setFormOpen((v) => !v)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "7px 12px",
-            fontSize: 12,
-            fontWeight: 600,
-            color: "#fff",
-            background: "var(--navy)",
-            border: "none",
-          }}
-        >
-          <UserPlus size={14} />
-          {formOpen ? "Cancel" : "Grant access"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={downloadTemplate}
+            title="Download a CSV template with the expected column headers"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--navy)",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <Download size={14} />
+            Download template
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={csvBusy}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--navy)",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              opacity: csvBusy ? 0.6 : 1,
+              cursor: csvBusy ? "default" : "pointer",
+            }}
+          >
+            <Upload size={14} />
+            {csvBusy ? "Uploading…" : "Upload CSV"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleCsvFile(file);
+              e.target.value = "";
+            }}
+          />
+          <button
+            onClick={() => setFormOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#fff",
+              background: "var(--navy)",
+              border: "none",
+            }}
+          >
+            <UserPlus size={14} />
+            {formOpen ? "Cancel" : "Grant access"}
+          </button>
+        </div>
       </div>
 
       {formOpen && (
@@ -251,6 +524,14 @@ export default function Admin() {
             Daily capacity (hrs)
             <input type="number" step="0.5" value={capacityHours} onChange={(e) => setCapacityHours(e.target.value)} style={inputStyle} />
           </label>
+          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+            Employee ID
+            <input spellCheck={false} autoComplete="off" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} style={inputStyle} />
+          </label>
+          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+            Role (job title)
+            <input spellCheck={false} autoComplete="off" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} style={inputStyle} />
+          </label>
 
           <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10 }}>
             <button
@@ -271,12 +552,14 @@ export default function Admin() {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Employee ID</th>
+              <th>Role</th>
               <th>Color</th>
               <th>Email</th>
               <th>Access</th>
               <th>Reports to</th>
               <th>Capacity/day</th>
-              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project and re-baselining aren't wired to these yet, this is just the designation ahead of that.">
+              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project, re-baselining, and Closed-project decisions aren't tiered further than this, this is just the designation.">
                 Approvals
               </th>
               <th>Status</th>
@@ -286,12 +569,12 @@ export default function Admin() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={9} style={{ color: "var(--muted)" }}>Loading…</td>
+                <td colSpan={11} style={{ color: "var(--muted)" }}>Loading…</td>
               </tr>
             )}
             {!loading && people.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ color: "var(--muted)" }}>No one yet.</td>
+                <td colSpan={11} style={{ color: "var(--muted)" }}>No one yet.</td>
               </tr>
             )}
             {people.map((p) => {
@@ -309,6 +592,32 @@ export default function Admin() {
                       />
                     ) : (
                       p.name
+                    )}
+                  </td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        value={editEmployeeId}
+                        onChange={(e) => setEditEmployeeId(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...inputStyle, marginTop: 0, width: 90 }}
+                      />
+                    ) : (
+                      p.employee_id ?? "—"
+                    )}
+                  </td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        value={editJobTitle}
+                        onChange={(e) => setEditJobTitle(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...inputStyle, marginTop: 0, width: 130 }}
+                      />
+                    ) : (
+                      p.job_title ?? "—"
                     )}
                   </td>
                   <td>
@@ -386,6 +695,14 @@ export default function Admin() {
                   </td>
                   <td>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} title="Decide WBS Closed-project decisions (in addition to Full Access and the project owner)">
+                        <input
+                          type="checkbox"
+                          checked={p.can_approve_closures}
+                          onChange={(e) => toggleApprovalFlag(p, "can_approve_closures", e.target.checked)}
+                        />
+                        Closures
+                      </label>
                       <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
                         <input
                           type="checkbox"
@@ -460,6 +777,69 @@ export default function Admin() {
           </tbody>
         </table>
       </div>
+
+      {csvResults && (
+        <Modal title="CSV import results" onClose={() => setCsvResults(null)} width={620}>
+          <p style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 0 }}>
+            {csvResults.filter((r) => r.action === "created").length} created,{" "}
+            {csvResults.filter((r) => r.action === "updated").length} updated,{" "}
+            {csvResults.filter((r) => r.action === "error").length} failed. For each newly created login below, copy
+            the password and share it (and the app link) with that person yourself -- nothing was emailed.
+          </p>
+          <div style={{ maxHeight: 360, overflowY: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Row</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Result</th>
+                  <th>Password</th>
+                </tr>
+              </thead>
+              <tbody>
+                {csvResults.map((r) => (
+                  <tr key={r.rowNumber}>
+                    <td>{r.rowNumber}</td>
+                    <td>{r.name}</td>
+                    <td>{r.email}</td>
+                    <td>
+                      <span
+                        className={`status-pill ${r.action === "error" ? "danger" : r.action === "created" ? "success" : "neutral"}`}
+                        title={r.message}
+                      >
+                        {r.action === "created" ? "Created" : r.action === "updated" ? "Updated" : r.action === "error" ? "Error" : "Skipped"}
+                      </span>
+                      {r.message && r.action !== "error" && (
+                        <div style={{ fontSize: 10.5, color: "var(--warning-text)", marginTop: 2 }}>{r.message}</div>
+                      )}
+                      {r.message && r.action === "error" && (
+                        <div style={{ fontSize: 10.5, color: "var(--danger-text)", marginTop: 2 }}>{r.message}</div>
+                      )}
+                    </td>
+                    <td>
+                      {r.password ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <code style={{ fontSize: 11 }}>{r.password}</code>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(`${r.name} <${r.email}>\nLink: ${window.location.origin}${window.location.pathname}\nTemporary password: ${r.password}`)}
+                            title="Copy name, link, and password to share with this person"
+                            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent)" }}
+                          >
+                            <Copy size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

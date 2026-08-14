@@ -1954,3 +1954,13 @@ end;
 $$;
 
 grant execute on function delete_project_and_dependents(uuid) to authenticated;
+
+-- ============================================================
+-- Migration 2026-08-14d: Employee ID + Role (job title) fields,
+-- CSV bulk-import support for User Management
+-- Sandra: CSV upload needs Employee ID and Role (job title/function,
+-- distinct from Admin/Limited access level) -- neither existed yet.
+-- ============================================================
+
+alter table people add column if not exists employee_id text unique;
+alter table people add column if not exists job_title text;
