@@ -10,7 +10,7 @@ export interface Person {
   reports_to: string | null;
   daily_capacity_hours: number;
   is_active: boolean;
-  auth_user_id: string;
+  auth_user_id: string | null;
   color: string | null;
   can_approve_closures: boolean;
   // Sandra, 2026-07-29: authorization flags for two future approval

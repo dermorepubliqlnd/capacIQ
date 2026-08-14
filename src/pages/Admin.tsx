@@ -246,6 +246,30 @@ export default function Admin() {
     setCsvResults([{ rowNumber: 1, name: p.name, email: p.email, action: "updated", message: "Password reset.", password: result?.password }]);
   }
 
+  // Sandra, 2026-08-14: found via Joseph San Jose that a roster row created
+  // by CSV-matching an existing email never gets a login (only Grant
+  // access / a brand-new CSV row do) -- this gives that person a real
+  // login after the fact, without disturbing their existing roster row
+  // (reports-to links, role, etc. all stay put).
+  async function grantLogin(p: Person) {
+    if (!window.confirm(`Create a login for ${p.name} (${p.email})? You'll get a password to share with them.`)) {
+      return;
+    }
+    setResettingId(p.id);
+    const { data, error } = await supabase.functions.invoke("admin-grant-login", {
+      body: { person_id: p.id },
+    });
+    setResettingId(null);
+    const result = data as { error?: string; password?: string } | null;
+    if (error || result?.error) {
+      const message = await extractFunctionError(error, data, "Failed to create login.");
+      window.alert(`Couldn't create a login for ${p.name}: ${message}`);
+      return;
+    }
+    setCsvResults([{ rowNumber: 1, name: p.name, email: p.email, action: "created", password: result?.password }]);
+    loadPeople();
+  }
+
   async function toggleActive(p: Person) {
     if (p.id === me?.id && p.is_active) {
       window.alert(
@@ -948,15 +972,27 @@ export default function Admin() {
                             {p.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
                             {p.is_active ? "Deactivate" : "Reactivate"}
                           </button>
-                          <button
-                            onClick={() => resetPassword(p)}
-                            disabled={resettingId === p.id}
-                            title="Generate a new password to share with this person -- no email sent"
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--navy)", fontSize: 11 }}
-                          >
-                            <KeyRound size={13} />
-                            {resettingId === p.id ? "Resetting…" : "Reset password"}
-                          </button>
+                          {p.auth_user_id ? (
+                            <button
+                              onClick={() => resetPassword(p)}
+                              disabled={resettingId === p.id}
+                              title="Generate a new password to share with this person -- no email sent"
+                              style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--navy)", fontSize: 11 }}
+                            >
+                              <KeyRound size={13} />
+                              {resettingId === p.id ? "Resetting…" : "Reset password"}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => grantLogin(p)}
+                              disabled={resettingId === p.id}
+                              title="This person doesn't have a login yet -- create one and get a password to share"
+                              style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--warning-text)", fontSize: 11 }}
+                            >
+                              <KeyRound size={13} />
+                              {resettingId === p.id ? "Creating…" : "Give login"}
+                            </button>
+                          )}
                           <button
                             onClick={() => deletePerson(p)}
                             disabled={deletingId === p.id}
