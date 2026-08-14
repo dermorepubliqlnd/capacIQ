@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, X, RotateCcw } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -12,6 +12,7 @@ import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
 import RequestExtensionModal from "../components/RequestExtensionModal";
+import NotesSidebar from "../components/NotesSidebar";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
@@ -714,6 +715,12 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
+  // Project Notes (2026-08-14): per-project note count for the list/board
+  // bubble, and which project (if any) currently has the Notes sidebar
+  // open. Counts are fetched once in loadAll() and kept in sync afterward
+  // by NotesSidebar itself calling onCountChange whenever it loads/posts.
+  const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
+  const [notesSidebarProjectId, setNotesSidebarProjectId] = useState<string | null>(null);
   const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
   const { running, busy: timerBusy, start: startTaskTimer, requestStop: stopRunningTimer, version: timeTrackingVersion } = useTimeTracking();
   // Non-working dates (Legal PH Holiday / Local Holiday / Internal Time
@@ -800,7 +807,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -813,6 +820,11 @@ export default function Projects() {
       // Hrs (see rollupHoursFor) -- fetching just those keeps this list
       // small instead of pulling every running/pending/rejected row too.
       supabase.from("time_entries").select("*").in("status", ["confirmed", "approved"]),
+      // Project Notes bubble/count (2026-08-14) -- just the project_id per
+      // note, reduced client-side into a count map. The sidebar itself
+      // fetches full note rows (body, timestamps, mentions) lazily only
+      // when opened for a given project.
+      supabase.from("project_notes").select("project_id"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -822,6 +834,11 @@ export default function Projects() {
     setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
     setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
     setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
+    const nextNoteCounts: Record<string, number> = {};
+    for (const row of (noteData as { project_id: string }[]) ?? []) {
+      nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
+    }
+    setNoteCounts(nextNoteCounts);
     // Drop any selection for rows that no longer exist in the fresh load
     // (e.g. after a bulk delete) so the bulk-action bar doesn't linger.
     const projectIds = new Set(nextProjects.map((p) => p.id));
@@ -1461,6 +1478,21 @@ export default function Projects() {
                 }}
               >
                 {p.name || "Untitled project"}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setNotesSidebarProjectId(p.id);
+                }}
+                title={
+                  noteCounts[p.id]
+                    ? `${noteCounts[p.id]} note${noteCounts[p.id] === 1 ? "" : "s"} on this project`
+                    : "Add a note to this project"
+                }
+                className={`note-bubble-btn${noteCounts[p.id] ? " has-notes" : ""}`}
+              >
+                <MessageCircle size={13} />
+                {!!noteCounts[p.id] && <span className="note-bubble-count">{noteCounts[p.id]}</span>}
               </button>
             </div>
           );
@@ -3482,6 +3514,17 @@ export default function Projects() {
           onSubmit={(newDueDate, reasonCategory, reasonNotes) =>
             submitProjectExtensionRequest(extensionProject, newDueDate, reasonCategory, reasonNotes)
           }
+        />
+      )}
+
+      {notesSidebarProjectId && (
+        <NotesSidebar
+          projectId={notesSidebarProjectId}
+          projectName={projects.find((p) => p.id === notesSidebarProjectId)?.name || "Untitled project"}
+          people={people}
+          currentPersonId={me?.id ?? null}
+          onClose={() => setNotesSidebarProjectId(null)}
+          onCountChange={(projectId, count) => setNoteCounts((prev) => ({ ...prev, [projectId]: count }))}
         />
       )}
 

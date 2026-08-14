@@ -1565,3 +1565,36 @@ alter table projects add column if not exists scoping_effort_mode text;
 -- CLOSED even though it was never locked; corrected to 'draft' and the
 -- backfill logic should treat timelines_locked=false as authoritative over
 -- a stray closeout row if this migration is ever re-derived from scratch).
+
+-- ============================================================
+-- Migration 2026-08-14: Project Notes
+-- Project-level notes (list view + board card), threaded one
+-- level deep (top-level note + flat replies), @mention tagging
+-- of people, timestamps. Visibility mirrors every other
+-- project-scoped table via can_see_project(). No update/delete
+-- policy in v1 (deliberately immutable, matches the
+-- task_planning_snapshots/audit-trail precedent) -- editing or
+-- deleting a posted note is a deliberate later follow-up if
+-- Sandra asks for it.
+-- ============================================================
+
+create table if not exists project_notes (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+  parent_id uuid references project_notes(id) on delete cascade,
+  author_id uuid not null references people(id),
+  body text not null,
+  mentioned_person_ids uuid[] not null default '{}',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists project_notes_project_id_idx on project_notes(project_id);
+create index if not exists project_notes_parent_id_idx on project_notes(parent_id);
+
+alter table project_notes enable row level security;
+
+create policy project_notes_select on project_notes for select
+  using (can_see_project(project_id));
+
+create policy project_notes_insert on project_notes for insert
+  with check (can_see_project(project_id) and author_id = my_person_id());
