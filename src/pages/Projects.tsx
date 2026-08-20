@@ -119,6 +119,15 @@ interface TaskRow {
   submitted_by: string | null;
   validated_completion_date: string | null;
   validated_by: string | null;
+  // Assignee self-reported (2026-08-20, Sandra: "allow users to add
+  // their actual task completion date") -- distinct from both
+  // submitted_on (automatic, stamped the instant Status flips to Done)
+  // and validated_completion_date (manager/owner sign-off) -- lets an
+  // assignee record the real date they finished, independent of when a
+  // validator gets around to confirming it. Locks alongside the other
+  // isTaskLocked-gated fields once validated (also enforced at the DB
+  // layer, see enforce_task_validation_field_lock in phase10_migration).
+  actual_completion_date: string | null;
   effort: string | null;
   is_archived: boolean;
   archived_at: string | null;
@@ -159,7 +168,7 @@ const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "da
 // grouping is "by Project" -- worth re-showing if grouping changes).
 // All still available via Properties, just not cluttering a fresh
 // Timeline view by default.
-const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date"];
+const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date", "actual_completion_date"];
 // Task Calendar cards are much denser than a Timeline row -- Sandra asked
 // specifically for Project/Effort/Assignee to show by default ("main
 // focal point should be the task" -- Name is always the card's title
@@ -168,8 +177,8 @@ const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days",
 // has no swimlane/group-by-project header to make it redundant (Notion's
 // own Calendar view doesn't support grouping either -- confirmed with
 // Sandra, not building it).
-const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -483,7 +492,14 @@ function calendarDaysBetween(a: Date, b: Date): number {
 // default. That old default silently hid genuinely late completions that
 // simply hadn't been through Validate yet -- Sandra's report, 2026-07-21.
 function actualCompletionDateOf(t: TaskRow): string | null {
-  return t.validated_completion_date ?? t.submitted_on;
+  // Priority: manager/owner-validated date (authoritative) > the
+  // assignee's own self-reported actual_completion_date > the automatic
+  // submitted_on stamp as a last resort (2026-08-20: added the
+  // self-reported tier between the two existing ones, at Sandra's
+  // request, so Days +/- reflects when someone says they actually
+  // finished rather than only the system's Done-flip timestamp once a
+  // validator gets to it).
+  return t.validated_completion_date ?? t.actual_completion_date ?? t.submitted_on;
 }
 
 function timingOf(t: TaskRow): { label: string; tone: "success" | "warning" | "danger" | "neutral" } {
@@ -734,6 +750,16 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
+  // Manager-chain data for the new validation-authority check below
+  // (2026-08-20) -- deliberately a SEPARATE, unfiltered fetch (includes
+  // inactive people) from `people` above, which stays active-only for
+  // assignee dropdowns etc. Walking a reports_to chain to find the
+  // nearest ACTIVE manager needs to see inactive intermediates too, or
+  // the chain breaks the moment it hits one. This is only used for
+  // deciding whether to show the Validate button -- the real
+  // authorization gate is the validate_task_completion RPC server-side,
+  // so an approximate client-side check here is fine.
+  const [chainPeople, setChainPeople] = useState<{ id: string; reports_to: string | null; is_active: boolean }[]>([]);
   // Project Notes (2026-08-14): per-project note count for the list/board
   // bubble, and which project (if any) currently has the Notes sidebar
   // open. Counts are fetched once in loadAll() and kept in sync afterward
@@ -830,10 +856,11 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
+      supabase.from("people").select("id,reports_to,is_active"),
       supabase.from("holidays").select("date"),
       supabase
         .from("extension_requests")
@@ -856,6 +883,7 @@ export default function Projects() {
     setProjects(nextProjects);
     setTasks(nextTasks);
     setPeople((peopleData as PersonOption[]) ?? []);
+    setChainPeople((chainPeopleData as { id: string; reports_to: string | null; is_active: boolean }[]) ?? []);
     setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
     setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
     setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
@@ -941,6 +969,39 @@ export default function Projects() {
   // action restricted to Full Access only -- see the Reopen button in the
   // validated_completion_date column.
   const isTaskLocked = (t: TaskRow) => Boolean(t.validated_completion_date);
+
+  // Manager-chain fallback (2026-08-20, mirrors nearest_active_manager()
+  // in phase10_migration.sql, best-effort client-side approximation only
+  // -- validate_task_completion enforces this authoritatively server-
+  // side). Walks reports_to from personId, skipping inactive accounts,
+  // returns the first active manager found.
+  function nearestActiveManagerClient(personId: string | null): string | null {
+    if (!personId) return null;
+    let current = chainPeople.find((p) => p.id === personId)?.reports_to ?? null;
+    let depth = 0;
+    while (current && depth < 20) {
+      const mgr = chainPeople.find((p) => p.id === current);
+      if (mgr?.is_active) return mgr.id;
+      current = mgr?.reports_to ?? null;
+      depth += 1;
+    }
+    return null;
+  }
+
+  // Validation authority (2026-08-20, Sandra: "project owner, also allow
+  // immediate manager and skip level as fallback") -- broadened from
+  // owner/Full-Access-only. The assignee's immediate manager can always
+  // validate; someone further up only if the immediate manager's account
+  // is inactive. Approximate here (see nearestActiveManagerClient above);
+  // validate_task_completion is the real gate.
+  function canValidateTask(t: TaskRow): boolean {
+    if (canManageTasksIn(t.project_id)) return true;
+    if (!t.assignee_id || !me?.id) return false;
+    const immediateManager = chainPeople.find((p) => p.id === t.assignee_id)?.reports_to ?? null;
+    if (immediateManager === me.id) return true;
+    return nearestActiveManagerClient(t.assignee_id) === me.id;
+  }
+
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
@@ -2392,11 +2453,17 @@ export default function Projects() {
         defaultWidth: 160,
         minWidth: 140,
         // Independent completion check, distinct from the assignee's own
-        // submitted_on stamp (set automatically when Status flips to Done
-        // above) -- only the project owner or Full Access can validate or
-        // correct this date, never the assignee themselves.
+        // submitted_on/actual_completion_date (see the Actual Completion
+        // column below) -- broadened 2026-08-20 (Sandra: "project owner,
+        // also allow immediate manager and skip level as fallback") from
+        // owner/Full-Access-only, see canValidateTask above. Both actions
+        // now go through validate_task_completion/reopen_task (real RPCs,
+        // enforced server-side -- see phase10_migration.sql) rather than
+        // a plain client-side-gated update, since a manager who isn't the
+        // project owner has no direct row-level access to this task at
+        // all.
         render: (t) => {
-          const canValidate = canManageTasksIn(t.project_id);
+          const canValidate = canValidateTask(t);
           if (t.status !== "Done") {
             return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>—</span>;
           }
@@ -2404,7 +2471,11 @@ export default function Projects() {
             if (!canValidate) return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>Pending validation</span>;
             return (
               <button
-                onClick={() => updateTask(t.id, { validated_completion_date: new Date().toISOString(), validated_by: me?.id ?? null })}
+                onClick={async () => {
+                  const { error } = await supabase.rpc("validate_task_completion", { p_task_id: t.id });
+                  if (error) alert(`Couldn't validate: ${error.message}`);
+                  else loadAll();
+                }}
                 style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", cursor: "pointer" }}
               >
                 <CheckCircle2 size={13} />
@@ -2418,9 +2489,11 @@ export default function Projects() {
               <InlineDate
                 value={dateOnly}
                 editable={canValidate}
-                onCommit={(v) => {
+                onCommit={async (v) => {
                   if (!v) return;
-                  updateTask(t.id, { validated_completion_date: new Date(v).toISOString(), validated_by: me?.id ?? null });
+                  const { error } = await supabase.rpc("validate_task_completion", { p_task_id: t.id, p_validated_date: new Date(v).toISOString() });
+                  if (error) alert(`Couldn't save: ${error.message}`);
+                  else loadAll();
                 }}
               />
               <span style={{ fontSize: 10, color: "var(--muted)" }} title="Validated by">
@@ -2428,12 +2501,13 @@ export default function Projects() {
               </span>
               {/* Reopening clears the validation and reverts Status to
                   In Progress, unlocking Assignee/Status/Effort/Est. Hrs/
-                  Start/Due again (see isTaskLocked above). Restricted to
-                  Full Access only, never the project owner -- Sandra,
-                  2026-07-22: "keep it for full access only" -- a
-                  deliberate, visible action rather than something that
-                  falls out of just editing Status directly (which is now
-                  locked once validated). */}
+                  Start/Due (and now Actual Completion) again (see
+                  isTaskLocked above). Restricted to Full Access only,
+                  never the project owner or a manager -- Sandra,
+                  2026-07-22: "keep it for full access only" -- unchanged
+                  by the 2026-08-20 validation-authority broadening,
+                  which only expanded who can VALIDATE, not who can
+                  reopen. */}
               {isFullAccess && (
                 <button
                   onClick={async () => {
@@ -2443,13 +2517,9 @@ export default function Projects() {
                       confirmLabel: "Reopen",
                     });
                     if (!ok) return;
-                    updateTask(t.id, {
-                      validated_completion_date: null,
-                      validated_by: null,
-                      status: "In Progress",
-                      submitted_on: null,
-                      submitted_by: null,
-                    });
+                    const { error } = await supabase.rpc("reopen_task", { p_task_id: t.id });
+                    if (error) alert(`Couldn't reopen: ${error.message}`);
+                    else loadAll();
                   }}
                   title="Reopen -- clears validation and unlocks this task"
                   style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: 2, color: "var(--muted)" }}
@@ -2458,6 +2528,34 @@ export default function Projects() {
                 </button>
               )}
             </div>
+          );
+        },
+      },
+      {
+        key: "actual_completion_date",
+        label: "Actual Completion",
+        defaultWidth: 160,
+        minWidth: 140,
+        // Self-reported by the assignee (2026-08-20, Sandra: "allow users
+        // to add their actual task completion date") -- independent of
+        // submitted_on (automatic) and validated_completion_date (manager
+        // sign-off). Feeds actualCompletionDateOf's fallback chain (ahead
+        // of submitted_on, behind validated_completion_date) for Timing
+        // and Days +/-. Editable by the assignee or anyone who can manage
+        // this project's tasks, same as most other task fields, and
+        // freezes once validated (isTaskLocked), enforced both here and
+        // at the DB layer (enforce_task_validation_field_lock).
+        render: (t) => {
+          const editable = canEditTask(t) && !isTaskLocked(t);
+          if (t.status !== "Done" && !t.actual_completion_date) {
+            return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>—</span>;
+          }
+          return (
+            <InlineDate
+              value={t.actual_completion_date}
+              editable={editable}
+              onCommit={(v) => updateTask(t.id, { actual_completion_date: v || null })}
+            />
           );
         },
       },
