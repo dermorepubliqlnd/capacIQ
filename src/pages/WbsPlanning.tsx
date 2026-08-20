@@ -2435,6 +2435,9 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ minWidth: 200 }}>
                     Task
                   </th>
+                  <th rowSpan={2} style={{ width: 130 }}>
+                    Work Type
+                  </th>
                   <th rowSpan={2} style={{ width: 90 }}>
                     Planned Effort Hours
                   </th>
@@ -2443,9 +2446,6 @@ export default function WbsPlanning() {
                   </th>
                   <th rowSpan={2} style={{ width: 90 }}>
                     Effort
-                  </th>
-                  <th rowSpan={2} style={{ width: 130 }}>
-                    Work Type
                   </th>
                   <th rowSpan={2} style={{ width: 150 }}>
                     Assignee
@@ -2567,6 +2567,35 @@ export default function WbsPlanning() {
                         </div>
                       </td>
                       <td>
+                        {isParent ? (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
+                            N/A
+                          </span>
+                        ) : (
+                          (() => {
+                            const currentWt = workTypes.find((w) => w.id === t.work_type_id);
+                            // Active work types for the picker, plus the
+                            // task's own currently-set Work Type even if it
+                            // was since deactivated, so its historical
+                            // label doesn't just vanish from the dropdown.
+                            const pickable = workTypes.filter((w) => w.is_active || w.id === t.work_type_id);
+                            return (
+                              <InlineSelect
+                                value={currentWt?.name ?? ""}
+                                editable={rowEditable}
+                                allowEmpty
+                                emptyLabel="Pick work type"
+                                options={pickable.map((w) => w.name)}
+                                onCommit={(v) => {
+                                  const match = pickable.find((w) => w.name === v);
+                                  saveTaskField(t.id, { work_type_id: match?.id ?? null });
+                                }}
+                              />
+                            );
+                          })()
+                        )}
+                      </td>
+                      <td>
                         <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Planned Effort Hours)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
@@ -2602,35 +2631,6 @@ export default function WbsPlanning() {
                               </span>
                             )}
                           </span>
-                        )}
-                      </td>
-                      <td>
-                        {isParent ? (
-                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
-                            N/A
-                          </span>
-                        ) : (
-                          (() => {
-                            const currentWt = workTypes.find((w) => w.id === t.work_type_id);
-                            // Active work types for the picker, plus the
-                            // task's own currently-set Work Type even if it
-                            // was since deactivated, so its historical
-                            // label doesn't just vanish from the dropdown.
-                            const pickable = workTypes.filter((w) => w.is_active || w.id === t.work_type_id);
-                            return (
-                              <InlineSelect
-                                value={currentWt?.name ?? ""}
-                                editable={rowEditable}
-                                allowEmpty
-                                emptyLabel="Pick work type"
-                                options={pickable.map((w) => w.name)}
-                                onCommit={(v) => {
-                                  const match = pickable.find((w) => w.name === v);
-                                  saveTaskField(t.id, { work_type_id: match?.id ?? null });
-                                }}
-                              />
-                            );
-                          })()
                         )}
                       </td>
                       <td>

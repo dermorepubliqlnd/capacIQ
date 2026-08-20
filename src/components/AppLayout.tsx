@@ -18,6 +18,7 @@ const resourcePlanningItems = [
 
 const adminItems = [
   { to: "/admin", label: "User management" },
+  { to: "/site-settings", label: "Site settings" },
   { to: "/admin/holidays", label: "Holiday calendar" },
 ];
 

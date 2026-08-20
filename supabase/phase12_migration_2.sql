@@ -1,0 +1,42 @@
+-- ---------------------------------------------------------------------
+-- Phase 12 migration #2 (2026-08-20): add a delete RLS policy for
+-- work_types, backing the new Delete button added to the Work Types
+-- card (moved to its own Site Settings page in this same round -- see
+-- src/pages/SiteSettings.tsx).
+--
+-- phase12_migration.sql deliberately shipped WITHOUT a delete policy,
+-- reasoning that deactivate (is_active = false) was the only supported
+-- removal path. Sandra has since asked for an actual Delete option, but
+-- only when a Work Type is unused (no task references it) -- so the
+-- client (SiteSettings.tsx's deleteWorkType()) does a count check
+-- against tasks.work_type_id first and shows a friendly
+-- "N task(s) still use this" alert instead of attempting the delete at
+-- all when count > 0. That count check is the primary UX path.
+--
+-- Per [[feedback_supabase_rls_silent_delete_noop]], a delete against a
+-- table with RLS enabled and NO delete policy silently no-ops (0 rows
+-- affected, no error) rather than raising -- which would make a genuine
+-- delete attempt on an unused row silently fail with no feedback. This
+-- policy is what makes the client's delete call actually take effect
+-- for Full Access users.
+drop policy if exists work_types_delete on work_types;
+create policy work_types_delete on work_types for delete
+  using (my_access_level() = 'full');
+
+-- Backstop note (assumption, not verified against the live DB from this
+-- sandbox -- no DB access here, only the SQL history in this repo):
+-- tasks.work_type_id was added by phase12_migration.sql as
+--   alter table tasks add column if not exists work_type_id uuid references work_types(id);
+-- with no ON DELETE clause specified, so Postgres defaults that foreign
+-- key to ON DELETE NO ACTION. That means even if this policy's delete
+-- somehow raced past the client-side usage count (e.g. a concurrent
+-- insert assigns the work type to a task in between the count check and
+-- the delete call), Postgres itself would reject the DELETE outright
+-- with a foreign-key-violation error rather than cascading the delete
+-- into orphaned/null task rows or silently succeeding. NO ACTION is the
+-- correct, intentional backstop here and this migration does not change
+-- it -- if you're applying this against the live DB, it's worth a quick
+-- information_schema check to confirm no earlier migration overrode it:
+--   select confdeltype from pg_constraint
+--     where conrelid = 'tasks'::regclass and confrelid = 'work_types'::regclass;
+-- ('a' = NO ACTION, the expected/assumed value; 'c' = CASCADE, 'n' = SET NULL).

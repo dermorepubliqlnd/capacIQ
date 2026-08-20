@@ -8,6 +8,7 @@ import ExtensionRequests from "./pages/ExtensionRequests";
 import TimeTracking from "./pages/TimeTracking";
 import Utilization from "./pages/Utilization";
 import Admin from "./pages/Admin";
+import SiteSettings from "./pages/SiteSettings";
 import DayPlanner from "./pages/DayPlanner";
 import HolidayCalendar from "./pages/HolidayCalendar";
 import WbsPlanning from "./pages/WbsPlanning";
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="/utilization" element={<Utilization />} />
           <Route path="/day-planner" element={<DayPlanner />} />
           <Route path="/admin" element={<Admin />} />
+          <Route path="/site-settings" element={<SiteSettings />} />
           <Route path="/admin/holidays" element={<HolidayCalendar />} />
         </Route>
       </Routes>
