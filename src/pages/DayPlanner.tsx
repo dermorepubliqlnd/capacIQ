@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, typ
 import { ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
+import { PROJECT_PM_DAILY_HOURS } from "../lib/capacityScheduler";
 
 interface PersonRow {
   id: string;
@@ -102,14 +103,26 @@ const RANGE_OPTIONS = [1, 2, 4] as const;
 // defaults to a small recurring project-management/coordination allowance
 // rather than sitting blank — still edited like any other cell, just
 // capped low so it stays overhead time, not a place to log real project work.
-const PROJECT_PM_DEFAULT_HOURS = 0.5;
+// Phase 2 (2026-08-20): the default itself now comes from
+// capacityScheduler.ts's PROJECT_PM_DAILY_HOURS, unifying this with
+// Utilization.tsx's own PM-overhead allowance (they used to be two
+// separately-tuned mechanisms -- see that file's pmHoursFor doc comment).
+// PROJECT_PM_MAX_HOURS stays Day-Planner-specific: it's a manual-entry cap
+// on this one cell, unrelated to the unification.
 const PROJECT_PM_MAX_HOURS = 2;
 const CELL_W = 58;
 const LABEL_W = 275;
 
+// Phase 2 (2026-08-20): thresholds moved to align with Utilization.tsx's
+// new 6-tier bands (utilizationBands.ts) -- danger now starts where that
+// page's "Overloaded" tier starts (>100%), and warning now starts where
+// its "High" tier starts (>=81%), so Day Planner's simplified 3-tone view
+// stays conceptually consistent with the richer grid. Day Planner
+// intentionally keeps its own 3-tone logic rather than importing the new
+// tierOf -- it only ever needs success/warning/danger for its own styling.
 function utilTone(pct: number): "success" | "warning" | "danger" {
-  if (pct > 110) return "danger";
-  if (pct >= 80) return "warning";
+  if (pct > 100) return "danger";
+  if (pct >= 81) return "warning";
   return "success";
 }
 
@@ -301,7 +314,7 @@ export default function DayPlanner() {
       if (alloc) return sum + Number(alloc.hours);
       if (item.type === "project" && inWindow(item, dateStr)) {
         const proj = projects.find((p) => p.id === item.id);
-        if (proj && ownerMatchesOnDate(proj, personId, dateStr)) return sum + PROJECT_PM_DEFAULT_HOURS;
+        if (proj && ownerMatchesOnDate(proj, personId, dateStr)) return sum + PROJECT_PM_DAILY_HOURS;
       }
       return sum;
     }, 0);
@@ -663,7 +676,7 @@ export default function DayPlanner() {
                               const itemProject = item.type === "project" ? projects.find((p) => p.id === item.id) : undefined;
                               const defaultValue =
                                 item.type === "project" && itemProject && ownerMatchesOnDate(itemProject, person.id, dateStr)
-                                  ? String(PROJECT_PM_DEFAULT_HOURS)
+                                  ? String(PROJECT_PM_DAILY_HOURS)
                                   : "";
                               const value = drafts[draftKey] ?? (alloc ? String(alloc.hours) : defaultValue);
                               const openForEntry = !blocked && win;
@@ -674,7 +687,7 @@ export default function DayPlanner() {
                                       value={value}
                                       disabled={!isMe}
                                       placeholder={isMe ? "–" : ""}
-                                      title={item.type === "project" ? `Defaults to ${PROJECT_PM_DEFAULT_HOURS}h project management time — editable, capped at ${PROJECT_PM_MAX_HOURS}h/day` : undefined}
+                                      title={item.type === "project" ? `Defaults to ${PROJECT_PM_DAILY_HOURS}h project management time — editable, capped at ${PROJECT_PM_MAX_HOURS}h/day` : undefined}
                                       onChange={(e) => setDrafts((prev) => ({ ...prev, [draftKey]: e.target.value }))}
                                       onFocus={(e) => e.target.select()}
                                       onBlur={(e) => {

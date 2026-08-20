@@ -1,7 +1,16 @@
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, TrendingUp, Gauge, AlertTriangle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { TASK_STATUS_GROUPED, TASK_EFFORT_POINTS, statusGroupOf } from "../lib/notionOptions";
+import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
+import { buildHolidaySet } from "../lib/workingDays";
+import {
+  PROJECT_PM_DAILY_HOURS,
+  buildForwardSchedule,
+  type SchedTaskRow,
+  type SchedProjectRow,
+  type SchedAvailabilityRow,
+} from "../lib/capacityScheduler";
+import { tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
 
 interface PersonRow {
   id: string;
@@ -25,7 +34,7 @@ interface TaskRow {
   status: string | null;
   start_date: string | null;
   current_due_date: string;
-  effort: string | null;
+  estimated_hours: number | null;
   is_archived: boolean;
 }
 interface AvailabilityRow {
@@ -56,15 +65,17 @@ interface AssigneeHistoryRow {
   effective_from: string;
   effective_to: string | null;
 }
-// Deletion history archive (2026-08-14c): when a task/project is
-// permanently deleted, its already-elapsed Utilization points are archived
-// (supabase/policies.sql "Migration 2026-08-14c") as raw per-person-per-day
-// numbers before the row disappears -- deliberately no task/project name
-// retained ("just the numbers", Sandra's explicit choice for this scope).
-interface DeletedPointRow {
+// Deletion history archive (2026-08-14c, hours-native since Phase 2
+// 2026-08-20): when a task/project is permanently deleted, its
+// already-elapsed Utilization hours are archived (supabase/policies.sql
+// "Migration 2026-08-14c", table shape updated by the Phase 2 migration)
+// as raw per-person-per-day numbers before the row disappears --
+// deliberately no task/project name retained ("just the numbers", Sandra's
+// explicit choice for this scope).
+interface DeletedHourRow {
   person_id: string;
   date: string;
-  points: number;
+  hours: number;
 }
 
 // Same local-timezone date helpers used everywhere else in the app — never
@@ -95,20 +106,29 @@ const RANGE_OPTIONS = [1, 2, 4] as const;
 // two grids stay visually matched.
 const CELL_W = 58;
 const LABEL_W = 275;
+// Weekly-mode columns need more room than a daily cell (two lines: avg %
+// and a "planned / available" hours summary underneath).
+const WEEK_CELL_W = 108;
 
-// A "standard" workday, used only to normalize daily point-capacity — a
-// person whose own daily capacity (set in User management) equals this
-// has a capacity of exactly 1 point/day, i.e. one Heavy (2-pt) task every
-// other day. Not shown anywhere; purely a conversion factor.
-const STANDARD_DAILY_HOURS = 7.5;
-
-// Project-ownership "PM overhead" — mirrors the Day Planner's existing
-// manual PM default (0.5h/day, capped 2h/day) expressed in points
-// (0.5/7.5 ≈ 0.1, 2/7.5 ≈ 0.3), so a project owner with no assigned tasks
-// yet doesn't sit at a flat 0%, without ownership alone driving anyone
-// past "Available". Cap applies across ALL projects a person owns combined.
-const PROJECT_PM_POINTS_PER_DAY = 0.1;
-const PROJECT_PM_POINTS_CAP_PER_DAY = 0.3;
+// Icon per band tier -- utilizationBands.ts intentionally stays decoupled
+// from any icon library (see its own header comment), so the key->icon
+// mapping lives here instead.
+const TIER_ICONS: Record<string, typeof Minus> = {
+  unallocated: Minus,
+  available: Circle,
+  healthy: CheckCircle2,
+  high: TrendingUp,
+  full: Gauge,
+  overloaded: AlertTriangle,
+};
+const LEGEND_ICON_BY_LABEL: Record<string, typeof Minus> = {
+  Unallocated: Minus,
+  Available: Circle,
+  Healthy: CheckCircle2,
+  High: TrendingUp,
+  Full: Gauge,
+  Overloaded: AlertTriangle,
+};
 
 function rollupCellStyle(i: number): CSSProperties {
   return {
@@ -130,29 +150,33 @@ function subCellStyle(i: number): CSSProperties {
     borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
   };
 }
-
-// The 5 tiers Sandra specified, verbatim thresholds: 0 = grey, 1-59% =
-// light green, 60-80% = green, 81-100% = yellow, >100% = red.
-function tierOf(pct: number): { key: string; label: string; bg?: string; fg: string; Icon: typeof Minus } {
-  if (pct <= 0) return { key: "none", label: "No project", fg: "var(--muted)", Icon: Minus };
-  if (pct < 60) return { key: "available", label: "Available", bg: "var(--available-bg)", fg: "var(--available-text)", Icon: Circle };
-  if (pct <= 80) return { key: "healthy", label: "Healthy", bg: "var(--success-bg)", fg: "var(--success-text)", Icon: CheckCircle2 };
-  if (pct <= 100) return { key: "near_full", label: "Near full capacity", bg: "var(--warning-bg)", fg: "var(--warning-text)", Icon: AlertTriangle };
-  return { key: "overloaded", label: "Overloaded", bg: "var(--danger-bg)", fg: "var(--danger-text)", Icon: AlertTriangle };
+function rollupWeekCellStyle(wi: number): CSSProperties {
+  return {
+    width: WEEK_CELL_W,
+    minWidth: WEEK_CELL_W,
+    textAlign: "center",
+    padding: "9px 3px",
+    borderBottom: "1px solid var(--border)",
+    borderLeft: wi === 0 ? undefined : "1px solid var(--border)",
+  };
+}
+function subWeekCellStyle(wi: number): CSSProperties {
+  return {
+    width: WEEK_CELL_W,
+    minWidth: WEEK_CELL_W,
+    textAlign: "center",
+    padding: "5px 3px",
+    borderBottom: "1px solid var(--border)",
+    borderLeft: wi === 0 ? undefined : "1px solid var(--border)",
+  };
 }
 
-const LEGEND = [
-  { pct: "0%", label: "No project", tone: "neutral", Icon: Minus },
-  { pct: "1–59%", label: "Available", tone: "available", Icon: Circle },
-  { pct: "60–80%", label: "Healthy", tone: "success", Icon: CheckCircle2 },
-  { pct: "81–100%", label: "Near full capacity", tone: "warning", Icon: AlertTriangle },
-  { pct: "100%+", label: "Overloaded", tone: "danger", Icon: AlertTriangle },
-];
-
-// Every open task's effort points are spread evenly across its own Mon-Fri
-// working days between start and due date (fallback: the due date itself,
-// if that window is entirely a weekend) — this is what makes the grid
-// date-aware instead of lumping a task's whole effort into every day.
+// Every open task's Planned Effort Hours are spread evenly across its own
+// Mon-Fri working days between start and due date (fallback: the due date
+// itself, if that window is entirely a weekend) -- this is what makes the
+// grid date-aware instead of lumping a task's whole effort into every day.
+// Used for PAST dates only (see capacityScheduler.ts's buildForwardSchedule
+// for today-and-future).
 function taskWorkingDays(t: TaskRow): string[] {
   const windowStart = parseLocalDate(t.start_date ?? t.current_due_date);
   const windowEnd = parseLocalDate(t.current_due_date);
@@ -165,10 +189,10 @@ function taskWorkingDays(t: TaskRow): string[] {
   return days.length ? days : [t.current_due_date];
 }
 
-// A project's own working-day window, for PM-overhead points — unlike
+// A project's own working-day window, for PM-overhead hours -- unlike
 // tasks there's no due-date fallback: a project with no start/end date set
-// simply doesn't contribute PM points yet (same "set your dates" nudge
-// used everywhere else in the app).
+// simply doesn't contribute PM hours yet (same "set your dates" nudge used
+// everywhere else in the app).
 function projectWorkingDays(p: ProjectRow): string[] {
   if (!p.start_date || !p.end_date) return [];
   const windowStart = parseLocalDate(p.start_date);
@@ -190,24 +214,25 @@ export default function Utilization() {
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
   const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
-  const [deletedPoints, setDeletedPoints] = useState<DeletedPointRow[]>([]);
+  const [deletedHours, setDeletedHours] = useState<DeletedHourRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(2);
   const [expanded, setExpanded] = useState<string[]>([]);
+  const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delPts }, { data: settings }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
-      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,effort,is_archived").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
-      supabase.from("deleted_person_day_points").select("person_id,date,points"),
+      supabase.from("deleted_person_day_hours").select("person_id,date,hours"),
       supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
     ]);
     setPeople((p as PersonRow[]) ?? []);
@@ -224,7 +249,7 @@ export default function Utilization() {
     const historicalLockingEnabled = (settings as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false;
     setOwnerHistory(historicalLockingEnabled ? (ownHist as OwnerHistoryRow[]) ?? [] : []);
     setAssigneeHistory(historicalLockingEnabled ? (assHist as AssigneeHistoryRow[]) ?? [] : []);
-    setDeletedPoints((delPts as DeletedPointRow[]) ?? []);
+    setDeletedHours((delHrs as DeletedHourRow[]) ?? []);
     setLoading(false);
   }
 
@@ -254,6 +279,9 @@ export default function Utilization() {
     return m;
   }, [holidays]);
 
+  const holidaySet = useMemo(() => buildHolidaySet(holidays.map((h) => h.date)), [holidays]);
+  const today = useMemo(() => toISO(new Date()), []);
+
   function availabilityFor(personId: string, dateStr: string): AvailabilityRow | undefined {
     return availability.find((a) => a.person_id === personId && a.date === dateStr);
   }
@@ -265,12 +293,12 @@ export default function Utilization() {
   }
 
   // 2026-07-28: parent tasks (tasks with their own sub-tasks) are excluded
-  // from utilization points -- a parent's own span/hours are already just
-  // a rollup of its children (see WBS Planning's parentAssigneeState /
-  // the Effort "N/A" treatment for parents), so counting a parent's own
-  // Effort+Assignee here on top of its children's would double-count
-  // whoever it's assigned to. `parentTaskIds` is every id that appears as
-  // some other task's own parent_task_id.
+  // from utilization hours -- a parent's own span/hours are already just a
+  // rollup of its children (see WBS Planning's parentAssigneeState / the
+  // Effort "N/A" treatment for parents), so counting a parent's own
+  // Estimated Hours+Assignee here on top of its children's would
+  // double-count whoever it's assigned to. `parentTaskIds` is every id
+  // that appears as some other task's own parent_task_id.
   const parentTaskIds = new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
   // "Ever associated" -- 2026-08-14: a person's expandable sub-rows now
   // list every task/project their history shows they EVER held, not just
@@ -280,7 +308,10 @@ export default function Utilization() {
   // date range this specific person actually held it -- the old assignee's
   // sub-row goes to 0 the day it moves on, the new assignee's sub-row
   // starts contributing from that same day, and the two together always
-  // sum to the task/project's real total (no double-count, no gap).
+  // sum to the task/project's real total (no double-count, no gap). This
+  // history-aware attribution only applies to PAST dates -- see
+  // buildForwardSchedule's own current-assignee-only filtering for today
+  // and future dates.
   function historicalOwnerIds(projectId: string): Set<string> {
     return new Set(ownerHistory.filter((h) => h.project_id === projectId).map((h) => h.person_id));
   }
@@ -298,15 +329,15 @@ export default function Utilization() {
     return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
   }
 
-  // Deletion archive: folds archived points from permanently-deleted
+  // Deletion archive: folds archived hours from permanently-deleted
   // tasks/projects into a person's daily total, and flags whether they
   // have any at all (to show the generic "Deleted items" sub-row below --
   // generic because no task/project name was retained for these).
-  function deletedPointsFor(personId: string, dateStr: string): number {
-    return deletedPoints.filter((d) => d.person_id === personId && d.date === dateStr).reduce((sum, d) => sum + Number(d.points), 0);
+  function deletedHoursFor(personId: string, dateStr: string): number {
+    return deletedHours.filter((d) => d.person_id === personId && d.date === dateStr).reduce((sum, d) => sum + Number(d.hours), 0);
   }
   function hasDeletedHistory(personId: string): boolean {
-    return deletedPoints.some((d) => d.person_id === personId);
+    return deletedHours.some((d) => d.person_id === personId);
   }
 
   function openTasksFor(personId: string): TaskRow[] {
@@ -321,49 +352,152 @@ export default function Utilization() {
     return projects.filter((p) => p.owner_id === personId || historicalOwnerIds(p.id).has(personId));
   }
 
-  // A task's points on a specific date for a specific person -- 0 if that
-  // date isn't one of the task's own working days (out of window, or
-  // effort not set yet), OR if history says this person didn't actually
+  // A task's hours on a specific PAST date for a specific person -- 0 if
+  // that date isn't one of the task's own working days (out of window, or
+  // hours not set yet), OR if history says this person didn't actually
   // hold the assignment on that specific date (post-transfer split).
-  function taskPointsOnDate(t: TaskRow, dateStr: string, forPersonId?: string): number {
-    const points = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
-    if (points === 0) return 0;
+  function taskHoursOnDate(t: TaskRow, dateStr: string, forPersonId?: string): number {
+    const hours = t.estimated_hours ?? 0;
+    if (hours === 0) return 0;
     const workingDays = taskWorkingDays(t);
     if (!workingDays.includes(dateStr)) return 0;
     if (forPersonId && !assigneeMatchesOnDate(t, forPersonId, dateStr)) return 0;
-    return points / workingDays.length;
+    return hours / workingDays.length;
   }
 
-  // PM-overhead points for everything a person owns on a given date, with
-  // the combined cap applied proportionally across projects so the
-  // expanded sub-rows always sum exactly to the rollup's PM contribution.
-  // "Owns" is evaluated per-date via history, not the project's current
-  // owner_id, so a transferred project's PM overhead splits correctly
-  // across the handoff date instead of retroactively moving in full.
-  function pmPointsFor(personId: string, dateStr: string): { total: number; perProject: Map<string, number> } {
+  // PM-overhead hours for everything a person owns on a given PAST date.
+  // Phase 2 (2026-08-20): unifies what used to be two separate mechanisms
+  // (Day Planner's manual 0.5h/day default, and this page's old
+  // points-based combined-cap model) into one flat allowance -- each owned
+  // project gets PROJECT_PM_DAILY_HOURS/day on its own working days, with
+  // NO combined cap across projects. "Owns" is evaluated per-date via
+  // history, not the project's current owner_id, so a transferred
+  // project's PM overhead splits correctly across the handoff date instead
+  // of retroactively moving in full.
+  function pmHoursFor(personId: string, dateStr: string): { total: number; perProject: Map<string, number> } {
     const owned = ownedProjectsFor(personId).filter((p) => ownerMatchesOnDate(p, personId, dateStr) && projectWorkingDays(p).includes(dateStr));
-    const rawTotal = owned.length * PROJECT_PM_POINTS_PER_DAY;
-    const scale = rawTotal > PROJECT_PM_POINTS_CAP_PER_DAY && rawTotal > 0 ? PROJECT_PM_POINTS_CAP_PER_DAY / rawTotal : 1;
-    const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_POINTS_PER_DAY * scale]));
-    return { total: Math.min(rawTotal, PROJECT_PM_POINTS_CAP_PER_DAY), perProject };
+    const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_DAILY_HOURS]));
+    return { total: owned.length * PROJECT_PM_DAILY_HOURS, perProject };
   }
 
-  function dailyPointsFor(personId: string, dateStr: string): number {
-    const taskPoints = openTasksFor(personId).reduce((sum, t) => sum + taskPointsOnDate(t, dateStr, personId), 0);
-    return taskPoints + pmPointsFor(personId, dateStr).total + deletedPointsFor(personId, dateStr);
+  function dailyHoursFor(personId: string, dateStr: string): number {
+    const taskHours = openTasksFor(personId).reduce((sum, t) => sum + taskHoursOnDate(t, dateStr, personId), 0);
+    return taskHours + pmHoursFor(personId, dateStr).total + deletedHoursFor(personId, dateStr);
   }
 
   function dailyCapacityFor(person: PersonRow, halfDay: boolean): number {
-    return (person.daily_capacity_hours / STANDARD_DAILY_HOURS) * (halfDay ? 0.5 : 1);
+    return person.daily_capacity_hours * (halfDay ? 0.5 : 1);
   }
+
+  // Phase 2: today-and-future days route through the new capacity-aware
+  // forward scheduler instead of the even-split calc above -- one schedule
+  // built per person, memoized, covering `today` through a full year out
+  // (maxDaysGuard) so a queued-up task's projected due date resolves even
+  // if it falls past the currently-visible week range.
+  const isCompleteStatus = (status: string | null) => statusGroupOf(TASK_STATUS_GROUPED, status) === "complete";
+  const schedulesByPerson = useMemo(() => {
+    const schedTasks: SchedTaskRow[] = tasks.map((t) => ({
+      id: t.id,
+      project_id: t.project_id,
+      parent_task_id: t.parent_task_id,
+      assignee_id: t.assignee_id,
+      status: t.status,
+      start_date: t.start_date,
+      current_due_date: t.current_due_date,
+      estimated_hours: t.estimated_hours,
+    }));
+    const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date }));
+    const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
+    const map = new Map<string, ReturnType<typeof buildForwardSchedule>>();
+    people.forEach((person) => {
+      map.set(
+        person.id,
+        buildForwardSchedule({
+          personId: person.id,
+          fromDateStr: today,
+          tasks: schedTasks,
+          parentTaskIds,
+          isCompleteStatus,
+          projects: schedProjects,
+          person: { id: person.id, daily_capacity_hours: person.daily_capacity_hours },
+          holidaySet,
+          availability: schedAvailability,
+          maxDaysGuard: 365,
+        })
+      );
+    });
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, tasks, projects, availability, holidaySet, today]);
+
+  // Single source of truth for a rollup cell's numeric hours value, for
+  // BOTH the daily grid and the weekly aggregation below -- past dates use
+  // the even-split calc, today/future dates read the forward schedule.
+  function valueForDate(person: PersonRow, dateStr: string): number {
+    if (dateStr < today) return dailyHoursFor(person.id, dateStr);
+    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.totalHours ?? 0;
+  }
+  function pmValueForDate(person: PersonRow, projectId: string, dateStr: string): number {
+    if (dateStr < today) return pmHoursFor(person.id, dateStr).perProject.get(projectId) ?? 0;
+    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.pmHours.get(projectId) ?? 0;
+  }
+  function taskValueForDate(person: PersonRow, t: TaskRow, dateStr: string): number {
+    if (dateStr < today) return taskHoursOnDate(t, dateStr, person.id);
+    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.taskHours.get(t.id) ?? 0;
+  }
+
+  interface WeekStats {
+    avgPct: number;
+    plannedHours: number;
+    availableHours: number;
+    peakPct: number;
+    overloadedDays: number;
+    workingDaysCount: number;
+  }
+  function weekStatsForPerson(person: PersonRow, week: Date[]): WeekStats {
+    let workingDaysCount = 0;
+    let plannedHours = 0;
+    let availableHours = 0;
+    let peakPct = 0;
+    let overloadedDays = 0;
+    let pctSum = 0;
+    week.forEach((d) => {
+      const dateStr = toISO(d);
+      const dow = d.getDay();
+      if (dayBlocked(person.id, dateStr, dow)) return;
+      const av = availabilityFor(person.id, dateStr);
+      const capacity = dailyCapacityFor(person, av?.status === "half_day");
+      const value = valueForDate(person, dateStr);
+      const pct = capacity > 0 ? (value / capacity) * 100 : value > 0 ? 999 : 0;
+      workingDaysCount++;
+      plannedHours += value;
+      availableHours += capacity;
+      pctSum += pct;
+      if (pct > peakPct) peakPct = pct;
+      if (pct > 100) overloadedDays++;
+    });
+    return {
+      avgPct: workingDaysCount > 0 ? pctSum / workingDaysCount : 0,
+      plannedHours,
+      availableHours,
+      peakPct,
+      overloadedDays,
+      workingDaysCount,
+    };
+  }
+  function weekSum(week: Date[], getValue: (dateStr: string) => number): number {
+    return week.reduce((sum, d) => sum + getValue(toISO(d)), 0);
+  }
+
+  const columnCount = viewMode === "daily" ? days.length : weeks.length;
 
   return (
     <div>
       <h1>Utilization</h1>
       <p className="subtitle">
-        Same grid as the Day Planner, but auto-computed: each task's Light/Moderate/Heavy effort is spread across its own start-to-due
-        working days, plus a small project-ownership allowance. Set effort and dates on tasks in Projects &amp; Tasks — this view
-        updates automatically.
+        Same grid as the Day Planner, but auto-computed: each task's Planned Effort Hours are spread across its own start-to-due window
+        for past dates, and queue for real daily capacity (routing around a person's other work) from today forward, plus a small
+        project-ownership allowance. Set effort hours and dates on tasks in Projects &amp; Tasks — this view updates automatically.
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -411,6 +545,29 @@ export default function Utilization() {
             style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
           />
         </label>
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}>
+          {(["daily", "weekly"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: "capitalize",
+                padding: "4px 10px",
+                border: "none",
+                cursor: "pointer",
+                background: viewMode === mode ? "var(--accent)" : "transparent",
+                color: viewMode === mode ? "#fff" : "var(--muted)",
+              }}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
@@ -431,71 +588,116 @@ export default function Utilization() {
                     borderBottom: "1px solid var(--border)",
                   }}
                 />
-                {weeks.map((week, wi) => (
+                {viewMode === "daily"
+                  ? weeks.map((week, wi) => (
+                      <th
+                        key={wi}
+                        colSpan={7}
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: "var(--muted)",
+                          textTransform: "uppercase",
+                          letterSpacing: 0.3,
+                          padding: "8px 5px",
+                          borderBottom: "1px solid var(--border)",
+                          borderLeft: "1px solid var(--border)",
+                        }}
+                      >
+                        Week of {week[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </th>
+                    ))
+                  : weeks.map((week, wi) => (
+                      <th
+                        key={wi}
+                        style={{
+                          width: WEEK_CELL_W,
+                          minWidth: WEEK_CELL_W,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "var(--navy)",
+                          padding: "8px 5px",
+                          borderBottom: "1px solid var(--border)",
+                          borderLeft: wi === 0 ? undefined : "1px solid var(--border)",
+                        }}
+                      >
+                        {week[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })} –{" "}
+                        {week[6].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </th>
+                    ))}
+              </tr>
+              {viewMode === "daily" && (
+                <tr>
                   <th
-                    key={wi}
-                    colSpan={7}
                     style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: "var(--muted)",
-                      textTransform: "uppercase",
-                      letterSpacing: 0.3,
-                      padding: "8px 5px",
+                      position: "sticky",
+                      left: 0,
+                      zIndex: 2,
+                      background: "var(--surface)",
+                      width: LABEL_W,
+                      minWidth: LABEL_W,
                       borderBottom: "1px solid var(--border)",
-                      borderLeft: "1px solid var(--border)",
+                      textAlign: "left",
+                      padding: "5px 13px",
+                      fontSize: 13,
+                      color: "var(--muted)",
                     }}
                   >
-                    Week of {week[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    Person
                   </th>
-                ))}
-              </tr>
-              <tr>
-                <th
-                  style={{
-                    position: "sticky",
-                    left: 0,
-                    zIndex: 2,
-                    background: "var(--surface)",
-                    width: LABEL_W,
-                    minWidth: LABEL_W,
-                    borderBottom: "1px solid var(--border)",
-                    textAlign: "left",
-                    padding: "5px 13px",
-                    fontSize: 13,
-                    color: "var(--muted)",
-                  }}
-                >
-                  Person
-                </th>
-                {days.map((d, i) => {
-                  const dow = d.getDay();
-                  const weekend = dow === 0 || dow === 6;
-                  return (
-                    <th
-                      key={i}
-                      style={{
-                        width: CELL_W,
-                        minWidth: CELL_W,
-                        padding: "5px 3px",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: weekend ? "var(--muted)" : "var(--navy)",
-                        background: weekend ? "var(--hover-bg)" : undefined,
-                        borderBottom: "1px solid var(--border)",
-                        borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
-                      }}
-                    >
-                      {WEEKDAY_LABEL[dow]} {d.getDate()}
-                    </th>
-                  );
-                })}
-              </tr>
+                  {days.map((d, i) => {
+                    const dow = d.getDay();
+                    const weekend = dow === 0 || dow === 6;
+                    return (
+                      <th
+                        key={i}
+                        style={{
+                          width: CELL_W,
+                          minWidth: CELL_W,
+                          padding: "5px 3px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: weekend ? "var(--muted)" : "var(--navy)",
+                          background: weekend ? "var(--hover-bg)" : undefined,
+                          borderBottom: "1px solid var(--border)",
+                          borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
+                        }}
+                      >
+                        {WEEKDAY_LABEL[dow]} {d.getDate()}
+                      </th>
+                    );
+                  })}
+                </tr>
+              )}
+              {viewMode === "weekly" && (
+                <tr>
+                  <th
+                    style={{
+                      position: "sticky",
+                      left: 0,
+                      zIndex: 2,
+                      background: "var(--surface)",
+                      width: LABEL_W,
+                      minWidth: LABEL_W,
+                      borderBottom: "1px solid var(--border)",
+                      textAlign: "left",
+                      padding: "5px 13px",
+                      fontSize: 13,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    Person
+                  </th>
+                  {weeks.map((_, wi) => (
+                    <th key={wi} style={{ borderBottom: "1px solid var(--border)", borderLeft: wi === 0 ? undefined : "1px solid var(--border)" }} />
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody>
               {people.length === 0 ? (
                 <tr>
-                  <td colSpan={1 + days.length} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                  <td colSpan={1 + columnCount} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                     No active people found.
                   </td>
                 </tr>
@@ -528,56 +730,90 @@ export default function Utilization() {
                             {person.name}
                           </span>
                         </td>
-                        {days.map((d, i) => {
-                          const dateStr = toISO(d);
-                          const dow = d.getDay();
-                          const blocked = dayBlocked(person.id, dateStr, dow);
+                        {viewMode === "daily"
+                          ? days.map((d, i) => {
+                              const dateStr = toISO(d);
+                              const dow = d.getDay();
+                              const blocked = dayBlocked(person.id, dateStr, dow);
 
-                          if (blocked === "holiday") {
-                            const h = holidayByDate.get(dateStr)!;
-                            return (
-                              <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 11, fontWeight: 600 }}>
-                                Holiday
-                              </td>
-                            );
-                          }
-                          if (blocked === "weekend") {
-                            return <td key={i} style={{ ...rollupCellStyle(i), background: "var(--hover-bg)" }} />;
-                          }
-                          const av = availabilityFor(person.id, dateStr);
-                          if (blocked === "off") {
-                            return (
-                              <td key={i} style={{ ...rollupCellStyle(i), background: "#f1f2f4", color: "var(--muted)", fontSize: 12, fontWeight: 600 }}>
-                                Off
-                              </td>
-                            );
-                          }
-                          const points = dailyPointsFor(person.id, dateStr);
-                          const capacity = dailyCapacityFor(person, av?.status === "half_day");
-                          const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
-                          const tier = tierOf(pct);
-                          return (
-                            <td
-                              key={i}
-                              style={{
-                                ...rollupCellStyle(i),
-                                background: tier.bg,
-                                color: tier.fg,
-                                fontSize: 12.5,
-                                fontWeight: 600,
-                              }}
-                              title={tier.label}
-                            >
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-                                <tier.Icon size={13} />
-                                <span>
-                                  {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
-                                  {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
-                                </span>
-                              </div>
-                            </td>
-                          );
-                        })}
+                              if (blocked === "holiday") {
+                                const h = holidayByDate.get(dateStr)!;
+                                return (
+                                  <td key={i} title={h.name} style={{ ...rollupCellStyle(i), background: "#eef1f5", color: "var(--muted)", fontSize: 11, fontWeight: 600 }}>
+                                    Holiday
+                                  </td>
+                                );
+                              }
+                              if (blocked === "weekend") {
+                                return <td key={i} style={{ ...rollupCellStyle(i), background: "var(--hover-bg)" }} />;
+                              }
+                              const av = availabilityFor(person.id, dateStr);
+                              if (blocked === "off") {
+                                return (
+                                  <td key={i} style={{ ...rollupCellStyle(i), background: "#f1f2f4", color: "var(--muted)", fontSize: 12, fontWeight: 600 }}>
+                                    Off
+                                  </td>
+                                );
+                              }
+                              const value = valueForDate(person, dateStr);
+                              const capacity = dailyCapacityFor(person, av?.status === "half_day");
+                              const pct = capacity > 0 ? (value / capacity) * 100 : value > 0 ? 999 : 0;
+                              const tier = tierOf(pct);
+                              const Icon = TIER_ICONS[tier.key] ?? Minus;
+                              return (
+                                <td
+                                  key={i}
+                                  style={{
+                                    ...rollupCellStyle(i),
+                                    background: tier.bg,
+                                    color: tier.fg,
+                                    fontSize: 12.5,
+                                    fontWeight: 600,
+                                  }}
+                                  title={tier.label}
+                                >
+                                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                    <Icon size={13} />
+                                    <span>
+                                      {tier.key === "unallocated" ? "–" : `${Math.round(pct)}%`}
+                                      {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
+                                    </span>
+                                  </div>
+                                </td>
+                              );
+                            })
+                          : weeks.map((week, wi) => {
+                              const stats = weekStatsForPerson(person, week);
+                              const tier = tierOf(stats.avgPct);
+                              const Icon = TIER_ICONS[tier.key] ?? Minus;
+                              const title =
+                                stats.workingDaysCount === 0
+                                  ? "No working days this week"
+                                  : `${Math.round(stats.avgPct)}% ${tier.label} · Planned ${stats.plannedHours.toFixed(1)}h / ${stats.availableHours.toFixed(1)}h · Peak day ${Math.round(
+                                      stats.peakPct
+                                    )}% · Overloaded days: ${stats.overloadedDays}`;
+                              return (
+                                <td
+                                  key={wi}
+                                  style={{
+                                    ...rollupWeekCellStyle(wi),
+                                    background: stats.workingDaysCount === 0 ? undefined : tier.bg,
+                                    color: stats.workingDaysCount === 0 ? "var(--muted)" : tier.fg,
+                                    fontSize: 12.5,
+                                    fontWeight: 600,
+                                  }}
+                                  title={title}
+                                >
+                                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                                    <Icon size={13} />
+                                    <span>{stats.workingDaysCount === 0 ? "–" : `${Math.round(stats.avgPct)}%`}</span>
+                                    <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>
+                                      {stats.plannedHours.toFixed(1)}h / {stats.availableHours.toFixed(1)}h
+                                    </span>
+                                  </div>
+                                </td>
+                              );
+                            })}
                       </tr>
                       {isExpanded &&
                         (ownedProjects.length === 0 && assignedTasks.length === 0 && !hasDeletedHistory(person.id) ? (
@@ -595,9 +831,9 @@ export default function Utilization() {
                             >
                               No owned projects or assigned tasks.
                             </td>
-                            {days.map((_, i) => (
-                              <td key={i} style={subCellStyle(i)} />
-                            ))}
+                            {viewMode === "daily"
+                              ? days.map((_, i) => <td key={i} style={subCellStyle(i)} />)
+                              : weeks.map((_, wi) => <td key={wi} style={subWeekCellStyle(wi)} />)}
                           </tr>
                         ) : (
                           <>
@@ -625,18 +861,27 @@ export default function Utilization() {
                                     {p.name}
                                     <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>(PM)</span>
                                   </td>
-                                  {days.map((d, i) => {
-                                    const dateStr = toISO(d);
-                                    const dow = d.getDay();
-                                    const blocked = dayBlocked(person.id, dateStr, dow);
-                                    const win = workingDays.includes(dateStr);
-                                    const value = win ? pmPointsFor(person.id, dateStr).perProject.get(p.id) ?? 0 : 0;
-                                    return (
-                                      <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
-                                        {value > 0 ? value.toFixed(2) : ""}
-                                      </td>
-                                    );
-                                  })}
+                                  {viewMode === "daily"
+                                    ? days.map((d, i) => {
+                                        const dateStr = toISO(d);
+                                        const dow = d.getDay();
+                                        const blocked = dayBlocked(person.id, dateStr, dow);
+                                        const win = workingDays.includes(dateStr);
+                                        const value = win ? pmValueForDate(person, p.id, dateStr) : 0;
+                                        return (
+                                          <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                            {value > 0 ? value.toFixed(2) : ""}
+                                          </td>
+                                        );
+                                      })
+                                    : weeks.map((week, wi) => {
+                                        const value = weekSum(week, (dateStr) => (workingDays.includes(dateStr) ? pmValueForDate(person, p.id, dateStr) : 0));
+                                        return (
+                                          <td key={wi} style={{ ...subWeekCellStyle(wi), fontSize: 12, color: "var(--muted)" }}>
+                                            {value > 0 ? value.toFixed(2) : ""}
+                                          </td>
+                                        );
+                                      })}
                                 </tr>
                               );
                             })}
@@ -646,7 +891,7 @@ export default function Utilization() {
                               return (
                                 <tr key={t.id}>
                                   <td
-                                    title={!t.effort ? `${t.name} — no effort size set yet` : t.name}
+                                    title={!t.estimated_hours ? `${t.name} — no effort hours set yet` : t.name}
                                     style={{
                                       position: "sticky",
                                       left: 0,
@@ -664,27 +909,36 @@ export default function Utilization() {
                                   >
                                     {t.name}
                                     {proj && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{proj.name}</span>}
-                                    {!t.effort && <span style={{ fontSize: 9.5, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
+                                    {!t.estimated_hours && <span style={{ fontSize: 9.5, color: "var(--warning-text)", marginLeft: 6 }}>no effort</span>}
                                   </td>
-                                  {days.map((d, i) => {
-                                    const dateStr = toISO(d);
-                                    const dow = d.getDay();
-                                    const blocked = dayBlocked(person.id, dateStr, dow);
-                                    const win = workingDays.includes(dateStr);
-                                    const value = taskPointsOnDate(t, dateStr, person.id);
-                                    return (
-                                      <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
-                                        {value > 0 ? value.toFixed(1) : ""}
-                                      </td>
-                                    );
-                                  })}
+                                  {viewMode === "daily"
+                                    ? days.map((d, i) => {
+                                        const dateStr = toISO(d);
+                                        const dow = d.getDay();
+                                        const blocked = dayBlocked(person.id, dateStr, dow);
+                                        const win = dateStr >= today ? true : workingDays.includes(dateStr);
+                                        const value = taskValueForDate(person, t, dateStr);
+                                        return (
+                                          <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                            {value > 0 ? value.toFixed(1) : ""}
+                                          </td>
+                                        );
+                                      })
+                                    : weeks.map((week, wi) => {
+                                        const value = weekSum(week, (dateStr) => taskValueForDate(person, t, dateStr));
+                                        return (
+                                          <td key={wi} style={{ ...subWeekCellStyle(wi), fontSize: 12, color: "var(--muted)" }}>
+                                            {value > 0 ? value.toFixed(1) : ""}
+                                          </td>
+                                        );
+                                      })}
                                 </tr>
                               );
                             })}
                             {hasDeletedHistory(person.id) && (
                               <tr>
                                 <td
-                                  title="Points from tasks/projects that have since been permanently deleted — numbers only, no name retained"
+                                  title="Hours from tasks/projects that have since been permanently deleted — numbers only, no name retained"
                                   style={{
                                     position: "sticky",
                                     left: 0,
@@ -703,17 +957,26 @@ export default function Utilization() {
                                 >
                                   Deleted items
                                 </td>
-                                {days.map((d, i) => {
-                                  const dateStr = toISO(d);
-                                  const dow = d.getDay();
-                                  const blocked = dayBlocked(person.id, dateStr, dow);
-                                  const value = deletedPointsFor(person.id, dateStr);
-                                  return (
-                                    <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : undefined, fontSize: 12, color: "var(--muted)" }}>
-                                      {value > 0 ? value.toFixed(2) : ""}
-                                    </td>
-                                  );
-                                })}
+                                {viewMode === "daily"
+                                  ? days.map((d, i) => {
+                                      const dateStr = toISO(d);
+                                      const dow = d.getDay();
+                                      const blocked = dayBlocked(person.id, dateStr, dow);
+                                      const value = deletedHoursFor(person.id, dateStr);
+                                      return (
+                                        <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : undefined, fontSize: 12, color: "var(--muted)" }}>
+                                          {value > 0 ? value.toFixed(2) : ""}
+                                        </td>
+                                      );
+                                    })
+                                  : weeks.map((week, wi) => {
+                                      const value = weekSum(week, (dateStr) => deletedHoursFor(person.id, dateStr));
+                                      return (
+                                        <td key={wi} style={{ ...subWeekCellStyle(wi), fontSize: 12, color: "var(--muted)" }}>
+                                          {value > 0 ? value.toFixed(2) : ""}
+                                        </td>
+                                      );
+                                    })}
                               </tr>
                             )}
                           </>
@@ -728,15 +991,18 @@ export default function Utilization() {
       </div>
 
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, alignItems: "center" }}>
-        {LEGEND.map(({ pct, label, tone, Icon }) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
-            <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <Icon size={11} />
-              {pct}
-            </span>
-            <span style={{ color: "var(--muted)" }}>{label}</span>
-          </div>
-        ))}
+        {UTIL_LEGEND.map(({ pct, label, tone }) => {
+          const Icon = LEGEND_ICON_BY_LABEL[label] ?? Minus;
+          return (
+            <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
+              <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <Icon size={11} />
+                {pct}
+              </span>
+              <span style={{ color: "var(--muted)" }}>{label}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
