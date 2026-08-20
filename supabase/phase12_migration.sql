@@ -243,3 +243,19 @@ where (estimated_hours is null or estimated_hours = 0)
 select set_config('app.bypass_done_task_lock', 'on', true);
 update tasks set estimated_hours = estimated_hours;
 -- Verified live: 0 rows remained mismatched afterward.
+
+-- ---------------------------------------------------------------------
+-- Hotfix #2 (same day, 2026-08-20): tasks_effort_check predates this
+-- migration and only allowed ('Light','Moderate','Heavy') at the DB
+-- level -- it was never widened to allow the new computed "Very Heavy"
+-- tier. Any task landing above 24h planned hours (the new top band)
+-- failed insert/update outright with "new row for relation tasks
+-- violates check constraint tasks_effort_check", which is also why nothing
+-- appeared to save and Effort Level looked blank -- the whole write was
+-- rejected, not just the effort column. Caught live by Sandra setting
+-- Planned Effort Hours to 30 in WBS Planning.
+alter table tasks drop constraint tasks_effort_check;
+alter table tasks add constraint tasks_effort_check
+  check (effort = any (array['Light'::text, 'Moderate'::text, 'Heavy'::text, 'Very Heavy'::text]));
+-- Verified live: a disposable 30h task now saves successfully with
+-- effort='Very Heavy'; function dropped and no residue left afterward.
