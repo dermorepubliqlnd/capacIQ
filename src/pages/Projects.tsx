@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -80,6 +80,20 @@ interface PersonOption {
   name: string;
 }
 
+// Work Type (Phase 12, 2026-08-20): admin-configurable lookup, replacing
+// what would otherwise be a hardcoded array -- see the Admin page's own
+// "Work Types" section for add/rename/reorder/deactivate. Fetched
+// UNFILTERED (not just is_active) here, unlike `people` above, because a
+// task whose Work Type was later deactivated still needs its historical
+// label to resolve for display; only the WBS Planning picker itself
+// filters to is_active.
+interface WorkTypeOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
 interface ProjectRow {
   id: string;
   name: string;
@@ -129,6 +143,10 @@ interface TaskRow {
   // layer, see enforce_task_validation_field_lock in phase10_migration).
   actual_completion_date: string | null;
   effort: string | null;
+  // Phase 12 (2026-08-20): new reporting dimension, admin-configurable via
+  // work_types (see WorkTypeOption above) -- nullable, existing tasks
+  // won't have one until someone sets it going forward.
+  work_type_id: string | null;
   is_archived: boolean;
   archived_at: string | null;
   sort_order: number | null;
@@ -168,7 +186,7 @@ const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "da
 // grouping is "by Project" -- worth re-showing if grouping changes).
 // All still available via Properties, just not cluttering a fresh
 // Timeline view by default.
-const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date", "actual_completion_date"];
+const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date", "actual_completion_date", "work_type"];
 // Task Calendar cards are much denser than a Timeline row -- Sandra asked
 // specifically for Project/Effort/Assignee to show by default ("main
 // focal point should be the task" -- Name is always the card's title
@@ -177,8 +195,8 @@ const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days",
 // has no swimlane/group-by-project header to make it redundant (Notion's
 // own Calendar view doesn't support grouping either -- confirmed with
 // Sandra, not building it).
-const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct", "work_type"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -190,6 +208,10 @@ const TASK_EFFORT_ICON: Record<string, typeof Feather> = {
   Light: Feather,
   Moderate: Weight,
   Heavy: BicepsFlexed,
+  // "Very Heavy" (Phase 12, 2026-08-20) -- Effort's new top computed tier
+  // for tasks estimated over 24 hours. Flame per the same "fun, not
+  // corporate" spirit as the other three.
+  "Very Heavy": Flame,
 };
 
 // A calendar day counts as a working day if it isn't a weekend and isn't
@@ -451,7 +473,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
 const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "effort_level", "owner", "wbs_status"];
-const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "project", "timing", "due_date_ext"];
+const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "work_type", "project", "timing", "due_date_ext"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
   return groupBy && groupableKeys.includes(groupBy) ? groupBy : fallback;
@@ -750,6 +772,11 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonOption[]>([]);
+  // Work Types (Phase 12, 2026-08-20) -- fetched unfiltered (all rows,
+  // active or not) so a task referencing a since-deactivated Work Type
+  // still resolves to its historical label here; only the WBS Planning
+  // picker itself narrows this down to is_active for new selections.
+  const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   // Manager-chain data for the new validation-authority check below
   // (2026-08-20) -- deliberately a SEPARATE, unfiltered fetch (includes
   // inactive people) from `people` above, which stays active-only for
@@ -856,7 +883,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -877,6 +904,7 @@ export default function Projects() {
       supabase.from("project_notes").select("project_id"),
       // Deletion archive (2026-08-14c) -- see DeletedSpentHourRow above.
       supabase.from("deleted_project_spent_hours_archive").select("project_id,person_id,hours"),
+      supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -888,6 +916,7 @@ export default function Projects() {
     setExtensionRequests((extReqData as ExtensionRequestLite[]) ?? []);
     setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
     setDeletedSpentHours((delSpentData as DeletedSpentHourRow[]) ?? []);
+    setWorkTypes((workTypeData as WorkTypeOption[]) ?? []);
     const nextNoteCounts: Record<string, number> = {};
     for (const row of (noteData as { project_id: string }[]) ?? []) {
       nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
@@ -1731,7 +1760,7 @@ export default function Projects() {
       },
       {
         key: "estimated_hours",
-        label: "Est. hrs",
+        label: "Planned Effort Hours",
         defaultWidth: 90,
         maxWidth: 120,
         render: (p) => {
@@ -2159,7 +2188,7 @@ export default function Projects() {
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
-    { key: "estimated_hours", label: "Est. hrs", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
+    { key: "estimated_hours", label: "Planned Effort Hours", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (p) => projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours) },
     {
       key: "hours_variance",
@@ -2333,24 +2362,50 @@ export default function Projects() {
         render: (t) => {
           const tone = t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral";
           const Icon = t.effort ? TASK_EFFORT_ICON[t.effort] : null;
+          // Phase 12 (2026-08-20): Effort is now fully computed from
+          // Planned Effort Hours (see supabase/phase12_migration.sql's
+          // derive_effort_level trigger) -- this cell has been read-only
+          // everywhere on this page since the 2026-07-29 Tasks-page
+          // governance lockdown anyway, so no editable={} change is
+          // needed here, just the value now always reflects the derived
+          // level rather than something a user picked. A "Very Heavy"
+          // result gets a small non-blocking hint icon suggesting the
+          // task be broken up -- purely informational, never blocks
+          // saving.
           return (
-            <InlineSelect
-              value={t.effort ?? ""}
-              editable={false}
-              allowEmpty
-              options={TASK_EFFORT_OPTIONS}
-              renderReadOnly={() =>
-                t.effort ? (
-                  <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }} title={t.effort}>
-                    {Icon && <Icon size={12} />}
-                  </span>
-                ) : (
-                  "—"
-                )
-              }
-              onCommit={(v) => updateTask(t.id, { effort: v || null })}
-            />
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <InlineSelect
+                value={t.effort ?? ""}
+                editable={false}
+                allowEmpty
+                options={TASK_EFFORT_OPTIONS}
+                renderReadOnly={() =>
+                  t.effort ? (
+                    <span className={`status-pill ${tone}`} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }} title={t.effort}>
+                      {Icon && <Icon size={12} />}
+                    </span>
+                  ) : (
+                    "—"
+                  )
+                }
+                onCommit={(v) => updateTask(t.id, { effort: v || null })}
+              />
+              {t.effort === "Very Heavy" && (
+                <span title="Very Heavy (over 24 planned effort hours) -- consider breaking this task into smaller sub-tasks in WBS Planning." style={{ display: "inline-flex" }}>
+                  <AlertTriangle size={12} color="var(--warning-text)" />
+                </span>
+              )}
+            </span>
           );
+        },
+      },
+      {
+        key: "work_type",
+        label: "Work Type",
+        defaultWidth: 150,
+        render: (t) => {
+          const wt = workTypes.find((w) => w.id === t.work_type_id);
+          return wt ? <span className="status-pill neutral">{wt.name}</span> : <span style={{ color: "var(--muted)" }}>—</span>;
         },
       },
       {
@@ -2561,13 +2616,13 @@ export default function Projects() {
       },
       {
         key: "estimated_hours",
-        label: "Est. hrs",
+        label: "Planned Effort Hours",
         defaultWidth: 90,
         maxWidth: 120,
         render: (t) => {
           const isParent = t._depth === 0 && hasChildren(t.id);
           return (
-            <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
+            <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Planned Effort Hours)" : undefined}>
               <InlineNumber
                 value={t.estimated_hours}
                 editable={false}
@@ -2774,6 +2829,11 @@ export default function Projects() {
       getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
     },
     {
+      key: "work_type",
+      label: "Work Type",
+      getGroup: (t) => workTypes.find((w) => w.id === t.work_type_id)?.name ?? "No work type set",
+    },
+    {
       key: "timing",
       label: "Timing",
       getGroup: (t) => timingOf(t).label,
@@ -2826,7 +2886,7 @@ export default function Projects() {
     },
     {
       key: "estimated_hours",
-      label: "Est. hrs",
+      label: "Planned Effort Hours",
       getGroup: () => "",
       boardGroupable: false,
     },
@@ -2841,6 +2901,12 @@ export default function Projects() {
       label: "Effort",
       getGroup: (t) => t.effort ?? "No effort set",
       getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
+      boardGroupable: true,
+    },
+    {
+      key: "work_type",
+      label: "Work Type",
+      getGroup: (t) => workTypes.find((w) => w.id === t.work_type_id)?.name ?? "No work type set",
       boardGroupable: true,
     },
   ];
@@ -2860,6 +2926,7 @@ export default function Projects() {
   function getTaskBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "assignee") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
     if (groupBy === "effort") return TASK_EFFORT_OPTIONS.map((v) => ({ value: v, label: v, tone: TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral" }));
+    if (groupBy === "work_type") return workTypes.filter((w) => w.is_active).map((w) => ({ value: w.id, label: w.name, tone: "neutral" }));
     if (groupBy === "project") return projects.map((p) => ({ value: p.id, label: p.name ?? "Untitled", tone: "neutral" }));
     if (groupBy === "timing") return TASK_TIMING_BOARD_COLUMNS;
     if (groupBy === "due_date_ext") return DUE_DATE_EXT_BOARD_COLUMNS;
@@ -2869,6 +2936,7 @@ export default function Projects() {
   function getTaskBoardValue(t: TaskWithDepth, groupBy: string): string | null {
     if (groupBy === "assignee") return t.assignee_id;
     if (groupBy === "effort") return t.effort;
+    if (groupBy === "work_type") return t.work_type_id;
     if (groupBy === "project") return t.project_id;
     if (groupBy === "timing") return timingOf(t).label;
     if (groupBy === "due_date_ext") return dueDateExtStatus(t).label;
@@ -2881,7 +2949,7 @@ export default function Projects() {
     // Effort board columns used to silently reassign/re-score the task,
     // which is a structural edit that now belongs in WBS Planning only.
     if (groupBy === "status") return (t, v) => updateTask(t.id, { status: v || null });
-    return undefined; // assignee, effort, project, timing, due_date_ext: read-only board
+    return undefined; // assignee, effort, work_type, project, timing, due_date_ext: read-only board
   }
 
   // Labels here match each column's own header text exactly (e.g. "Task"
@@ -2893,10 +2961,11 @@ export default function Projects() {
     { key: "assignee", label: "Assignee", getValue: (t) => ownerName(t.assignee_id) },
     { key: "status", label: "Status", getValue: (t) => t.status ?? "" },
     { key: "effort", label: "Effort", getValue: (t) => (t.effort ? TASK_EFFORT_POINTS[t.effort] ?? null : null) },
+    { key: "work_type", label: "Work Type", getValue: (t) => workTypes.find((w) => w.id === t.work_type_id)?.name ?? "" },
     { key: "start_date", label: "Start", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
     { key: "timing", label: "Timing", getValue: (t) => timingRank(timingOf(t).label) },
     { key: "current_due_date", label: "Due", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
-    { key: "estimated_hours", label: "Est. hrs", getValue: (t) => t.estimated_hours ?? null },
+    { key: "estimated_hours", label: "Planned Effort Hours", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => spentHoursFor(t.id) },
     {
       key: "due_date_ext",

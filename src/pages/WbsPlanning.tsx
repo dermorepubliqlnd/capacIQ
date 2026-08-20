@@ -77,8 +77,19 @@ interface TaskRow {
   current_due_date: string;
   estimated_hours: number | null;
   effort: string | null;
+  // Phase 12 (2026-08-20): new reporting dimension, admin-configurable via
+  // work_types (see WorkTypeOption below). WBS Planning is the only page
+  // that can actually set it -- the main Tasks page shows it read-only,
+  // same governance split as every other structural field here.
+  work_type_id: string | null;
   is_archived: boolean;
   sort_order: number | null;
+}
+interface WorkTypeOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
 }
 interface PersonRow {
   id: string;
@@ -233,6 +244,12 @@ export default function WbsPlanning() {
   const [project, setProject] = useState<ProjectRow | null>(null);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
+  // Work Types (Phase 12, 2026-08-20) -- fetched unfiltered (all rows) so
+  // an already-assigned but since-deactivated Work Type still resolves to
+  // its historical name here; the dropdown itself (below) filters to
+  // is_active for NEW picks, same convention as `people`/is_active vs.
+  // whatever a task's own historical assignee_id already points to.
+  const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   // Cross-project data, fetched ONLY for the utilization heat-map -- a
@@ -299,12 +316,12 @@ export default function WbsPlanning() {
   async function loadAll() {
     if (!projectId) return;
     setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }] = await Promise.all([
+    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select(
-          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,current_due_date,estimated_hours,effort,is_archived,sort_order"
+          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,current_due_date,estimated_hours,effort,work_type_id,is_archived,sort_order"
         )
         .eq("project_id", projectId)
         .eq("is_archived", false)
@@ -314,6 +331,7 @@ export default function WbsPlanning() {
       supabase.from("holidays").select("date"),
       supabase.from("tasks").select("id,project_id,assignee_id,status,start_date,current_due_date,effort").eq("is_archived", false),
       supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
+      supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
     // Bug fix (2026-08-20): activeMode ("which mode Save/Scoping Effort
@@ -334,6 +352,7 @@ export default function WbsPlanning() {
     setHolidays((hols as HolidayRow[]) ?? []);
     setAllTasks((allTks as UtilTaskRow[]) ?? []);
     setAllProjects((allProjs as UtilProjectRow[]) ?? []);
+    setWorkTypes((wts as WorkTypeOption[]) ?? []);
 
     // Dependencies are same-project only (v1), so fetched as a follow-up
     // query scoped to this project's own task ids, once they're known --
@@ -2417,13 +2436,16 @@ export default function WbsPlanning() {
                     Task
                   </th>
                   <th rowSpan={2} style={{ width: 90 }}>
-                    Est. hrs
+                    Planned Effort Hours
                   </th>
                   <th rowSpan={2} style={{ width: 90 }}>
                     Spent hrs
                   </th>
                   <th rowSpan={2} style={{ width: 90 }}>
                     Effort
+                  </th>
+                  <th rowSpan={2} style={{ width: 130 }}>
+                    Work Type
                   </th>
                   <th rowSpan={2} style={{ width: 150 }}>
                     Assignee
@@ -2453,7 +2475,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={14} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={15} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -2545,7 +2567,7 @@ export default function WbsPlanning() {
                         </div>
                       </td>
                       <td>
-                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Est. hrs)" : undefined}>
+                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Planned Effort Hours)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
                             editable={rowEditable && !isParent}
@@ -2560,15 +2582,55 @@ export default function WbsPlanning() {
                             N/A
                           </span>
                         ) : (
-                          <InlineSelect
-                            value={t.effort ?? ""}
-                            editable={rowEditable}
-                            allowEmpty
-                            emptyLabel="Pick effort"
-                            options={TASK_EFFORT_OPTIONS}
-                            renderReadOnly={(v) => (v ? <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[v] ?? "neutral"}`}>{v}</span> : "Pick effort")}
-                            onCommit={(v) => saveTaskField(t.id, { effort: v || null })}
-                          />
+                          // Phase 12 (2026-08-20): Effort is no longer
+                          // independently pickable -- it's always computed
+                          // from Planned Effort Hours by the DB trigger
+                          // (derive_task_effort, supabase/phase12_migration.sql),
+                          // so this is now a plain read-only chip, same as
+                          // the main Tasks page. A "Very Heavy" result gets
+                          // a small non-blocking hint suggesting the task
+                          // be split up -- purely informational.
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            {t.effort ? (
+                              <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral"}`}>{t.effort}</span>
+                            ) : (
+                              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>—</span>
+                            )}
+                            {t.effort === "Very Heavy" && (
+                              <span title="Very Heavy (over 24 planned effort hours) -- consider breaking this task into smaller sub-tasks.">
+                                <AlertTriangle size={12} color="var(--warning-text)" />
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {isParent ? (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
+                            N/A
+                          </span>
+                        ) : (
+                          (() => {
+                            const currentWt = workTypes.find((w) => w.id === t.work_type_id);
+                            // Active work types for the picker, plus the
+                            // task's own currently-set Work Type even if it
+                            // was since deactivated, so its historical
+                            // label doesn't just vanish from the dropdown.
+                            const pickable = workTypes.filter((w) => w.is_active || w.id === t.work_type_id);
+                            return (
+                              <InlineSelect
+                                value={currentWt?.name ?? ""}
+                                editable={rowEditable}
+                                allowEmpty
+                                emptyLabel="Pick work type"
+                                options={pickable.map((w) => w.name)}
+                                onCommit={(v) => {
+                                  const match = pickable.find((w) => w.name === v);
+                                  saveTaskField(t.id, { work_type_id: match?.id ?? null });
+                                }}
+                              />
+                            );
+                          })()
                         )}
                       </td>
                       <td>

@@ -25,8 +25,20 @@ export const PROJECT_EFFORT_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3"];
 // capacity (see Capacity page) without relying on estimated/actual hours.
 // Each level carries a fixed point value; a person's week-of-work is summed
 // in points and compared against their point capacity.
-export const TASK_EFFORT_OPTIONS = ["Light", "Moderate", "Heavy"];
+// "Very Heavy" (added Phase 12, 2026-08-20): Effort is no longer
+// independently set by users -- it's now fully computed from
+// tasks.estimated_hours via effort_level_thresholds (see
+// supabase/phase12_migration.sql's derive_effort_level()), which added
+// this 4th tier for tasks estimated over 24 hours.
+export const TASK_EFFORT_OPTIONS = ["Light", "Moderate", "Heavy", "Very Heavy"];
 
+// NOTE (Phase 12, 2026-08-20): deliberately left untouched/unextended --
+// "Very Heavy" has no points entry here on purpose. This points-based
+// Utilization machinery is explicitly out of scope for the Work
+// Type/Effort Level phase (a later phase rewires Utilization off points
+// onto hours entirely); a Very Heavy task falls back to 0 points via the
+// `TASK_EFFORT_POINTS[t.effort] ?? 0` pattern used everywhere this is
+// read, same as any other effort value this map doesn't recognize.
 export const TASK_EFFORT_POINTS: Record<string, number> = {
   Light: 0.5,
   Moderate: 1,
@@ -41,6 +53,7 @@ export const TASK_EFFORT_DEFAULT_TONES: Record<string, string> = {
   Light: "success",
   Moderate: "warning",
   Heavy: "danger",
+  "Very Heavy": "danger",
 };
 
 export const PROJECT_PRIORITY_OPTIONS = ["Low", "Medium", "High"];
