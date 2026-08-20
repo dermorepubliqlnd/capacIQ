@@ -314,7 +314,11 @@ export default function DayPlanner() {
     if (!raw.trim() || isNaN(hours)) {
       if (existing) {
         setAllocations((prev) => prev.filter((a) => a.id !== existing.id));
-        await supabase.from("time_allocations").delete().eq("id", existing.id);
+        const { error } = await supabase.from("time_allocations").delete().eq("id", existing.id);
+        if (error) {
+          window.alert(`Couldn't clear hours: ${error.message}`);
+          loadAll();
+        }
       }
       return;
     }
@@ -328,7 +332,11 @@ export default function DayPlanner() {
     }
     if (existing) {
       setAllocations((prev) => prev.map((a) => (a.id === existing.id ? { ...a, hours } : a)));
-      await supabase.from("time_allocations").update({ hours }).eq("id", existing.id);
+      const { error } = await supabase.from("time_allocations").update({ hours }).eq("id", existing.id);
+      if (error) {
+        window.alert(`Couldn't save hours: ${error.message}`);
+        loadAll();
+      }
     } else {
       const { data, error } = await supabase
         .from("time_allocations")
@@ -345,11 +353,19 @@ export default function DayPlanner() {
     if (!status) {
       if (existing) {
         setAvailability((prev) => prev.filter((a) => a.id !== existing.id));
-        await supabase.from("person_availability").delete().eq("id", existing.id);
+        const { error } = await supabase.from("person_availability").delete().eq("id", existing.id);
+        if (error) {
+          window.alert(`Couldn't clear status: ${error.message}`);
+          loadAll();
+        }
       }
     } else if (existing) {
       setAvailability((prev) => prev.map((a) => (a.id === existing.id ? { ...a, status } : a)));
-      await supabase.from("person_availability").update({ status }).eq("id", existing.id);
+      const { error } = await supabase.from("person_availability").update({ status }).eq("id", existing.id);
+      if (error) {
+        window.alert(`Couldn't save status: ${error.message}`);
+        loadAll();
+      }
     } else {
       const { data, error } = await supabase.from("person_availability").insert({ person_id: personId, date: dateStr, status }).select().single();
       if (!error && data) setAvailability((prev) => [...prev, data as AvailabilityRow]);

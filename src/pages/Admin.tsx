@@ -296,7 +296,25 @@ export default function Admin() {
   }
 
   async function changeAccessLevel(p: Person, level: "limited" | "full") {
-    await supabase.from("people").update({ access_level: level }).eq("id", p.id);
+    if (p.id === me?.id && level === "limited") {
+      window.alert(
+        "You can't demote your own account from here \u2014 it would immediately drop you to Limited access " +
+          "and lock you out of Admin. Ask another Full Access person to do it, or change your own level last."
+      );
+      loadPeople();
+      return;
+    }
+
+    const verb = level === "full" ? "Promote" : "Demote";
+    if (!window.confirm(`${verb} ${p.name} to ${level === "full" ? "Full" : "Limited"} access?`)) {
+      loadPeople();
+      return;
+    }
+
+    const { error } = await supabase.from("people").update({ access_level: level }).eq("id", p.id);
+    if (error) {
+      window.alert(`Couldn't change access level for ${p.name}: ${error.message}`);
+    }
     loadPeople();
   }
 
