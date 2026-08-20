@@ -155,6 +155,29 @@ export default function Admin() {
     }
   }, [me?.access_level]);
 
+  const filteredPeople = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return people.filter((p) => {
+      if (q) {
+        const hay = `${p.name} ${p.email} ${p.employee_id ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (roleFilter && (p.job_title ?? "") !== roleFilter) return false;
+      if (accessFilter && p.access_level !== accessFilter) return false;
+      if (statusFilter === "active" && !p.is_active) return false;
+      if (statusFilter === "inactive" && p.is_active) return false;
+      return true;
+    });
+  }, [people, searchQuery, roleFilter, accessFilter, statusFilter]);
+
+  const roleOptions = useMemo(() => {
+    const set = new Set<string>();
+    people.forEach((p) => {
+      if (p.job_title) set.add(p.job_title);
+    });
+    return Array.from(set).sort();
+  }, [people]);
+
   if (sessionLoading) return null;
   if (!me || me.access_level !== "full") return <AccessDenied />;
 
@@ -584,29 +607,6 @@ export default function Admin() {
     }
     setCsvBusy(false);
   }
-
-  const filteredPeople = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return people.filter((p) => {
-      if (q) {
-        const hay = `${p.name} ${p.email} ${p.employee_id ?? ""}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      if (roleFilter && (p.job_title ?? "") !== roleFilter) return false;
-      if (accessFilter && p.access_level !== accessFilter) return false;
-      if (statusFilter === "active" && !p.is_active) return false;
-      if (statusFilter === "inactive" && p.is_active) return false;
-      return true;
-    });
-  }, [people, searchQuery, roleFilter, accessFilter, statusFilter]);
-
-  const roleOptions = useMemo(() => {
-    const set = new Set<string>();
-    people.forEach((p) => {
-      if (p.job_title) set.add(p.job_title);
-    });
-    return Array.from(set).sort();
-  }, [people]);
 
   const selectedPerson = people.find((p) => p.id === selectedPersonId) ?? null;
 
