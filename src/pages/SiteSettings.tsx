@@ -49,6 +49,33 @@ export default function SiteSettings() {
   const [editingWorkTypeId, setEditingWorkTypeId] = useState<string | null>(null);
   const [editWorkTypeName, setEditWorkTypeName] = useState("");
 
+  // Global historical-locking switch (Sandra, 2026-08-14): "we're still
+  // playing around with the system" -- while off, Utilization/Day Planner
+  // ignore ownership/assignee history and just use each project/task's
+  // current owner_id/assignee_id, same as before that feature existed.
+  // Moved here from Admin.tsx (2026-08-20 User Management redesign) --
+  // this is a site-wide setting, not a per-user one, so it belongs on
+  // this page instead of cluttering User Management.
+  const [historicalLockingEnabled, setHistoricalLockingEnabled] = useState(false);
+  const [historicalLockingSaving, setHistoricalLockingSaving] = useState(false);
+
+  async function loadHistoricalLocking() {
+    const { data } = await supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single();
+    setHistoricalLockingEnabled((data as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false);
+  }
+
+  async function toggleHistoricalLocking() {
+    const next = !historicalLockingEnabled;
+    setHistoricalLockingSaving(true);
+    const { error } = await supabase.from("app_settings").update({ historical_locking_enabled: next }).eq("id", true);
+    setHistoricalLockingSaving(false);
+    if (error) {
+      window.alert(`Couldn't save: ${error.message}`);
+      return;
+    }
+    setHistoricalLockingEnabled(next);
+  }
+
   async function loadWorkTypes() {
     setWorkTypesLoading(true);
     const { data } = await supabase.from("work_types").select("id,name,sort_order,is_active").order("sort_order");
@@ -168,6 +195,7 @@ export default function SiteSettings() {
   useEffect(() => {
     if (me?.access_level === "full") {
       loadWorkTypes();
+      loadHistoricalLocking();
     }
   }, [me?.access_level]);
 
@@ -340,6 +368,41 @@ export default function SiteSettings() {
             Add
           </button>
         </div>
+      </div>
+
+      <div
+        className="card"
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
+      >
+        <div>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Lock historical ownership/assignee attribution</div>
+          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+            {historicalLockingEnabled
+              ? "On -- Utilization and Day Planner freeze past attribution when a project/task changes owner or assignee."
+              : "Off -- Utilization and Day Planner always show the CURRENT owner/assignee, even for past dates. Turn this on when you're ready to stop testing and go live with real data."}
+          </div>
+        </div>
+        <button
+          onClick={toggleHistoricalLocking}
+          disabled={historicalLockingSaving}
+          title={historicalLockingEnabled ? "Turn off" : "Turn on"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "7px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: historicalLockingEnabled ? "#fff" : "var(--navy)",
+            background: historicalLockingEnabled ? "var(--success-text)" : "var(--surface)",
+            border: "1px solid var(--border)",
+            opacity: historicalLockingSaving ? 0.6 : 1,
+            cursor: historicalLockingSaving ? "default" : "pointer",
+            flexShrink: 0,
+          }}
+        >
+          {historicalLockingSaving ? "Saving…" : historicalLockingEnabled ? "On" : "Off"}
+        </button>
       </div>
     </div>
   );

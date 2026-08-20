@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent, type CSSProperties } from "react";
-import { UserPlus, ShieldCheck, ShieldOff, Pencil, Check, X, Upload, Download, Copy, Trash2, KeyRound } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type CSSProperties } from "react";
+import { UserPlus, Upload, Download, Copy, Search } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession, type Person } from "../lib/useSession";
 import { defaultColorFor, isValidHex } from "../lib/personColors";
 import { parseCsvToObjects, getField, toCsv } from "../lib/csv";
 import Modal from "../components/Modal";
+import UserDrawer from "../components/UserDrawer";
+import UserRowMenu from "../components/UserRowMenu";
 
 // CSV bulk-import (Sandra, 2026-08-14): "data only for now, no emails sent
 // -- I'll give pilot users the link and a randomly-generated password
@@ -110,7 +112,6 @@ export default function Admin() {
   const [employeeId, setEmployeeId] = useState("");
   const [jobTitle, setJobTitle] = useState("");
 
-  const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editReportsTo, setEditReportsTo] = useState("");
   const [editCapacity, setEditCapacity] = useState("7.5");
@@ -126,12 +127,20 @@ export default function Admin() {
   const [csvBusy, setCsvBusy] = useState(false);
   const [csvResults, setCsvResults] = useState<CsvRowResult[] | null>(null);
 
-  // Global historical-locking switch (Sandra, 2026-08-14): "we're still
-  // playing around with the system" -- while off, Utilization/Day Planner
-  // ignore ownership/assignee history and just use each project/task's
-  // current owner_id/assignee_id, same as before that feature existed.
-  const [historicalLockingEnabled, setHistoricalLockingEnabled] = useState(false);
-  const [historicalLockingSaving, setHistoricalLockingSaving] = useState(false);
+  // User Management redesign (2026-08-20, Sandra's brief): View User
+  // Details -> Edit User -> Save/Cancel, with a right-side drawer instead
+  // of always-visible inline table controls. `drawerMode` starts at
+  // "view" every time a row is selected -- only clicking "Edit user"
+  // (in the drawer footer or the row's ... menu) switches to "edit".
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+  const [drawerMode, setDrawerMode] = useState<"view" | "edit">("view");
+
+  // Filter bar (client-side only -- the roster is small and already
+  // fully loaded, no pagination to worry about).
+  const [searchQuery, setSearchQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [accessFilter, setAccessFilter] = useState<"" | "full" | "limited">("");
+  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
 
   async function loadPeople() {
     setLoading(true);
@@ -140,29 +149,11 @@ export default function Admin() {
     setLoading(false);
   }
 
-  async function loadSettings() {
-    const { data } = await supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single();
-    setHistoricalLockingEnabled((data as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false);
-  }
-
   useEffect(() => {
     if (me?.access_level === "full") {
       loadPeople();
-      loadSettings();
     }
   }, [me?.access_level]);
-
-  async function toggleHistoricalLocking() {
-    const next = !historicalLockingEnabled;
-    setHistoricalLockingSaving(true);
-    const { error } = await supabase.from("app_settings").update({ historical_locking_enabled: next }).eq("id", true);
-    setHistoricalLockingSaving(false);
-    if (error) {
-      window.alert(`Couldn't save: ${error.message}`);
-      return;
-    }
-    setHistoricalLockingEnabled(next);
-  }
 
   if (sessionLoading) return null;
   if (!me || me.access_level !== "full") return <AccessDenied />;
@@ -348,7 +339,8 @@ export default function Admin() {
   }
 
   function startEdit(p: Person) {
-    setEditingId(p.id);
+    setSelectedPersonId(p.id);
+    setDrawerMode("edit");
     setEditName(p.name);
     setEditReportsTo(p.reports_to ?? "");
     setEditCapacity(String(p.daily_capacity_hours));
@@ -358,7 +350,7 @@ export default function Admin() {
   }
 
   function cancelEdit() {
-    setEditingId(null);
+    setDrawerMode("view");
   }
 
   // Pulls the real error message out of a failed Edge Function invoke --
@@ -417,7 +409,7 @@ export default function Admin() {
       window.alert(`Couldn't save changes: ${error.message}`);
       return;
     }
-    setEditingId(null);
+    setDrawerMode("view");
     loadPeople();
   }
 
@@ -454,6 +446,10 @@ export default function Admin() {
     }
     if ((data as { warning?: string })?.warning) {
       window.alert((data as { warning: string }).warning);
+    }
+    if (selectedPersonId === p.id) {
+      setSelectedPersonId(null);
+      setDrawerMode("view");
     }
     loadPeople();
   }
@@ -589,49 +585,71 @@ export default function Admin() {
     setCsvBusy(false);
   }
 
+  const filteredPeople = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return people.filter((p) => {
+      if (q) {
+        const hay = `${p.name} ${p.email} ${p.employee_id ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (roleFilter && (p.job_title ?? "") !== roleFilter) return false;
+      if (accessFilter && p.access_level !== accessFilter) return false;
+      if (statusFilter === "active" && !p.is_active) return false;
+      if (statusFilter === "inactive" && p.is_active) return false;
+      return true;
+    });
+  }, [people, searchQuery, roleFilter, accessFilter, statusFilter]);
+
+  const roleOptions = useMemo(() => {
+    const set = new Set<string>();
+    people.forEach((p) => {
+      if (p.job_title) set.add(p.job_title);
+    });
+    return Array.from(set).sort();
+  }, [people]);
+
+  const selectedPerson = people.find((p) => p.id === selectedPersonId) ?? null;
+
+  function approvalSummary(p: Person): string {
+    const n = [p.can_approve_closures, p.can_approve_reopening, p.can_approve_rebaseline].filter(Boolean).length;
+    if (n === 0) return "None";
+    return `${n} permission${n === 1 ? "" : "s"}`;
+  }
+
+  function initialsFor(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+
+  function selectPerson(p: Person) {
+    setSelectedPersonId(p.id);
+    setDrawerMode("view");
+  }
+
+  function closeDrawer() {
+    setSelectedPersonId(null);
+    setDrawerMode("view");
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <h1>User management</h1>
-          <p className="subtitle">Full Access only. Grant access, adjust permissions, or deactivate people.</p>
+          <p className="subtitle">Manage team members, their capacity, system access, and approval rights.</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={downloadTemplate}
             title="Download a CSV template with the expected column headers"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--navy)",
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-            }}
+            style={secondaryBtnStyle}
           >
             <Download size={14} />
             Download template
           </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={csvBusy}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "var(--navy)",
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              opacity: csvBusy ? 0.6 : 1,
-              cursor: csvBusy ? "default" : "pointer",
-            }}
-          >
+          <button onClick={() => fileInputRef.current?.click()} disabled={csvBusy} style={{ ...secondaryBtnStyle, opacity: csvBusy ? 0.6 : 1, cursor: csvBusy ? "default" : "pointer" }}>
             <Upload size={14} />
             {csvBusy ? "Uploading…" : "Upload CSV"}
           </button>
@@ -647,130 +665,126 @@ export default function Admin() {
             }}
           />
           <button
-            onClick={() => setFormOpen((v) => !v)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: "var(--navy)",
-              border: "none",
+            onClick={() => {
+              setFormError(null);
+              setFormSuccess(null);
+              setFormOpen(true);
             }}
+            style={primaryBtnStyle}
           >
             <UserPlus size={14} />
-            {formOpen ? "Cancel" : "Grant access"}
+            Add user
           </button>
         </div>
       </div>
 
-      <div
-        className="card"
-        style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
-      >
-        <div>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Lock historical ownership/assignee attribution</div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-            {historicalLockingEnabled
-              ? "On -- Utilization and Day Planner freeze past attribution when a project/task changes owner or assignee."
-              : "Off -- Utilization and Day Planner always show the CURRENT owner/assignee, even for past dates. Turn this on when you're ready to stop testing and go live with real data."}
-          </div>
+      {/* Search + filters -- client-side only over the already-loaded roster. */}
+      <div className="card" style={{ marginBottom: 16, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 240px", minWidth: 200 }}>
+          <Search size={14} style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" }} />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search name, email, or employee ID"
+            spellCheck={false}
+            autoComplete="off"
+            style={{ ...inputStyle, marginTop: 0, paddingLeft: 28 }}
+          />
         </div>
-        <button
-          onClick={toggleHistoricalLocking}
-          disabled={historicalLockingSaving}
-          title={historicalLockingEnabled ? "Turn off" : "Turn on"}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "7px 14px",
-            fontSize: 12,
-            fontWeight: 600,
-            color: historicalLockingEnabled ? "#fff" : "var(--navy)",
-            background: historicalLockingEnabled ? "var(--success-text)" : "var(--surface)",
-            border: "1px solid var(--border)",
-            opacity: historicalLockingSaving ? 0.6 : 1,
-            cursor: historicalLockingSaving ? "default" : "pointer",
-            flexShrink: 0,
-          }}
-        >
-          {historicalLockingSaving ? "Saving…" : historicalLockingEnabled ? "On" : "Off"}
-        </button>
+        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={{ ...inputStyle, marginTop: 0, width: 170 }}>
+          <option value="">All roles</option>
+          {roleOptions.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <select value={accessFilter} onChange={(e) => setAccessFilter(e.target.value as "" | "full" | "limited")} style={{ ...inputStyle, marginTop: 0, width: 130 }}>
+          <option value="">All access</option>
+          <option value="full">Full</option>
+          <option value="limited">Limited</option>
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "" | "active" | "inactive")} style={{ ...inputStyle, marginTop: 0, width: 130 }}>
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
       </div>
 
       {formOpen && (
-        <form onSubmit={handleInvite} className="card" style={{ marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Full name
-            <input required spellCheck={false} autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Email
-            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Access level
-            <select value={accessLevel} onChange={(e) => setAccessLevel(e.target.value as "limited" | "full")} style={inputStyle}>
-              <option value="limited">Limited</option>
-              <option value="full">Full</option>
-            </select>
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Reports to
-            <select value={reportsTo} onChange={(e) => setReportsTo(e.target.value)} style={inputStyle}>
-              <option value="">— none —</option>
-              {people.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Daily capacity (hrs)
-            <input type="number" step="0.5" value={capacityHours} onChange={(e) => setCapacityHours(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Employee ID
-            <input spellCheck={false} autoComplete="off" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
-            Role (job title)
-            <input spellCheck={false} autoComplete="off" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} style={inputStyle} />
-          </label>
+        <Modal
+          title="Add user"
+          onClose={() => {
+            setFormOpen(false);
+            setFormError(null);
+          }}
+          width={520}
+        >
+          <form onSubmit={handleInvite} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Full name
+              <input required spellCheck={false} autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Email
+              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Access level
+              <select value={accessLevel} onChange={(e) => setAccessLevel(e.target.value as "limited" | "full")} style={inputStyle}>
+                <option value="limited">Limited</option>
+                <option value="full">Full</option>
+              </select>
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Reports to
+              <select value={reportsTo} onChange={(e) => setReportsTo(e.target.value)} style={inputStyle}>
+                <option value="">— none —</option>
+                {people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Daily capacity (hrs)
+              <input type="number" step="0.5" value={capacityHours} onChange={(e) => setCapacityHours(e.target.value)} style={inputStyle} />
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Employee ID
+              <input spellCheck={false} autoComplete="off" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} style={inputStyle} />
+            </label>
+            <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+              Role (job title)
+              <input spellCheck={false} autoComplete="off" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} style={inputStyle} />
+            </label>
 
-          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10 }}>
-            <button
-              type="submit"
-              disabled={submitting}
-              style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, color: "#fff", background: "var(--accent)", border: "none" }}
-            >
-              {submitting ? "Sending invite…" : "Send invite"}
-            </button>
-            {formError && <span style={{ fontSize: 11.5, color: "var(--danger-text)" }}>{formError}</span>}
-            {formSuccess && <span style={{ fontSize: 11.5, color: "var(--success-text)" }}>{formSuccess}</span>}
-          </div>
-        </form>
+            <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="submit"
+                disabled={submitting}
+                style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, color: "#fff", background: "var(--accent)", border: "none" }}
+              >
+                {submitting ? "Sending invite…" : "Send invite"}
+              </button>
+              {formError && <span style={{ fontSize: 11.5, color: "var(--danger-text)" }}>{formError}</span>}
+              {formSuccess && <span style={{ fontSize: 11.5, color: "var(--success-text)" }}>{formSuccess}</span>}
+            </div>
+          </form>
+        </Modal>
       )}
 
       <div className="card" style={{ padding: 0 }}>
         <table className="data-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Employee ID</th>
+              <th>User</th>
               <th>Role</th>
-              <th>Color</th>
-              <th>Email</th>
-              <th>Access</th>
-              <th>Reports to</th>
+              <th>Manager</th>
               <th>Capacity/day</th>
-              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project, re-baselining, and Closed-project decisions aren't tiered further than this, this is just the designation.">
-                Approvals
-              </th>
+              <th>Access</th>
+              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project, re-baselining, and Closed-project decisions aren't tiered further than this, this is just the designation.">Approvals</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -778,251 +792,69 @@ export default function Admin() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={11} style={{ color: "var(--muted)" }}>Loading…</td>
+                <td colSpan={8} style={{ color: "var(--muted)" }}>Loading…</td>
               </tr>
             )}
-            {!loading && people.length === 0 && (
+            {!loading && filteredPeople.length === 0 && (
               <tr>
-                <td colSpan={11} style={{ color: "var(--muted)" }}>No one yet.</td>
+                <td colSpan={8} style={{ color: "var(--muted)" }}>{people.length === 0 ? "No one yet." : "No matches for these filters."}</td>
               </tr>
             )}
-            {people.map((p) => {
-              const isEditing = editingId === p.id;
+            {filteredPeople.map((p) => {
+              const manager = people.find((x) => x.id === p.reports_to);
               return (
-                <tr key={p.id}>
-                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>
-                    {isEditing ? (
-                      <input
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
-                      />
-                    ) : (
-                      p.name
-                    )}
-                  </td>
+                <tr
+                  key={p.id}
+                  className={`user-mgmt-row${selectedPersonId === p.id ? " selected" : ""}`}
+                  onClick={() => selectPerson(p)}
+                >
                   <td>
-                    {isEditing ? (
-                      <input
-                        value={editEmployeeId}
-                        onChange={(e) => setEditEmployeeId(e.target.value)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        style={{ ...inputStyle, marginTop: 0, width: 90 }}
-                      />
-                    ) : (
-                      p.employee_id ?? "—"
-                    )}
-                  </td>
-                  <td>
-                    {isEditing ? (
-                      <input
-                        value={editJobTitle}
-                        onChange={(e) => setEditJobTitle(e.target.value)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        style={{ ...inputStyle, marginTop: 0, width: 130 }}
-                      />
-                    ) : (
-                      p.job_title ?? "—"
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="color"
-                        value={p.color || defaultColorFor(p.id)}
-                        onChange={(e) => saveColor(p, e.target.value)}
-                        title="Pick a color -- used for this person's bars in the WBS Gantt chart"
-                        style={{ width: 26, height: 22, padding: 0, border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", background: "none" }}
-                      />
-                      <input
-                        key={`${p.id}-${p.color ?? "default"}`}
-                        type="text"
-                        defaultValue={p.color ?? ""}
-                        placeholder={defaultColorFor(p.id)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        onBlur={(e) => {
-                          const v = e.target.value.trim();
-                          if (v && !isValidHex(v)) {
-                            window.alert(`"${v}" isn't a valid hex color (expected format: #3b82f6). Not saved.`);
-                            e.target.value = p.color ?? "";
-                            return;
-                          }
-                          saveColor(p, v || null);
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: "50%",
+                          background: p.color || defaultColorFor(p.id),
+                          color: "#fff",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 10,
+                          fontWeight: 700,
+                          flexShrink: 0,
                         }}
-                        style={{ ...inputStyle, marginTop: 0, width: 78, fontFamily: "monospace", fontSize: 11 }}
-                      />
-                    </div>
-                  </td>
-                  <td>
-                    {isEditing ? (
-                      <input
-                        type="email"
-                        value={editEmail}
-                        onChange={(e) => setEditEmail(e.target.value)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        title="Changes their login email too"
-                        style={{ ...inputStyle, marginTop: 0, width: 150 }}
-                      />
-                    ) : (
-                      p.email
-                    )}
-                  </td>
-                  <td>
-                    <select
-                      value={p.access_level}
-                      onChange={(e) => changeAccessLevel(p, e.target.value as "limited" | "full")}
-                      style={{ fontSize: 11, padding: "3px 5px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
-                    >
-                      <option value="limited">Limited</option>
-                      <option value="full">Full</option>
-                    </select>
-                  </td>
-                  <td>
-                    {isEditing ? (
-                      <select
-                        value={editReportsTo}
-                        onChange={(e) => setEditReportsTo(e.target.value)}
-                        style={{ ...inputStyle, marginTop: 0 }}
                       >
-                        <option value="">— none —</option>
-                        {people
-                          .filter((x) => x.id !== p.id)
-                          .map((x) => (
-                            <option key={x.id} value={x.id}>
-                              {x.name}
-                            </option>
-                          ))}
-                      </select>
-                    ) : (
-                      people.find((x) => x.id === p.reports_to)?.name ?? "—"
-                    )}
-                  </td>
-                  <td>
-                    {isEditing ? (
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={editCapacity}
-                        onChange={(e) => setEditCapacity(e.target.value)}
-                        style={{ ...inputStyle, marginTop: 0, width: 70 }}
-                      />
-                    ) : (
-                      p.daily_capacity_hours
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }} title="Decide WBS Closed-project decisions (in addition to Full Access and the project owner)">
-                        <input
-                          type="checkbox"
-                          checked={p.can_approve_closures}
-                          onChange={(e) => toggleApprovalFlag(p, "can_approve_closures", e.target.checked)}
-                        />
-                        Closures
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={p.can_approve_reopening}
-                          onChange={(e) => toggleApprovalFlag(p, "can_approve_reopening", e.target.checked)}
-                        />
-                        Reopen projects
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={p.can_approve_rebaseline}
-                          onChange={(e) => toggleApprovalFlag(p, "can_approve_rebaseline", e.target.checked)}
-                        />
-                        Re-baseline
-                      </label>
+                        {initialsFor(p.name)}
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, color: "var(--navy)" }}>{p.name}</div>
+                        <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.employee_id ?? "—"}</div>
+                      </div>
                     </div>
                   </td>
+                  <td>{p.job_title ?? "—"}</td>
+                  <td>{manager?.name ?? "—"}</td>
+                  <td>{p.daily_capacity_hours}</td>
                   <td>
-                    <span className={`status-pill ${p.is_active ? "success" : "neutral"}`}>
-                      {p.is_active ? "Active" : "Deactivated"}
+                    <span className={`status-pill ${p.access_level === "full" ? "success" : "neutral"}`}>
+                      {p.access_level === "full" ? "Full" : "Limited"}
                     </span>
                   </td>
+                  <td>{approvalSummary(p)}</td>
                   <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      {isEditing ? (
-                        <>
-                          <button
-                            onClick={() => saveEdit(p)}
-                            disabled={editSaving}
-                            title="Save"
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--success-text)", fontSize: 11, fontWeight: 600 }}
-                          >
-                            <Check size={13} />
-                            {editSaving ? "Saving…" : "Save"}
-                          </button>
-                          <button
-                            onClick={cancelEdit}
-                            disabled={editSaving}
-                            title="Cancel"
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11 }}
-                          >
-                            <X size={13} />
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => startEdit(p)}
-                            title="Edit"
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
-                          >
-                            <Pencil size={13} />
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => toggleActive(p)}
-                            title={p.is_active ? "Deactivate" : "Reactivate"}
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: p.is_active ? "var(--danger-text)" : "var(--success-text)", fontSize: 11 }}
-                          >
-                            {p.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
-                            {p.is_active ? "Deactivate" : "Reactivate"}
-                          </button>
-                          {p.auth_user_id ? (
-                            <button
-                              onClick={() => resetPassword(p)}
-                              disabled={resettingId === p.id}
-                              title="Generate a new password to share with this person -- no email sent"
-                              style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--navy)", fontSize: 11 }}
-                            >
-                              <KeyRound size={13} />
-                              {resettingId === p.id ? "Resetting…" : "Reset password"}
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => grantLogin(p)}
-                              disabled={resettingId === p.id}
-                              title="This person doesn't have a login yet -- create one and get a password to share"
-                              style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--warning-text)", fontSize: 11 }}
-                            >
-                              <KeyRound size={13} />
-                              {resettingId === p.id ? "Creating…" : "Give login"}
-                            </button>
-                          )}
-                          <button
-                            onClick={() => deletePerson(p)}
-                            disabled={deletingId === p.id}
-                            title="Permanently delete -- only for mistaken entries with no history"
-                            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", cursor: "pointer", color: "var(--danger-text)", fontSize: 11 }}
-                          >
-                            <Trash2 size={13} />
-                            {deletingId === p.id ? "Deleting…" : "Delete"}
-                          </button>
-                        </>
-                      )}
-                    </div>
+                    <span className={`status-pill ${p.is_active ? "success" : "neutral"}`}>{p.is_active ? "Active" : "Deactivated"}</span>
+                  </td>
+                  <td onClick={(e) => e.stopPropagation()}>
+                    <UserRowMenu
+                      person={p}
+                      busy={resettingId === p.id || deletingId === p.id}
+                      onEdit={() => startEdit(p)}
+                      onGiveLogin={() => grantLogin(p)}
+                      onResetPassword={() => resetPassword(p)}
+                      onToggleActive={() => toggleActive(p)}
+                      onDelete={() => deletePerson(p)}
+                    />
                   </td>
                 </tr>
               );
@@ -1030,6 +862,34 @@ export default function Admin() {
           </tbody>
         </table>
       </div>
+
+      {selectedPerson && (
+        <UserDrawer
+          person={selectedPerson}
+          people={people}
+          mode={drawerMode}
+          onClose={closeDrawer}
+          onEnterEdit={() => startEdit(selectedPerson)}
+          editName={editName}
+          setEditName={setEditName}
+          editEmail={editEmail}
+          setEditEmail={setEditEmail}
+          editReportsTo={editReportsTo}
+          setEditReportsTo={setEditReportsTo}
+          editCapacity={editCapacity}
+          setEditCapacity={setEditCapacity}
+          editEmployeeId={editEmployeeId}
+          setEditEmployeeId={setEditEmployeeId}
+          editJobTitle={editJobTitle}
+          setEditJobTitle={setEditJobTitle}
+          editSaving={editSaving}
+          onCancelEdit={cancelEdit}
+          onSaveEdit={() => saveEdit(selectedPerson)}
+          onChangeAccessLevel={(level) => changeAccessLevel(selectedPerson, level)}
+          onToggleApprovalFlag={(field, value) => toggleApprovalFlag(selectedPerson, field, value)}
+          onSaveColor={(hex) => saveColor(selectedPerson, hex)}
+        />
+      )}
 
       {csvResults && (
         <Modal title={csvResults.length === 1 ? "Login details" : "CSV import results"} onClose={() => setCsvResults(null)} width={620}>
@@ -1109,4 +969,28 @@ const inputStyle: CSSProperties = {
   fontSize: 12,
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-sm)",
+};
+
+const secondaryBtnStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "7px 12px",
+  fontSize: 12,
+  fontWeight: 600,
+  color: "var(--navy)",
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+};
+
+const primaryBtnStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "7px 12px",
+  fontSize: 12,
+  fontWeight: 600,
+  color: "#fff",
+  background: "var(--navy)",
+  border: "none",
 };
