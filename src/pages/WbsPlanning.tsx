@@ -316,6 +316,18 @@ export default function WbsPlanning() {
       supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
     ]);
     setProject((proj as ProjectRow) ?? null);
+    // Bug fix (2026-08-20): activeMode ("which mode Save/Scoping Effort
+    // points at") always initialized to "full_capacity" on page load,
+    // regardless of what was actually last saved -- the "Saved as X" /
+    // "Unsaved -- currently saved as X" caption below the toggle already
+    // compared against project.scoping_effort_mode and would correctly
+    // show a project as saved under Conservative Effort, while the
+    // toggle itself silently showed Full Effort right next to it. Seed
+    // activeMode from the persisted value on every load so the toggle
+    // and the caption actually agree.
+    if (proj?.scoping_effort_mode === "full_capacity" || proj?.scoping_effort_mode === "standard") {
+      setActiveMode(proj.scoping_effort_mode);
+    }
     setTasks((tks as TaskRow[]) ?? []);
     setPeople((ppl as PersonRow[]) ?? []);
     setAvailability((avail as AvailabilityRow[]) ?? []);
@@ -2763,9 +2775,22 @@ export default function WbsPlanning() {
                               textOverflow: "ellipsis",
                               borderBottom: "1px solid var(--hover-bg)",
                             }}
-                            title={t.name}
+                            title={assignee ? `${t.name} \u00b7 ${assignee.name}` : t.name}
                           >
-                            {t.name}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{t.name}</span>
+                            {assignee && (
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  flexShrink: 0,
+                                  fontSize: 10,
+                                  fontWeight: 400,
+                                  color: "var(--muted)",
+                                }}
+                              >
+                                &middot; {assignee.name}
+                              </span>
+                            )}
                           </div>
                           <div style={{ position: "relative", width: ganttWidthPx, height: 26, flexShrink: 0, borderBottom: "1px solid var(--hover-bg)" }}>
                             {ganttDays.map((d) => {
