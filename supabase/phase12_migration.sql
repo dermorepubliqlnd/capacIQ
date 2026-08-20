@@ -218,3 +218,28 @@ set estimated_hours = case effort
   end
 where (estimated_hours is null or estimated_hours = 0)
   and effort in ('Light', 'Moderate', 'Heavy');
+
+-- ---------------------------------------------------------------------
+-- Hotfix (same day, 2026-08-20, applied live immediately after the above):
+-- the tasks_derive_effort trigger only fires on INSERT/UPDATE, so any
+-- task that already had real estimated_hours BEFORE this migration ran
+-- (i.e. most tasks, per the phase12 audit -- estimated_hours was already
+-- load-bearing for WBS) never got its `effort` recomputed against the
+-- NEW thresholds -- only rows touched by the backfill UPDATE above did.
+-- Caught during a live UAT self-check: 7 of 11 real tasks had a stale
+-- effort value that didn't match derive_effort_level(estimated_hours)
+-- (e.g. a 5h task still showing "Light" instead of "Moderate", a 15h
+-- task still showing "Moderate" instead of "Heavy").
+--
+-- Fix: a value-preserving UPDATE (estimated_hours = estimated_hours) on
+-- every row. This changes nothing in estimated_hours itself but still
+-- fires the BEFORE UPDATE row trigger (Postgres fires row-level triggers
+-- on every UPDATE statement regardless of whether values actually
+-- change), forcing tasks_derive_effort to recompute effort correctly
+-- for every existing row in one pass. Bypasses the Done-task lock first,
+-- same as the backfill above, since some already-Done tasks were among
+-- the 7 mismatched rows and their `effort` needed to change even though
+-- their `estimated_hours` didn't.
+select set_config('app.bypass_done_task_lock', 'on', true);
+update tasks set estimated_hours = estimated_hours;
+-- Verified live: 0 rows remained mismatched afterward.
