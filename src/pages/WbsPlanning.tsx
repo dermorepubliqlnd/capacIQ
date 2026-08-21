@@ -197,6 +197,27 @@ const MODE_LABEL: Record<Mode, string> = {
 };
 const MODES: Mode[] = ["full_capacity", "standard"];
 
+// Phase 9 (2026-08-21): the WBS Utilization-snapshot preview toggle is
+// its own, slightly richer set of options than the 2 task-table Modes --
+// Sandra: "I want it to show the actual resource utilization, then a
+// toggle to preview what it'll look like based on the selected effort
+// type... e.g. actual 10%, Capacity-Based 40%, manual 60%." "Actual" is
+// today's real committed state (no draft merged in at all). The other
+// three preview this project's DRAFT plan blended into that baseline --
+// "Capacity-Based" here always uses the pure queue-suggested schedule
+// (ignoring any per-task manual overrides, so it answers "what would the
+// scheduler pick"), while "Manual" is the override-aware chain (what
+// Save will actually persist, including any committed overrides) --
+// these two are identical unless at least one task has been overridden.
+type UtilPreviewMode = "actual" | "full_capacity" | "standard_suggested" | "standard_committed";
+const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "full_capacity", "standard_suggested", "standard_committed"];
+const UTIL_PREVIEW_LABEL: Record<UtilPreviewMode, string> = {
+  actual: "Actual",
+  full_capacity: "Full Effort",
+  standard_suggested: "Capacity-Based",
+  standard_committed: "Manual",
+};
+
 // Phase 3 (2026-07-28): status banner copy/colors for the Draft/Baseline/
 // Revision/Final-Scope workflow. Deliberately reuses the app's existing
 // --navy/--muted/--warning-text CSS vars rather than inventing new colors.
@@ -303,7 +324,7 @@ export default function WbsPlanning() {
   // preview below; `activeMode` is now purely "which mode Save/Scoping
   // Effort points at." Both Gantts render always, unconditionally, so
   // neither state drives Gantt selection anymore.
-  const [utilPreviewMode, setUtilPreviewMode] = useState<Mode>("full_capacity");
+  const [utilPreviewMode, setUtilPreviewMode] = useState<UtilPreviewMode>("actual");
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
 
@@ -928,7 +949,7 @@ export default function WbsPlanning() {
   // genuinely overlap/parallelize -- the utilization heat-map below is
   // where over-allocation actually shows up, not a scheduling
   // constraint here).
-  function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
+  function computeEntry(t: TaskRow, mode: Mode, opts?: { ignoreOverride?: boolean }): ChainEntry | null {
     const rawStart = mode === "full_capacity" ? t.start_date_full : t.start_date_standard;
     const start = rawStart ? rawStart.slice(0, 10) : null;
     if (!start) return null;
@@ -974,7 +995,7 @@ export default function WbsPlanning() {
       // The queue's own answer is still computed above and carried along
       // as suggestedStart/suggestedEnd purely so the UI can flag the
       // deviation -- it never overrides the committed date.
-      if (t.start_standard_auto === false) {
+      if (t.start_standard_auto === false && !opts?.ignoreOverride) {
         const r = fullCapacityScenario(hours, start, holidaySet);
         return {
           start,
@@ -1000,11 +1021,11 @@ export default function WbsPlanning() {
   // own Start date; a parent task's entry is then derived as the
   // min(start)/max(end) span across its own sub-tasks (never computed
   // from its own Start field directly, same as Est. hrs).
-  function buildChain(mode: Mode): Map<string, ChainEntry | null> {
+  function buildChain(mode: Mode, opts?: { ignoreOverride?: boolean }): Map<string, ChainEntry | null> {
     const result = new Map<string, ChainEntry | null>();
     for (const t of orderedTasks) {
       if (t.depth === 0 && hasChildren(t.id)) continue; // parents handled below
-      result.set(t.id, computeEntry(t, mode));
+      result.set(t.id, computeEntry(t, mode, opts));
     }
     for (const t of orderedTasks) {
       if (t.depth !== 0 || !hasChildren(t.id)) continue;
@@ -1028,6 +1049,19 @@ export default function WbsPlanning() {
     full_capacity: fullChain,
     standard: standardChain,
   };
+  // Phase 9: pure queue-suggested Capacity-Based, ignoring any per-task
+  // manual override -- used only by the Utilization-snapshot preview's
+  // "Capacity-Based" option so it can be shown side-by-side with "Manual"
+  // (standardChain, which already folds overrides in). Identical to
+  // standardChain for any project with no overridden tasks.
+  const standardSuggestedChain = buildChain("standard", { ignoreOverride: true });
+  function previewChainFor(m: UtilPreviewMode): Map<string, ChainEntry | null> | null {
+    if (m === "actual") return null;
+    if (m === "full_capacity") return fullChain;
+    if (m === "standard_suggested") return standardSuggestedChain;
+    return standardChain; // "standard_committed"
+  }
+  const utilPreviewChain = previewChainFor(utilPreviewMode);
 
   // Phase 2 (2026-07-28): builds the exact per-task snapshot the
   // lock/apply/decide RPCs persist. Deliberately reuses the SAME
@@ -1859,7 +1893,11 @@ export default function WbsPlanning() {
   // visually linked without duplicating the control itself, per the
   // original design spec item 3.
   function modeColStyle(m: Mode): CSSProperties {
-    return m === utilPreviewMode ? { background: "#eaf1fb" } : {};
+    const highlight =
+      m === "full_capacity"
+        ? utilPreviewMode === "full_capacity"
+        : utilPreviewMode === "standard_suggested" || utilPreviewMode === "standard_committed";
+    return highlight ? { background: "#eaf1fb" } : {};
   }
 
   // A visible box around the header's editable fields (Project name,
@@ -1973,28 +2011,44 @@ export default function WbsPlanning() {
   // render, same fix already applied once before for a narrower version
   // of this same staleness bug -- only OTHER projects' tasks (not being
   // edited in this session) still come from the `allTasks` snapshot.
-  const effectiveTasksForUtil: UtilTaskRow[] = [
-    ...allTasks.filter((t) => t.project_id !== projectId),
-    // Parent rows (tasks with their own sub-tasks) are excluded here on
-    // purpose -- see parentAssigneeState/the Effort "N/A" cell above.
-    // A parent's own span is just the union of its children's, so
-    // counting it too would double the points/utilization contribution
-    // for whoever it's (rolled-up-)assigned to.
-    ...orderedTasks
-      .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
-      .map((t) => {
-        const entry = chainByMode[utilPreviewMode].get(t.id);
-        return {
+  // Phase 9 (2026-08-21): "Actual" shows today's real committed state --
+  // THIS project's own tasks are read as-is from the `allTasks` snapshot
+  // (their last-Saved dates), not recomputed from any draft chain, so the
+  // heat-map reflects what's genuinely true right now. The other three
+  // preview options keep the original live-draft substitution below.
+  const effectiveTasksForUtil: UtilTaskRow[] =
+    utilPreviewMode === "actual"
+      ? allTasks.map((t) => ({
           id: t.id,
           project_id: t.project_id,
           assignee_id: t.assignee_id,
           status: t.status,
-          start_date: entry?.start ?? t.start_date,
-          current_due_date: entry?.end ?? t.current_due_date,
+          start_date: t.start_date,
+          current_due_date: t.current_due_date,
           effort: t.effort,
-        };
-      }),
-  ];
+        }))
+      : [
+          ...allTasks.filter((t) => t.project_id !== projectId),
+          // Parent rows (tasks with their own sub-tasks) are excluded here on
+          // purpose -- see parentAssigneeState/the Effort "N/A" cell above.
+          // A parent's own span is just the union of its children's, so
+          // counting it too would double the points/utilization contribution
+          // for whoever it's (rolled-up-)assigned to.
+          ...orderedTasks
+            .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
+            .map((t) => {
+              const entry = utilPreviewChain?.get(t.id);
+              return {
+                id: t.id,
+                project_id: t.project_id,
+                assignee_id: t.assignee_id,
+                status: t.status,
+                start_date: entry?.start ?? t.start_date,
+                current_due_date: entry?.end ?? t.current_due_date,
+                effort: t.effort,
+              };
+            }),
+        ];
 
   // Same live-draft idea for THIS project's own row in the PM-overhead
   // calculation (Sandra: "when project owner has been selected and start
@@ -2006,14 +2060,25 @@ export default function WbsPlanning() {
   // picking an Owner or extending the schedule (adding/replanning tasks)
   // updates PM-overhead points immediately, same pattern as
   // effectiveTasksForUtil above.
+  const utilPreviewSummary = utilPreviewChain ? chainOverallSummary(utilPreviewChain) : null;
   const effectiveProjectsForUtil: UtilProjectRow[] = [
     ...allProjects.filter((p) => p.id !== projectId),
-    {
-      id: projectId ?? "",
-      owner_id: project.owner_id,
-      start_date: project.start_date,
-      end_date: summaries[utilPreviewMode].end,
-    },
+    utilPreviewMode === "actual"
+      // Actual: use this project's own already-committed row verbatim
+      // (falls back to the live draft Owner/Start only if it's somehow
+      // missing from the snapshot, e.g. a brand-new unsaved project).
+      ? allProjects.find((p) => p.id === projectId) ?? {
+          id: projectId ?? "",
+          owner_id: project.owner_id,
+          start_date: project.start_date,
+          end_date: project.start_date,
+        }
+      : {
+          id: projectId ?? "",
+          owner_id: project.owner_id,
+          start_date: project.start_date,
+          end_date: utilPreviewSummary?.end ?? project.start_date,
+        },
   ];
 
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
@@ -2509,15 +2574,19 @@ export default function WbsPlanning() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
               <span
-                title={`Live preview -- updates as you assign people, set effort, set Start dates, and pick an Owner, using ${MODE_LABEL[utilPreviewMode]}'s current schedule.`}
+                title={
+                  utilPreviewMode === "actual"
+                    ? "Today's real committed utilization -- this project's own DRAFT edits are not included."
+                    : `Preview -- blends this project's DRAFT plan into everyone's real committed workload, using ${UTIL_PREVIEW_LABEL[utilPreviewMode]}'s schedule.`
+                }
                 style={{ display: "inline-flex", cursor: "help", color: "var(--muted)" }}
               >
                 <Info size={13} />
               </span>
               <div className="timeline-segmented" title="Preview only -- doesn't affect Scoping Effort or Save.">
-                {MODES.map((m) => (
+                {UTIL_PREVIEW_MODES.map((m) => (
                   <button key={m} className={`timeline-segmented-btn${utilPreviewMode === m ? " active" : ""}`} onClick={() => setUtilPreviewMode(m)}>
-                    {MODE_LABEL[m]}
+                    {UTIL_PREVIEW_LABEL[m]}
                   </button>
                 ))}
               </div>
