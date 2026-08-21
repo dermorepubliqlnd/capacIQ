@@ -224,6 +224,17 @@ export default function Utilization() {
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(2);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
+  // Phase 7 (2026-08-21): Sandra's ask -- Capacity-Based smoothing spreads
+  // overflow hours into future free days specifically so a person rarely
+  // shows over 100%, which was quietly hiding real over-allocation and
+  // costing her the evidence to argue for more headcount when the team is
+  // genuinely over-utilized. "Realistic" (the new default) shows the raw
+  // planned/estimated hours against each day's actual window with no
+  // capacity ceiling -- the same uncapped math already used for past
+  // dates -- for every date, past and future. "Capacity-Smoothed" keeps
+  // the original forward-scheduler view for anyone who wants to see the
+  // deferred/idealized plan instead.
+  const [smoothed, setSmoothed] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -442,15 +453,15 @@ export default function Utilization() {
   // BOTH the daily grid and the weekly aggregation below -- past dates use
   // the even-split calc, today/future dates read the forward schedule.
   function valueForDate(person: PersonRow, dateStr: string): number {
-    if (dateStr < today) return dailyHoursFor(person.id, dateStr);
+    if (dateStr < today || !smoothed) return dailyHoursFor(person.id, dateStr);
     return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.totalHours ?? 0;
   }
   function pmValueForDate(person: PersonRow, projectId: string, dateStr: string): number {
-    if (dateStr < today) return pmHoursFor(person.id, dateStr).perProject.get(projectId) ?? 0;
+    if (dateStr < today || !smoothed) return pmHoursFor(person.id, dateStr).perProject.get(projectId) ?? 0;
     return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.pmHours.get(projectId) ?? 0;
   }
   function taskValueForDate(person: PersonRow, t: TaskRow, dateStr: string): number {
-    if (dateStr < today) return taskHoursOnDate(t, dateStr, person.id);
+    if (dateStr < today || !smoothed) return taskHoursOnDate(t, dateStr, person.id);
     return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.taskHours.get(t.id) ?? 0;
   }
 
@@ -573,6 +584,35 @@ export default function Utilization() {
               }}
             >
               {mode}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <div
+          style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}
+          title={
+            smoothed
+              ? "Capacity-Smoothed: overflow hours are deferred into future free days -- rarely shows over 100%."
+              : "Realistic: raw planned hours against each day's actual window, no capacity ceiling -- shows true over-allocation."
+          }
+        >
+          {([false, true] as const).map((isSmoothed) => (
+            <button
+              key={String(isSmoothed)}
+              onClick={() => setSmoothed(isSmoothed)}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "4px 10px",
+                border: "none",
+                cursor: "pointer",
+                background: smoothed === isSmoothed ? "var(--accent)" : "transparent",
+                color: smoothed === isSmoothed ? "#fff" : "var(--muted)",
+              }}
+            >
+              {isSmoothed ? "Capacity-Smoothed" : "Realistic"}
             </button>
           ))}
         </div>

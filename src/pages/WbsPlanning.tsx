@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
@@ -208,6 +208,15 @@ interface ChainEntry {
   end: string;
   durationDays: number;
   rawDays?: number;
+  // Phase 7 (2026-08-21, Capacity-Based manual override): set when this
+  // entry came from a manually-typed Start date rather than the
+  // whole-queue Capacity-Based walk. suggestedStart/suggestedEnd carry
+  // what Capacity-Based *would* have picked, purely for a deviation
+  // badge -- the override always wins for the actual displayed/saved
+  // start/end above.
+  isOverridden?: boolean;
+  suggestedStart?: string;
+  suggestedEnd?: string;
 }
 
 const UTIL_WINDOW_DAYS = 28; // 4 weeks, daily view
@@ -952,6 +961,32 @@ export default function WbsPlanning() {
       const sched = scheduleFor(t.assignee_id);
       const schedStart = sched.taskStartDates.get(t.id);
       const schedEnd = sched.taskDueDates.get(t.id);
+
+      // Phase 7 (2026-08-21): Sandra's ask -- a manually-typed Start date
+      // in Capacity-Based mode used to get silently overwritten by this
+      // same queue walk the moment Save ran. `start_standard_auto` is
+      // already flipped to false the instant the user edits this field
+      // (see the InlineDate onCommit below), so it doubles perfectly as
+      // "this date is a deliberate commitment, not a suggestion" -- no
+      // new column needed. When overridden, honor the typed Start exactly
+      // and walk hours forward at a flat daily rate (same math as Full
+      // Effort) instead of deferring to the person's whole-queue position.
+      // The queue's own answer is still computed above and carried along
+      // as suggestedStart/suggestedEnd purely so the UI can flag the
+      // deviation -- it never overrides the committed date.
+      if (t.start_standard_auto === false) {
+        const r = fullCapacityScenario(hours, start, holidaySet);
+        return {
+          start,
+          end: r.dueDate,
+          durationDays: r.wholeDays,
+          rawDays: r.rawDays,
+          isOverridden: true,
+          suggestedStart: schedStart,
+          suggestedEnd: schedEnd,
+        };
+      }
+
       if (!schedStart || !schedEnd) return null;
       const durationDays = workingDaysBetween(parseLocalDate(schedStart), parseLocalDate(schedEnd), holidaySet).length;
       return { start: schedStart, end: schedEnd, durationDays };
@@ -1890,6 +1925,20 @@ export default function WbsPlanning() {
               }
             />
             {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
+            {entry?.isOverridden && (
+              <span
+                title={
+                  entry.suggestedStart && entry.suggestedStart !== entry.start
+                    ? `Committed manually -- Capacity-Based would suggest ${formatDate(entry.suggestedStart)}${
+                        entry.suggestedEnd ? ` → ${formatDate(entry.suggestedEnd)}` : ""
+                      }.`
+                    : "Committed manually -- this date overrides the Capacity-Based suggestion."
+                }
+                style={{ display: "inline-flex", flexShrink: 0 }}
+              >
+                <Pin size={11} style={{ color: "var(--accent, #6d5bd0)" }} />
+              </span>
+            )}
           </span>
         </td>
         <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? formatDate(entry.end) : "—"}</td>
