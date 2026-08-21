@@ -1347,10 +1347,18 @@ export default function WbsPlanning() {
 
   async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
-    const { error } = await supabase.from("tasks").update(patch).eq("id", taskId);
+    // Select the row back (2026-08-21 fix): `effort` is DB-trigger-computed
+    // from `estimated_hours` (Phase 12), never sent up in `patch` itself --
+    // merging just `patch` into local state left the Effort chip showing
+    // the OLD value (blank on a brand-new task) until a full page reload.
+    // Selecting the post-trigger row and merging THAT instead keeps every
+    // DB-computed column (not just effort) in sync after any edit here.
+    const { data, error } = await supabase.from("tasks").update(patch).eq("id", taskId).select().single();
     if (error) {
       await alert(`Couldn't save: ${error.message}`);
       loadAll();
+    } else if (data) {
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...(data as Partial<TaskRow>) } : t)));
     }
   }
 
