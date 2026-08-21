@@ -16,6 +16,7 @@ import {
   dailyPointsFor,
   dailyCapacityFor,
   tierOf,
+  STANDARD_DAILY_HOURS,
   type UtilTaskRow,
   type UtilProjectRow,
   type UtilPersonRow,
@@ -23,6 +24,7 @@ import {
 import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
 import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
 import { useUnsavedChangesGuard } from "../lib/useUnsavedChangesGuard";
+import UtilPersonFilterButton from "../components/UtilPersonFilterButton";
 
 interface ProjectRow {
   id: string;
@@ -341,6 +343,20 @@ export default function WbsPlanning() {
   // render simultaneously as rows now, see effectiveForMode below.
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
+
+  // Phase 11 (2026-08-21): Sandra's snapshot display controls -- reuse
+  // the exact same computed points/capacity/tier everywhere below, these
+  // three only decide what's shown and to whom, never how it's computed.
+  const [utilShowHours, setUtilShowHours] = useState(true);
+  const [utilShowFullEffort, setUtilShowFullEffort] = useState(true);
+  // null = no filter applied yet (show everyone) -- once the user picks
+  // from the popover this becomes an explicit allow-list.
+  const [utilPersonFilter, setUtilPersonFilter] = useState<Set<string> | null>(null);
+  const [utilPersonFilterOpen, setUtilPersonFilterOpen] = useState(false);
+  const [utilPersonSearch, setUtilPersonSearch] = useState("");
+  // Collapsed by default per person -- "View scenarios" expands one at a
+  // time so a big roster doesn't render as one giant always-open table.
+  const [expandedUtilPeople, setExpandedUtilPeople] = useState<Set<string>>(new Set());
 
   // Phase 2/3 workflow state.
   const [activeRevision, setActiveRevision] = useState<RevisionRow | null>(null);
@@ -2631,6 +2647,38 @@ export default function WbsPlanning() {
             <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
               Projected rows are previews only -- not saved to schedules until you click Save.
             </div>
+            {/* Phase 11 (2026-08-21): Sandra -- "show/hide hours, show/hide
+                Full Effort, select which people to show." All three are
+                display-only controls; nothing below changes what's
+                computed, only what's rendered and to whom. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <button
+                onClick={() => setUtilShowHours((v) => !v)}
+                className={`timeline-segmented-btn${utilShowHours ? " active" : ""}`}
+                style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
+                title="Show/hide planned and capacity hours under each percentage"
+              >
+                <Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+                Hours
+              </button>
+              <button
+                onClick={() => setUtilShowFullEffort((v) => !v)}
+                className={`timeline-segmented-btn${utilShowFullEffort ? " active" : ""}`}
+                style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
+                title="Show/hide the Full Effort (Theoretical) row"
+              >
+                Full Effort
+              </button>
+              <UtilPersonFilterButton
+                people={people}
+                selected={utilPersonFilter}
+                open={utilPersonFilterOpen}
+                setOpen={setUtilPersonFilterOpen}
+                search={utilPersonSearch}
+                setSearch={setUtilPersonSearch}
+                onChange={setUtilPersonFilter}
+              />
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
@@ -2654,72 +2702,117 @@ export default function WbsPlanning() {
                   </tr>
                 </thead>
                 <tbody>
-                  {people.map((p) => (
-                    <Fragment key={p.id}>
-                      {UTIL_PREVIEW_MODES.map((mode, mi) => {
-                        const { tasks: modeTasks, projects: modeProjects } = effectiveForMode[mode];
-                        return (
-                          <tr key={mode} style={mi === 0 ? { borderTop: "2px solid var(--border)" } : undefined}>
-                            {mi === 0 && (
-                              <td
-                                rowSpan={UTIL_PREVIEW_MODES.length}
-                                style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)", verticalAlign: "top", paddingTop: 8 }}
-                              >
-                                {p.name}
-                              </td>
-                            )}
-                            <td
-                              style={{
-                                fontSize: 10.5,
-                                position: "sticky",
-                                left: 130,
-                                background: "var(--surface)",
-                                color: UTIL_PREVIEW_COLOR[mode],
-                                fontWeight: 600,
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                                <span style={{ width: 7, height: 7, borderRadius: "50%", background: UTIL_PREVIEW_COLOR[mode], flexShrink: 0 }} />
-                                {UTIL_PREVIEW_LABEL[mode]}
-                              </span>
-                            </td>
-                            {utilDays.map((d) => {
-                              const iso = toISO(d);
-                              if (!isWorkingDay(d, holidaySet)) {
-                                return (
-                                  <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)", background: "var(--hover-bg)" }}>
-                                    –
-                                  </td>
-                                );
-                              }
-                              const av = utilAvailability(p.id, iso);
-                              if (av?.status === "off") {
-                                return (
-                                  <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
-                                    Off
-                                  </td>
-                                );
-                              }
-                              const points = dailyPointsFor(p.id, iso, modeTasks, modeProjects);
-                              const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
-                              const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
-                              const tier = tierOf(pct);
-                              return (
+                  {(utilPersonFilter ? people.filter((p) => utilPersonFilter.has(p.id)) : people).map((p) => {
+                    const visibleModes = UTIL_PREVIEW_MODES.filter((m) => utilShowFullEffort || m !== "full_capacity");
+                    const isExpanded = expandedUtilPeople.has(p.id);
+                    function toggleExpanded() {
+                      setExpandedUtilPeople((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(p.id)) next.delete(p.id);
+                        else next.add(p.id);
+                        return next;
+                      });
+                    }
+                    if (!isExpanded) {
+                      return (
+                        <tr key={p.id} style={{ borderTop: "2px solid var(--border)", cursor: "pointer" }} onClick={toggleExpanded}>
+                          <td style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)" }}>{p.name}</td>
+                          <td colSpan={utilDays.length + 1} style={{ fontSize: 11, color: "var(--accent)", fontWeight: 600 }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              <ChevronRight size={12} /> View scenarios
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return (
+                      <Fragment key={p.id}>
+                        {visibleModes.map((mode, mi) => {
+                          const { tasks: modeTasks, projects: modeProjects } = effectiveForMode[mode];
+                          return (
+                            <tr key={mode} style={mi === 0 ? { borderTop: "2px solid var(--border)" } : undefined}>
+                              {mi === 0 && (
                                 <td
-                                  key={iso}
-                                  style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600 }}
-                                  title={`${p.name} · ${UTIL_PREVIEW_LABEL[mode]} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
+                                  rowSpan={visibleModes.length}
+                                  style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)", verticalAlign: "top", paddingTop: 8, cursor: "pointer" }}
+                                  onClick={toggleExpanded}
                                 >
-                                  {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                    <ChevronDown size={12} />
+                                    {p.name}
+                                  </span>
                                 </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </Fragment>
-                  ))}
+                              )}
+                              <td
+                                style={{
+                                  fontSize: 10.5,
+                                  position: "sticky",
+                                  left: 130,
+                                  background: "var(--surface)",
+                                  color: UTIL_PREVIEW_COLOR[mode],
+                                  fontWeight: 600,
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: UTIL_PREVIEW_COLOR[mode], flexShrink: 0 }} />
+                                  {UTIL_PREVIEW_LABEL[mode]}
+                                </span>
+                              </td>
+                              {utilDays.map((d) => {
+                                const iso = toISO(d);
+                                if (!isWorkingDay(d, holidaySet)) {
+                                  return (
+                                    <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)", background: "var(--hover-bg)" }}>
+                                      –
+                                    </td>
+                                  );
+                                }
+                                const av = utilAvailability(p.id, iso);
+                                if (av?.status === "off") {
+                                  return (
+                                    <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
+                                      Off
+                                    </td>
+                                  );
+                                }
+                                const points = dailyPointsFor(p.id, iso, modeTasks, modeProjects);
+                                const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
+                                const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
+                                const tier = tierOf(pct);
+                                // Hours are purely a display conversion of
+                                // the SAME points/capacity already used for
+                                // pct above (x STANDARD_DAILY_HOURS) -- not
+                                // a new calculation.
+                                const plannedHours = points * STANDARD_DAILY_HOURS;
+                                const capacityHours = capacity * STANDARD_DAILY_HOURS;
+                                return (
+                                  <td
+                                    key={iso}
+                                    style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600, lineHeight: 1.35 }}
+                                    title={`${p.name} · ${UTIL_PREVIEW_LABEL[mode]} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
+                                  >
+                                    {tier.key === "none" ? (
+                                      "–"
+                                    ) : (
+                                      <>
+                                        {Math.round(pct)}%
+                                        {utilShowHours && (
+                                          <div style={{ fontSize: 8.5, fontWeight: 500, opacity: 0.85 }}>
+                                            {plannedHours.toFixed(1)}h / {capacityHours.toFixed(1)}h
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </Fragment>
+                    );
+                  })}
                   {people.length === 0 && (
                     <tr>
                       <td colSpan={UTIL_WINDOW_DAYS + 2} style={{ padding: 10, color: "var(--muted)", fontSize: 12 }}>
