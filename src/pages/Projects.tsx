@@ -1032,6 +1032,26 @@ export default function Projects() {
     return nearestActiveManagerClient(t.assignee_id) === me.id;
   }
 
+  // QA fix (2026-08-21): reopening a validated task was Full-Access-only
+  // (Sandra, 2026-07-22) with a separate, never-wired "Approve Reopening"
+  // flag sitting decorative in User Management -- toggling it for someone
+  // did nothing, since neither the Reopen button nor reopen_task ever
+  // checked it. Sandra's fix: "re-opening task will only be done by the
+  // immediate manager with skip level option as fallback" -- replaces the
+  // dead flag with the same real manager-chain authority
+  // canValidateTask/validate_task_completion already uses, minus the
+  // project-owner branch (deliberately narrower -- owner alone shouldn't
+  // be able to reopen, only Full Access or the assignee's manager chain).
+  // reopen_task (SQL) is the authoritative gate; this is the client-side
+  // approximation for whether to even show the button.
+  function canReopenTask(t: TaskRow): boolean {
+    if (isFullAccess) return true;
+    if (!t.assignee_id || !me?.id) return false;
+    const immediateManager = chainPeople.find((p) => p.id === t.assignee_id)?.reports_to ?? null;
+    if (immediateManager === me.id) return true;
+    return nearestActiveManagerClient(t.assignee_id) === me.id;
+  }
+
   const canCreateProject = isFullAccess;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
@@ -2602,13 +2622,13 @@ export default function Projects() {
               {/* Reopening clears the validation and reverts Status to
                   In Progress, unlocking Assignee/Status/Effort/Est. Hrs/
                   Start/Due (and now Actual Completion) again (see
-                  isTaskLocked above). Restricted to Full Access only,
-                  never the project owner or a manager -- Sandra,
-                  2026-07-22: "keep it for full access only" -- unchanged
-                  by the 2026-08-20 validation-authority broadening,
-                  which only expanded who can VALIDATE, not who can
-                  reopen. */}
-              {isFullAccess && (
+                  isTaskLocked above). QA fix (2026-08-21): was
+                  Full-Access-only per Sandra's original 2026-07-22
+                  decision; broadened per her follow-up instruction to
+                  "only be done by the immediate manager with skip level
+                  option as fallback" -- see canReopenTask above, which
+                  replaces the decorative can_approve_reopening flag. */}
+              {canReopenTask(t) && (
                 <button
                   onClick={async () => {
                     const ok = await confirm({

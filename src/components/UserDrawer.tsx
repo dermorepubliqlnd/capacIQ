@@ -55,7 +55,7 @@ export interface UserDrawerProps {
 
   // Immediate-save handlers (unchanged from the pre-redesign page)
   onChangeAccessLevel: (level: "limited" | "full") => void;
-  onToggleApprovalFlag: (field: "can_approve_closures" | "can_approve_reopening" | "can_approve_rebaseline", value: boolean) => void;
+  onToggleApprovalFlag: (field: "can_approve_closures" | "can_approve_rebaseline", value: boolean) => void;
   onSaveColor: (hex: string | null) => void;
 }
 
@@ -135,7 +135,7 @@ export default function UserDrawer({
   onSaveColor,
 }: UserDrawerProps) {
   const manager = people.find((x) => x.id === person.reports_to);
-  const approvalCount = [person.can_approve_closures, person.can_approve_reopening, person.can_approve_rebaseline].filter(Boolean).length;
+  const approvalCount = [person.can_approve_closures, person.can_approve_rebaseline].filter(Boolean).length;
   const isEdit = mode === "edit";
 
   return createPortal(
@@ -325,14 +325,6 @@ export default function UserDrawer({
                 <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
                   <input
                     type="checkbox"
-                    checked={person.can_approve_reopening}
-                    onChange={(e) => onToggleApprovalFlag("can_approve_reopening", e.target.checked)}
-                  />
-                  Reopen projects
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-                  <input
-                    type="checkbox"
                     checked={person.can_approve_rebaseline}
                     onChange={(e) => onToggleApprovalFlag("can_approve_rebaseline", e.target.checked)}
                   />
@@ -342,7 +334,6 @@ export default function UserDrawer({
             ) : (
               <>
                 <Field label="Closures">{person.can_approve_closures ? "Yes" : "No"}</Field>
-                <Field label="Reopen projects">{person.can_approve_reopening ? "Yes" : "No"}</Field>
                 <Field label="Re-baseline">{person.can_approve_rebaseline ? "Yes" : "No"}</Field>
                 {approvalCount === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>No approval permissions granted.</div>}
               </>

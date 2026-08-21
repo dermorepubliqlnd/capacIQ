@@ -41,7 +41,6 @@ const CSV_TEMPLATE_HEADERS = [
   "Capacity/Day",
   "Admin",
   "Approve Closures",
-  "Approve Reopening",
   "Approve Rebaseline",
   "Status",
 ];
@@ -364,12 +363,17 @@ export default function Admin() {
 
   // Sandra, 2026-07-29: "add in user management who has authorization to
   // approve reopening of projects and re-baselining -- no tiering yet."
-  // Flat authorization toggles, same pattern as can_approve_closures --
-  // not wired to any actual approval workflow yet (reopening a closed
-  // project doesn't exist as a feature yet; re-baselining exists but
-  // isn't gated by this flag yet either), just settable here so the
-  // designation exists ahead of that work.
-  async function toggleApprovalFlag(p: Person, field: "can_approve_closures" | "can_approve_reopening" | "can_approve_rebaseline", value: boolean) {
+  // QA fix (2026-08-21): can_approve_reopening was removed -- it was
+  // never wired to anything (the "reopen a closed project" feature it
+  // was meant for was never built, and TASK reopening -- a separate,
+  // already-existing action -- used a flat Full-Access check that never
+  // consulted this flag either). Task reopening now uses a real
+  // manager-chain check instead (see canReopenTask in Projects.tsx) per
+  // Sandra: "re-opening task will only be done by the immediate manager
+  // with skip level option as fallback." can_approve_closures/
+  // can_approve_rebaseline are unaffected -- both are genuinely wired
+  // (can_decide_closure, can_decide_baseline_request).
+  async function toggleApprovalFlag(p: Person, field: "can_approve_closures" | "can_approve_rebaseline", value: boolean) {
     setPeople((prev) => prev.map((x) => (x.id === p.id ? { ...x, [field]: value } : x)));
     const { error } = await supabase.from("people").update({ [field]: value }).eq("id", p.id);
     if (error) {
@@ -553,7 +557,6 @@ export default function Admin() {
         const daily_capacity_hours = Number(capacityRaw) > 0 ? Number(capacityRaw) : 7.5;
         const access_level: "full" | "limited" = parseYesNo(getField(row, "Admin", "Access Rights", "Access Level")) ? "full" : "limited";
         const can_approve_closures = parseYesNo(getField(row, "Approve Closures", "Approval Closures"));
-        const can_approve_reopening = parseYesNo(getField(row, "Approve Reopening"));
         const can_approve_rebaseline = parseYesNo(getField(row, "Approve Rebaseline"));
         const is_active = parseStatus(getField(row, "Status"));
 
@@ -569,7 +572,6 @@ export default function Admin() {
               daily_capacity_hours,
               access_level,
               can_approve_closures,
-              can_approve_reopening,
               can_approve_rebaseline,
               is_active,
             })
@@ -590,7 +592,6 @@ export default function Admin() {
               employee_id,
               job_title,
               can_approve_closures,
-              can_approve_reopening,
               can_approve_rebaseline,
               is_active,
             },
@@ -645,7 +646,7 @@ export default function Admin() {
   const selectedPerson = people.find((p) => p.id === selectedPersonId) ?? null;
 
   function approvalSummary(p: Person): string {
-    const n = [p.can_approve_closures, p.can_approve_reopening, p.can_approve_rebaseline].filter(Boolean).length;
+    const n = [p.can_approve_closures, p.can_approve_rebaseline].filter(Boolean).length;
     if (n === 0) return "None";
     return `${n} permission${n === 1 ? "" : "s"}`;
   }
@@ -818,7 +819,7 @@ export default function Admin() {
               <th>Manager</th>
               <th>Capacity/day</th>
               <th>Access</th>
-              <th title="Flat authorization flags -- not tiered yet. Reopening a Closed project, re-baselining, and Closed-project decisions aren't tiered further than this, this is just the designation.">Approvals</th>
+              <th title="Flat authorization flags -- not tiered yet. Re-baselining and Closed-project decisions aren't tiered further than this, this is just the designation. Task reopening is now a manager-chain check, not a flag -- see canReopenTask in Projects.tsx.">Approvals</th>
               <th>Status</th>
               <th></th>
             </tr>

@@ -82,7 +82,6 @@ Deno.serve(async (req) => {
       employee_id,
       job_title,
       can_approve_closures,
-      can_approve_reopening,
       can_approve_rebaseline,
       is_active,
     } = body ?? {};
@@ -115,7 +114,6 @@ Deno.serve(async (req) => {
         employee_id: employee_id || null,
         job_title: job_title || null,
         can_approve_closures: !!can_approve_closures,
-        can_approve_reopening: !!can_approve_reopening,
         can_approve_rebaseline: !!can_approve_rebaseline,
         is_active: is_active === false ? false : true,
       })

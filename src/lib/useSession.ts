@@ -13,11 +13,11 @@ export interface Person {
   auth_user_id: string | null;
   color: string | null;
   can_approve_closures: boolean;
-  // Sandra, 2026-07-29: authorization flags for two future approval
-  // workflows (reopening a Closed project, re-baselining) -- same flat,
-  // non-tiered pattern as can_approve_closures above. Not wired to any
-  // actual gating logic yet, just settable from User Management.
-  can_approve_reopening: boolean;
+  // Sandra, 2026-07-29: authorization flag for the re-baselining approval
+  // workflow -- same flat, non-tiered pattern as can_approve_closures
+  // above. (Its sibling can_approve_reopening was removed 2026-08-21: it
+  // was never wired to anything -- see canReopenTask in Projects.tsx for
+  // the real manager-chain check that replaced it for task reopening.)
   can_approve_rebaseline: boolean;
   // Sandra, 2026-08-14: CSV bulk-import fields for User Management --
   // Employee ID (org identifier, distinct from the internal uuid) and
