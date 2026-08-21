@@ -24,11 +24,18 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   baseline_locked: {
     label: "Baseline Locked",
-    hint: "This is the official commitment. Start a Revision to change it.",
+    // Phase 6 (2026-08-21): no more "Start a Revision" -- editing is open
+    // the whole time a baseline exists, Request Baseline Approval is
+    // what re-locks it.
+    hint: "This is the official commitment. You can still edit -- request Baseline Approval to re-lock.",
     color: "var(--accent)",
     bg: "#eaf1fb",
     border: "#cfe0f5",
   },
+  // Legacy status, no longer set by any Phase 6 action -- kept only so
+  // any project that happened to be mid-revision before Phase 6 shipped
+  // still renders sensibly (none were, as of 2026-08-21, but the value
+  // stays valid in the DB check constraint for old history/back-compat).
   revision_in_progress: {
     label: "Revision in Progress",
     hint: "Editing is unlocked for this revision only.",
@@ -38,7 +45,7 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   changed_after_baseline: {
     label: "Changed After Baseline",
-    hint: "A revision has been applied -- this differs from the original Baseline.",
+    hint: "Edited since the Baseline was locked -- request Baseline Approval to make this the new official plan.",
     color: "#7b4fb0",
     bg: "#f3ecfa",
     border: "#e2d3f0",

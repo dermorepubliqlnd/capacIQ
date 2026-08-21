@@ -22,6 +22,7 @@ import {
 } from "../lib/utilizationCalc";
 import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
 import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
+import { useUnsavedChangesGuard } from "../lib/useUnsavedChangesGuard";
 
 interface ProjectRow {
   id: string;
@@ -140,6 +141,12 @@ interface RevisionChangeRow {
   changed_at?: string;
 }
 interface ClosureRequestRow {
+  id: string;
+  status: "pending" | "approved" | "rejected";
+  requested_at: string;
+  requested_by: string | null;
+}
+interface BaselineRequestRow {
   id: string;
   status: "pending" | "approved" | "rejected";
   requested_at: string;
@@ -294,6 +301,20 @@ export default function WbsPlanning() {
   // Phase 2/3 workflow state.
   const [activeRevision, setActiveRevision] = useState<RevisionRow | null>(null);
   const [pendingClosure, setPendingClosure] = useState<ClosureRequestRow | null>(null);
+  // Phase 6 (2026-08-21): Baseline Approval workflow, replacing the manual
+  // Start Revision / Apply Revision / Discard Revision cycle -- see
+  // [[project_capaciq_phase6_baseline_approval]]. One request type covers
+  // both the first-ever Lock Baseline (from Draft) and any later
+  // re-baseline (from Baseline Locked / Changed After Baseline).
+  const [pendingBaselineRequest, setPendingBaselineRequest] = useState<BaselineRequestRow | null>(null);
+  // Session-staged edits (Phase 6): every field commit now merges into
+  // these maps instead of writing to Supabase immediately -- Save (below)
+  // is what actually flushes them. `hasUnsavedChanges` drives both the
+  // Save button's own affordance and useUnsavedChangesGuard's
+  // leave-without-saving prompt.
+  const pendingTaskPatches = useRef<Map<string, Partial<TaskRow>>>(new Map());
+  const pendingProjectPatch = useRef<Partial<ProjectRow>>({});
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   // Phase 5 (2026-07-28): shown next to the status banner so it's clear
   // which baseline version Compare-with-Baseline/variance are measuring
   // against, e.g. after a re-baseline event.
@@ -380,7 +401,7 @@ export default function WbsPlanning() {
       setTimeEntries([]);
     }
 
-    const [{ data: revRow }, { data: closureRow }, { data: baselineRow }] = await Promise.all([
+    const [{ data: revRow }, { data: closureRow }, { data: baselineRow }, { data: baselineReqRow }] = await Promise.all([
       supabase
         .from("project_revisions")
         .select("id,revision_number,reason,status,started_at")
@@ -399,10 +420,19 @@ export default function WbsPlanning() {
         .eq("project_id", projectId)
         .eq("is_active", true)
         .maybeSingle(),
+      // Phase 6: pending Baseline Approval request, if any -- mirrors the
+      // pendingClosure query above, just against the new table.
+      supabase
+        .from("project_baseline_requests")
+        .select("id,status,requested_at,requested_by")
+        .eq("project_id", projectId)
+        .eq("status", "pending")
+        .maybeSingle(),
     ]);
     setActiveRevision((revRow as RevisionRow) ?? null);
     setPendingClosure((closureRow as ClosureRequestRow) ?? null);
     setActiveBaseline((baselineRow as ActiveBaselineRow) ?? null);
+    setPendingBaselineRequest((baselineReqRow as BaselineRequestRow) ?? null);
     if (baselineRow) {
       loadLatestRevisionChanges();
       loadBaselineTaskSnapshot();
@@ -991,123 +1021,65 @@ export default function WbsPlanning() {
     });
   }
 
-  async function handleLockBaseline() {
+  // Phase 6 (2026-08-21): replaces handleLockBaseline/handleStartRevision/
+  // handleApplyRevision/handleDiscardRevision/handleRebaseline -- ONE
+  // request type now covers both the first-ever baseline (from Draft) and
+  // any later re-baseline (from Baseline Locked/Changed After Baseline).
+  // No task snapshot built here -- decide_baseline_request needs a FRESH
+  // snapshot taken at approval time (built by whoever clicks Approve, see
+  // handleDecideBaselineRequest below), not at request time, same pattern
+  // Close's request/decide split already uses.
+  async function handleRequestBaseline() {
     if (!project) return;
-    if (orderedTasks.length === 0) {
-      await alert("Add at least one task before locking a baseline.");
+    if (project.wbs_status === "draft" && orderedTasks.length === 0) {
+      await alert("Add at least one task before requesting a baseline.");
       return;
     }
+    const isFirstBaseline = project.wbs_status === "draft";
     if (
       !(await confirm({
-        title: "Lock Baseline",
-        message: `Lock ${MODE_LABEL[activeMode]} as this project's Baseline?\n\nThis records the current plan as the official commitment. The page becomes read-only until you Start a Revision.`,
-        confirmLabel: "Lock Baseline",
-        danger: true,
+        title: "Request Baseline Approval",
+        message: isFirstBaseline
+          ? `Request approval to lock ${MODE_LABEL[activeMode]} as this project's Baseline? Once approved, this becomes the official commitment.`
+          : `Request approval to re-baseline "${project.name}"? Once approved, the current plan is promoted to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`,
+        confirmLabel: "Request Approval",
       }))
     )
       return;
     setWorkflowBusy(true);
-    const { error } = await supabase.rpc("lock_wbs_baseline", {
-      p_project_id: project.id,
-      p_mode: activeMode,
+    const { error } = await supabase.rpc("request_baseline_approval", { p_project_id: project.id, p_reason: null });
+    setWorkflowBusy(false);
+    if (error) {
+      await alert(`Couldn't request baseline approval: ${error.message}`);
+      return;
+    }
+    await loadAll();
+  }
+
+  async function handleDecideBaselineRequest(approve: boolean) {
+    if (!project || !pendingBaselineRequest) return;
+    if (
+      !(await confirm({
+        title: approve ? "Approve Baseline" : "Reject Baseline Request",
+        message: approve
+          ? `Approve this baseline request? This captures the current plan as the official Baseline.`
+          : "Reject this baseline request?",
+        confirmLabel: approve ? "Approve" : "Reject",
+        danger: !approve,
+      }))
+    )
+      return;
+    setWorkflowBusy(true);
+    const { error } = await supabase.rpc("decide_baseline_request", {
+      p_request_id: pendingBaselineRequest.id,
+      p_approve: approve,
       p_reason: null,
+      p_mode: activeMode,
       p_tasks: buildTaskSnapshotPayload(),
     });
     setWorkflowBusy(false);
     if (error) {
-      await alert(`Couldn't lock baseline: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  async function handleStartRevision() {
-    if (!project) return;
-    if (
-      !(await confirm({
-        title: "Start Revision",
-        message: "Start a revision on this project? This unlocks editing until you Apply or Discard the revision.",
-        confirmLabel: "Start Revision",
-        danger: true,
-      }))
-    )
-      return;
-    setWorkflowBusy(true);
-    const { error } = await supabase.rpc("start_wbs_revision", { p_project_id: project.id, p_reason: "Revision started from WBS page" });
-    setWorkflowBusy(false);
-    if (error) {
-      await alert(`Couldn't start revision: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  async function handleApplyRevision() {
-    if (!project || !activeRevision) return;
-    if (
-      !(await confirm({
-        title: "Apply Revision",
-        message: `Apply this revision? This re-locks the project as the new Current Plan (status becomes Changed After Baseline).`,
-        confirmLabel: "Apply Revision",
-        danger: true,
-      }))
-    )
-      return;
-    setWorkflowBusy(true);
-    const { error } = await supabase.rpc("apply_wbs_revision", {
-      p_revision_id: activeRevision.id,
-      p_tasks: buildTaskSnapshotPayload(),
-    });
-    setWorkflowBusy(false);
-    if (error) {
-      await alert(`Couldn't apply revision: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  async function handleDiscardRevision() {
-    if (!project || !activeRevision) return;
-    if (
-      !(await confirm({
-        title: "Discard Revision",
-        message: `Discard this revision? Every change made since Start Revision -- edited tasks, added tasks, removed tasks -- will be undone back to how it was before. This cannot be undone.`,
-        confirmLabel: "Discard Revision",
-        danger: true,
-      }))
-    )
-      return;
-    setWorkflowBusy(true);
-    const { error } = await supabase.rpc("discard_wbs_revision", { p_revision_id: activeRevision.id });
-    setWorkflowBusy(false);
-    if (error) {
-      await alert(`Couldn't discard revision: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  // Phase 5 (2026-07-28): re-baselining -- promotes the CURRENT plan to be
-  // the new official Baseline once drift from the original has grown large
-  // enough that comparing against it isn't useful any more. No task
-  // snapshot to build here (see rebaseline_wbs_plan's own comment): the RPC
-  // sources straight from the latest already-persisted plan version.
-  async function handleRebaseline() {
-    if (!project) return;
-    if (
-      !(await confirm({
-        title: "Re-baseline",
-        message: `Re-baseline "${project.name}"? This promotes the current plan to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`,
-        confirmLabel: "Re-baseline",
-        danger: true,
-      }))
-    )
-      return;
-    setWorkflowBusy(true);
-    const { error } = await supabase.rpc("rebaseline_wbs_plan", { p_project_id: project.id, p_reason: "Re-baselined from WBS page" });
-    setWorkflowBusy(false);
-    if (error) {
-      await alert(`Couldn't re-baseline: ${error.message}`);
+      await alert(`Couldn't decide baseline request: ${error.message}`);
       return;
     }
     await loadAll();
@@ -1494,31 +1466,65 @@ export default function WbsPlanning() {
     }
   }
 
-  async function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
+  // Phase 6 (2026-08-21): field edits no longer write to Supabase
+  // instantly -- they stage into pendingTaskPatches/pendingProjectPatch
+  // (merged with any earlier unflushed edit to the same task) and mark
+  // hasUnsavedChanges, same "editing session, explicit Save" model Sandra
+  // asked for. The optimistic local setTasks/setProject update still
+  // happens immediately so the UI reflects what you typed right away --
+  // it just doesn't reach the database until Save (flushPendingEdits,
+  // called from saveDraft below) runs. NOTE: this means DB-trigger-
+  // computed columns (e.g. `effort`, derived from `estimated_hours` per
+  // Phase 12) won't reflect the new value in the UI until Save actually
+  // writes it and this page reloads -- an accepted tradeoff of staging,
+  // not a regression (see [[project_capaciq_wbs_effort_staleness_fix]]
+  // for the older, now-superseded instant-write version of this concern).
+  function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
-    // Select the row back (2026-08-21 fix): `effort` is DB-trigger-computed
-    // from `estimated_hours` (Phase 12), never sent up in `patch` itself --
-    // merging just `patch` into local state left the Effort chip showing
-    // the OLD value (blank on a brand-new task) until a full page reload.
-    // Selecting the post-trigger row and merging THAT instead keeps every
-    // DB-computed column (not just effort) in sync after any edit here.
-    const { data, error } = await supabase.from("tasks").update(patch).eq("id", taskId).select().single();
-    if (error) {
-      await alert(`Couldn't save: ${error.message}`);
-      loadAll();
-    } else if (data) {
-      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...(data as Partial<TaskRow>) } : t)));
-    }
+    const existing = pendingTaskPatches.current.get(taskId) ?? {};
+    pendingTaskPatches.current.set(taskId, { ...existing, ...patch });
+    setHasUnsavedChanges(true);
   }
 
-  async function saveProjectField(patch: Partial<ProjectRow>) {
+  function saveProjectField(patch: Partial<ProjectRow>) {
     if (!project) return;
     setProject((prev) => (prev ? { ...prev, ...patch } : prev));
-    const { error } = await supabase.from("projects").update(patch).eq("id", project.id);
-    if (error) {
-      await alert(`Couldn't save: ${error.message}`);
-      loadAll();
+    pendingProjectPatch.current = { ...pendingProjectPatch.current, ...patch };
+    setHasUnsavedChanges(true);
+  }
+
+  // Flushes every staged field edit to Supabase -- called at the top of
+  // saveDraft (the page's one Save button) before it does its own
+  // schedule-computation writes. Returns false (and alerts) on failure so
+  // saveDraft can bail rather than compute/snapshot dates on top of a
+  // half-saved edit. Re-selects each touched task afterward for the same
+  // DB-trigger-computed-column reason saveTaskField's old instant-write
+  // version used to (see comment above).
+  async function flushPendingEdits(): Promise<boolean> {
+    const taskEntries = Array.from(pendingTaskPatches.current.entries());
+    for (const [taskId, patch] of taskEntries) {
+      const { data, error } = await supabase.from("tasks").update(patch).eq("id", taskId).select().single();
+      if (error) {
+        await alert(`Couldn't save: ${error.message}`);
+        loadAll();
+        return false;
+      }
+      if (data) {
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...(data as Partial<TaskRow>) } : t)));
+      }
     }
+    if (project && Object.keys(pendingProjectPatch.current).length > 0) {
+      const { error } = await supabase.from("projects").update(pendingProjectPatch.current).eq("id", project.id);
+      if (error) {
+        await alert(`Couldn't save: ${error.message}`);
+        loadAll();
+        return false;
+      }
+    }
+    pendingTaskPatches.current = new Map();
+    pendingProjectPatch.current = {};
+    setHasUnsavedChanges(false);
+    return true;
   }
 
   // Soft completeness gate -- mirrors the Task name / Effort part of the
@@ -1588,14 +1594,28 @@ export default function WbsPlanning() {
     }
 
     const verb = MODE_LABEL[activeMode];
-    const applyingRevision = project.wbs_status === "revision_in_progress" && !!activeRevision;
-    const confirmMsg = applyingRevision
-      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, AND applies this revision -- the project re-locks as the new Current Plan (status becomes Changed After Baseline).`
-      : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting. Nothing is locked yet -- lock a Baseline or start/apply a Revision from the actions above when you're ready.`;
+    // Phase 6 (2026-08-21): replaces the old "applyingRevision" branch --
+    // there's no more manual Start Revision, so the only status-specific
+    // behavior Save needs is: if this project is Baseline Locked and
+    // you're editing it (exactly what Phase 6 now allows without an
+    // extra click), Save is what actually records that an edit happened
+    // and flips status to Changed After Baseline (record_wbs_edit below).
+    const wasBaselineLocked = project.wbs_status === "baseline_locked";
+    const confirmMsg = wasBaselineLocked
+      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Request Baseline Approval from the actions above when you're ready to re-lock.`
+      : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting.${
+          project.wbs_status === "draft" ? " Nothing is locked yet -- request Baseline Approval from the actions above when you're ready." : ""
+        }`;
     if (!(await confirm(confirmMsg))) return;
 
     setSaving(true);
     try {
+      // Flush every staged field edit (name/hours/assignee/etc. -- see
+      // saveTaskField/saveProjectField above) before this Save's own
+      // schedule-computation writes below.
+      const flushed = await flushPendingEdits();
+      if (!flushed) return;
+
       const batchId = crypto.randomUUID();
       for (const t of orderedTasks) {
         const chosen = chosenChain.get(t.id);
@@ -1623,30 +1643,25 @@ export default function WbsPlanning() {
       }
       await supabase.from("projects").update({ scoping_effort_mode: activeMode }).eq("id", project.id);
 
-      // Sandra, 2026-07-29: "Make Save also apply the revision" -- saving
-      // mid-revision now also calls apply_wbs_revision so Save re-locks
-      // the project in one step instead of needing a separate Apply click.
-      if (applyingRevision && activeRevision) {
-        const { error } = await supabase.rpc("apply_wbs_revision", {
-          p_revision_id: activeRevision.id,
-          p_tasks: buildTaskSnapshotPayload(),
-        });
+      if (wasBaselineLocked) {
+        const { error } = await supabase.rpc("record_wbs_edit", { p_project_id: project.id });
         if (error) {
-          await alert(`Timelines were saved, but the revision couldn't be applied: ${error.message}`);
+          await alert(`Timelines were saved, but the project's status couldn't be updated: ${error.message}`);
           await loadAll();
           return;
         }
-        await loadAll();
-        await alert(`Saved and applied using ${verb}. This revision is now locked in as the Current Plan.`);
-        return;
       }
 
       await loadAll();
-      await alert(`Saved using ${verb}. Nothing is locked yet -- lock a Baseline or start/apply a Revision from the actions above when ready.`);
+      await alert(`Saved using ${verb}.`);
     } finally {
       setSaving(false);
     }
   }
+
+  // Must run unconditionally (Rules of Hooks) -- before the loading/
+  // not-found early returns below.
+  useUnsavedChangesGuard(hasUnsavedChanges);
 
   if (loading) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>;
   if (!project) return <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Project not found.</div>;
@@ -1657,14 +1672,19 @@ export default function WbsPlanning() {
   // DECISIONS additionally open up to anyone flagged can_approve_closures.
   const canManageWbs = isFullAccess || me?.id === project.owner_id;
   const canDecideClosure = isFullAccess || !!me?.can_approve_closures || me?.id === project.owner_id;
-  // Sandra, 2026-07-29: locked/closed no longer means "show nothing" --
-  // the whole content section below now always renders; this flag just
-  // switches every InlineText/InlineSelect/InlineDate/InlineNumber in it
-  // (plus add/delete/reorder/dependency controls) between editable and a
-  // greyed, disabled read-only look. Only Draft and an in-progress
-  // Revision allow edits -- Baseline Locked/Changed After Baseline/Closed
-  // are all view-only.
-  const canEditWbs = project.wbs_status === "draft" || project.wbs_status === "revision_in_progress";
+  // Phase 6 (2026-08-21): deciding a pending Baseline Approval request is
+  // STRICTLY gated on can_approve_rebaseline -- Sandra's explicit choice,
+  // unlike Close's canDecideClosure above. Owner/Full Access do NOT
+  // auto-qualify here; a project with no one flagged simply has no
+  // eligible approver yet.
+  const canDecideBaselineRequest = !!me?.can_approve_rebaseline;
+  // Sandra, 2026-08-21 (Phase 6): removed the requirement to click "Start
+  // Revision" before editing a Baseline-Locked/Changed-After-Baseline
+  // project -- editing is open the whole time a baseline exists, exactly
+  // as it always was in Draft. Only Closed is genuinely read-only now.
+  // (Editability itself has never been permission-gated on this page --
+  // canEditWbs was always purely a status check, same as before.)
+  const canEditWbs = project.wbs_status !== "closed";
   // Sandra, 2026-07-29: "if one task has been completed... shall we
   // still allow changing of project start date?" -- no. Once any task
   // is Done, the project has genuinely started, so the project's own
@@ -2116,40 +2136,18 @@ export default function WbsPlanning() {
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Round 2 of the WBS UI redesign (Sandra, 2026-07-29), reordered
-              per her 2026-07-29 follow-up (Actions menu before the primary
-              CTA, matching her reference mockup's left-to-right order):
-              Actions dropdown first (Start Revision/Re-baseline while
-              eligible), then the single primary CTA (Lock Baseline / Close
-              Project / Apply Revision, whichever applies) rightmost.
-              Discard/Apply Revision stay as direct buttons during an
-              active revision -- short, focused 2-button decision, not
-              worth burying in a menu. */}
-          <ActionsMenu
-            items={[
-              ...(canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline")
-                ? [
-                    { label: "Start Revision", onClick: handleStartRevision, disabled: workflowBusy },
-                    { label: "Re-baseline", onClick: handleRebaseline, disabled: workflowBusy },
-                  ]
-                : []),
-            ]}
-          />
-          {canManageWbs && project.wbs_status === "draft" && (
-            <button className="btn-primary" disabled={workflowBusy} onClick={handleLockBaseline}>
-              Lock Baseline
-            </button>
-          )}
-          {project.wbs_status === "revision_in_progress" && canManageWbs && (
-            <>
-              <button className="btn-secondary" disabled={workflowBusy} onClick={handleDiscardRevision}>
-                Discard Revision
+          {/* Phase 6 (2026-08-21): Start Revision/Apply Revision/Discard
+              Revision/Lock Baseline/Re-baseline are all retired -- editing
+              is open the whole time a baseline exists (see canEditWbs),
+              and locking/re-locking a baseline is now the single Request
+              Baseline Approval action below, whichever case applies. */}
+          {canManageWbs &&
+            (project.wbs_status === "draft" || project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
+            !pendingBaselineRequest && (
+              <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestBaseline}>
+                Request Baseline Approval
               </button>
-              <button className="btn-primary" disabled={workflowBusy} onClick={handleApplyRevision}>
-                Apply Revision
-              </button>
-            </>
-          )}
+            )}
           {canManageWbs &&
             (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
             !pendingClosure && (
@@ -2165,6 +2163,28 @@ export default function WbsPlanning() {
             )}
         </div>
       </div>
+
+      {pendingBaselineRequest && (
+        <div
+          className="card"
+          style={{ padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "var(--warning-bg, #fff7ed)" }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--warning-text, #b45309)" }}>Baseline requested</span>
+          <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
+            Awaiting approval from someone flagged to approve baselines (User Management).
+          </span>
+          {canDecideBaselineRequest && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <button className="btn-secondary" disabled={workflowBusy} onClick={() => handleDecideBaselineRequest(false)}>
+                Reject
+              </button>
+              <button className="btn-primary" disabled={workflowBusy} onClick={() => handleDecideBaselineRequest(true)}>
+                Approve Baseline
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {pendingClosure && (
         <div
@@ -2193,11 +2213,6 @@ export default function WbsPlanning() {
           banner and the full content always renders underneath, with
           canEditWbs gating individual field/control editability instead
           of gating visibility of the whole page. */}
-      {project.wbs_status === "revision_in_progress" && (
-        <div className="card" style={{ padding: "8px 14px", marginBottom: 10, fontSize: 11.5, color: "var(--muted)" }}>
-          Revision in progress -- editing is unlocked. Use Apply Revision above when done, or Discard Revision to undo everything back to before this revision started.
-        </div>
-      )}
       {/* Sandra, 2026-07-29: removed the separate locked/closed message
           card that used to sit here -- redundant with the top status
           banner's own colored bg + hint text right above it. */}
@@ -3255,19 +3270,14 @@ export default function WbsPlanning() {
           {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          {project.wbs_status === "draft" && "Lock the baseline once scoping is final to start tracking against it."}
-          {project.wbs_status === "baseline_locked" && "Start a revision to make changes, or close the project once work is complete."}
+          {project.wbs_status === "draft" && "Request Baseline Approval once scoping is final to start tracking against it."}
+          {project.wbs_status === "baseline_locked" && "Edit directly any time -- request Baseline Approval to re-lock, or close the project once work is complete."}
           {project.wbs_status === "changed_after_baseline" &&
-            "This plan differs from the original baseline. Start another revision, re-baseline to make this the new official plan, or close the project."}
-          {project.wbs_status === "revision_in_progress" && "Apply or discard your revision using the buttons above to continue."}
-          {project.wbs_status === "closed" && "Final Scope is locked. View the audit trail for a full history of every revision."}
+            "This plan differs from the original baseline. Keep editing, request Baseline Approval to make this the new official plan, or close the project."}
+          {project.wbs_status === "revision_in_progress" && "This project has a legacy revision in progress -- view the audit trail for its history."}
+          {project.wbs_status === "closed" && "Final Scope is locked. View the audit trail for a full history of every change."}
         </span>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          {canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && (
-            <button className="btn-secondary" disabled={workflowBusy} onClick={handleStartRevision}>
-              Start New Revision
-            </button>
-          )}
           {project.wbs_status !== "draft" && (
             <button className="btn-secondary" onClick={() => navigate(`/projects/${project.id}/audit-trail`)}>
               View Audit Trail
