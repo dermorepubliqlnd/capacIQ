@@ -9,7 +9,7 @@ import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../component
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
-import { standardScenario, fullCapacityScenario } from "../lib/taskScheduling";
+import { fullCapacityScenario, capacityBasedScenario } from "../lib/taskScheduling";
 import { buildForwardSchedule, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
 import {
@@ -178,7 +178,14 @@ interface DependencyRow {
 type Mode = "full_capacity" | "standard";
 const MODE_LABEL: Record<Mode, string> = {
   full_capacity: "Full Effort",
-  standard: "Conservative Effort",
+  // Retired Conservative Effort's flat 4h/day rate (Sandra, 2026-08-21):
+  // "standard" keeps its wire value/DB columns (start_date_standard,
+  // scoping_effort_mode='standard', etc. -- zero migration needed, fully
+  // backward compatible with every already-saved/locked project) but now
+  // means Capacity-Based -- computeEntry's "standard" branch walks each
+  // assignee's REAL cross-project task queue via buildForwardSchedule
+  // instead of a flat rate. See [[project_capaciq_wbs_capacity_based_mode]].
+  standard: "Capacity-Based",
 };
 const MODES: Mode[] = ["full_capacity", "standard"];
 
@@ -796,6 +803,73 @@ export default function WbsPlanning() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, dependencies]);
 
+  // Capacity-aware scheduling infra for the "standard" mode (retired its
+  // old flat 4h/day Conservative-Effort math 2026-08-21 -- see
+  // [[project_capaciq_wbs_capacity_based_mode]]). Reuses Utilization.tsx's
+  // own buildForwardSchedule (cross-project, real-remaining-capacity
+  // engine), one schedule per assignee, memoized. Deliberately placed
+  // BEFORE computeEntry/buildChain below since "standard" mode's due
+  // dates now depend on it. This project's own rows anchor on the PLAIN
+  // `start_date_standard` field (not a chain lookup) specifically to
+  // avoid a circular dependency: buildChain("standard") calls
+  // computeEntry, which needs a schedule, which needs this list built
+  // first -- reading the stored field directly (same field the existing
+  // dependency-auto-refresh machinery already keeps up to date) breaks
+  // that cycle cleanly.
+  const effectiveTasksForSched: SchedTaskRow[] = [
+    ...allTasks
+      .filter((t) => t.project_id !== projectId)
+      .map((t) => ({
+        id: t.id,
+        project_id: t.project_id,
+        parent_task_id: t.parent_task_id ?? null,
+        assignee_id: t.assignee_id,
+        status: t.status,
+        start_date: t.start_date,
+        current_due_date: t.current_due_date,
+        estimated_hours: t.estimated_hours ?? null,
+      })),
+    ...tasks.map((t) => ({
+      id: t.id,
+      project_id: t.project_id,
+      parent_task_id: t.parent_task_id,
+      assignee_id: t.assignee_id,
+      status: t.status,
+      start_date: t.start_date_standard ?? t.start_date,
+      current_due_date: t.current_due_date,
+      estimated_hours: t.estimated_hours,
+    })),
+  ];
+  const effectiveProjectsForSched: SchedProjectRow[] = [
+    ...allProjects.filter((p) => p.id !== projectId).map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date })),
+    { id: projectId ?? "", owner_id: project?.owner_id ?? null, start_date: project?.start_date ?? null, end_date: project?.end_date ?? null },
+  ];
+  const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
+  const schedParentTaskIds = new Set(effectiveTasksForSched.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
+  const isCompleteStatusForSched = (status: string | null) => status === "Done";
+  const schedulesByAssignee = new Map<string, ReturnType<typeof buildForwardSchedule>>();
+  function scheduleFor(personId: string): ReturnType<typeof buildForwardSchedule> {
+    let sched = schedulesByAssignee.get(personId);
+    if (!sched) {
+      const person = people.find((p) => p.id === personId);
+      if (!person) return { perDay: new Map(), taskDueDates: new Map(), taskStartDates: new Map() };
+      sched = buildForwardSchedule({
+        personId,
+        fromDateStr: today,
+        tasks: effectiveTasksForSched,
+        parentTaskIds: schedParentTaskIds,
+        isCompleteStatus: isCompleteStatusForSched,
+        projects: effectiveProjectsForSched,
+        person: { id: person.id, daily_capacity_hours: person.daily_capacity_hours },
+        holidaySet,
+        availability: schedAvailability,
+        maxDaysGuard: 365,
+      });
+      schedulesByAssignee.set(personId, sched);
+    }
+    return sched;
+  }
+
   function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
     let d = addDays(parseLocalDate(dateStr), 1);
     while (!isWorkingDay(d, holidays)) d = addDays(d, 1);
@@ -831,8 +905,23 @@ export default function WbsPlanning() {
 
     const hours = t.estimated_hours;
     if (hours === null || hours === undefined) return null;
-    const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
-    const r = scenario(hours, start, holidaySet);
+
+    if (mode === "standard") {
+      // Capacity-Based: read this assignee's whole-queue forward walk
+      // (memoized per person, built from effectiveTasksForSched above)
+      // rather than a flat rate -- both the Start AND End here can differ
+      // from the plain stored `start_date_standard` field if this person
+      // has other real work queued ahead of it.
+      if (!t.assignee_id) return null;
+      const sched = scheduleFor(t.assignee_id);
+      const schedStart = sched.taskStartDates.get(t.id);
+      const schedEnd = sched.taskDueDates.get(t.id);
+      if (!schedStart || !schedEnd) return null;
+      const durationDays = workingDaysBetween(parseLocalDate(schedStart), parseLocalDate(schedEnd), holidaySet).length;
+      return { start: schedStart, end: schedEnd, durationDays };
+    }
+
+    const r = fullCapacityScenario(hours, start, holidaySet);
     return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
   }
 
@@ -1255,11 +1344,31 @@ export default function WbsPlanning() {
     for (const mode of MODES) {
       const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
       const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
-      const scenario = mode === "full_capacity" ? fullCapacityScenario : standardScenario;
       function entryWithOverride(t: TaskRow, overrideStart?: string): ChainEntry | null {
         if (!overrideStart) return computeEntry(t, mode);
         if (t.estimated_hours === null || t.estimated_hours === undefined) return null;
-        const r = scenario(t.estimated_hours, overrideStart, holidaySet);
+        if (mode === "full_capacity") {
+          const r = fullCapacityScenario(t.estimated_hours, overrideStart, holidaySet);
+          return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+        }
+        // Capacity-Based override: re-walk from this NEW proposed start
+        // using the assignee's real remaining daily capacity, same idea
+        // as computeEntry's "standard" branch -- but computed fresh for
+        // this hypothetical start rather than reading the precomputed
+        // whole-queue answer, since that precomputed schedule still
+        // reflects this task's OLD (not-yet-saved) start_date_standard.
+        // Adds this task's own already-counted hours back into each
+        // day's free capacity so it doesn't get blocked by its own prior
+        // placement.
+        if (!t.assignee_id) return null;
+        const sched = scheduleFor(t.assignee_id);
+        const remainingHoursOnDate = (dateStr: string) => {
+          const day = sched.perDay.get(dateStr);
+          if (!day) return people.find((p) => p.id === t.assignee_id)?.daily_capacity_hours ?? 0;
+          const own = day.taskHours.get(t.id) ?? 0;
+          return Math.max(0, day.capacity - day.totalHours + own);
+        };
+        const r = capacityBasedScenario(t.estimated_hours, overrideStart, holidaySet, remainingHoursOnDate);
         return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
       }
       // Entries computed so far THIS pass, keyed by task id (root ids and
@@ -1807,125 +1916,6 @@ export default function WbsPlanning() {
 
   const owner = people.find((p) => p.id === project.owner_id);
 
-  // Capacity-aware "Projected" Gantt (deferred WBS Timeline wiring from
-  // the Phase 2 utilization refactor, scoped+built 2026-08-21). Full
-  // Effort/Conservative Effort above stay exactly as they were -- a flat,
-  // per-task rate assumption computed independently of every other task
-  // (Sandra, 2026-07-29: intentional, lets tasks genuinely overlap; the
-  // utilization heat-map is where over-allocation actually shows up, not
-  // a hard scheduling constraint here). fullChain/standardChain and the
-  // Save/Lock snapshot are untouched by this. This is a THIRD, purely
-  // read-only Gantt reusing Utilization.tsx's own buildForwardSchedule
-  // (same cross-project, real-remaining-capacity engine) so a task
-  // assigned to an already-loaded person shows a realistically longer bar
-  // here -- without that reality ever overwriting the officially scoped
-  // dates. Sandra confirmed this "glimpse of full/conservative plus a
-  // third, real projection -- shown always, not a mode toggle" approach.
-  // Same live-draft merge pattern as effectiveTasksForUtil/
-  // effectiveProjectsForUtil just above: this project's own rows come
-  // from the CURRENTLY PREVIEWED mode's chain, every other project's rows
-  // come from the one-time `allTasks`/`allProjects` snapshot.
-  const effectiveTasksForSched: SchedTaskRow[] = [
-    ...allTasks
-      .filter((t) => t.project_id !== projectId)
-      .map((t) => ({
-        id: t.id,
-        project_id: t.project_id,
-        parent_task_id: t.parent_task_id ?? null,
-        assignee_id: t.assignee_id,
-        status: t.status,
-        start_date: t.start_date,
-        current_due_date: t.current_due_date,
-        estimated_hours: t.estimated_hours ?? null,
-      })),
-    ...orderedTasks
-      .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
-      .map((t) => {
-        const entry = chainByMode[utilPreviewMode].get(t.id);
-        return {
-          id: t.id,
-          project_id: t.project_id,
-          parent_task_id: t.parent_task_id,
-          assignee_id: t.assignee_id,
-          status: t.status,
-          start_date: entry?.start ?? t.start_date,
-          current_due_date: entry?.end ?? t.current_due_date,
-          estimated_hours: t.estimated_hours,
-        };
-      }),
-  ];
-  const effectiveProjectsForSched: SchedProjectRow[] = [
-    ...allProjects.filter((p) => p.id !== projectId).map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date })),
-    { id: projectId ?? "", owner_id: project.owner_id, start_date: project.start_date, end_date: summaries[utilPreviewMode].end },
-  ];
-  const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
-  const schedParentTaskIds = new Set(effectiveTasksForSched.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
-  const isCompleteStatusForSched = (status: string | null) => status === "Done";
-  const schedulesByAssignee = new Map<string, ReturnType<typeof buildForwardSchedule>>();
-  function scheduleFor(personId: string): ReturnType<typeof buildForwardSchedule> {
-    let sched = schedulesByAssignee.get(personId);
-    if (!sched) {
-      const person = people.find((p) => p.id === personId);
-      if (!person) return { perDay: new Map(), taskDueDates: new Map(), taskStartDates: new Map() };
-      sched = buildForwardSchedule({
-        personId,
-        fromDateStr: today,
-        tasks: effectiveTasksForSched,
-        parentTaskIds: schedParentTaskIds,
-        isCompleteStatus: isCompleteStatusForSched,
-        projects: effectiveProjectsForSched,
-        person: { id: person.id, daily_capacity_hours: person.daily_capacity_hours },
-        holidaySet,
-        availability: schedAvailability,
-        maxDaysGuard: 365,
-      });
-      schedulesByAssignee.set(personId, sched);
-    }
-    return sched;
-  }
-  // A Done task's dates are historical fact, same convention as
-  // computeEntry above -- buildForwardSchedule also excludes Done tasks
-  // from its own queue entirely (isCompleteStatusForSched), so this must
-  // be special-cased here too or a finished task would just show blank.
-  function computeProjectedEntry(t: TaskRow): ChainEntry | null {
-    if (t.status === "Done" && t.start_date && t.current_due_date) {
-      const start = t.start_date.slice(0, 10);
-      const end = t.current_due_date.slice(0, 10);
-      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-      return { start, end, durationDays };
-    }
-    if (!t.assignee_id || t.estimated_hours === null || t.estimated_hours === undefined || t.estimated_hours <= 0) return null;
-    const sched = scheduleFor(t.assignee_id);
-    const start = sched.taskStartDates.get(t.id);
-    const end = sched.taskDueDates.get(t.id);
-    if (!start || !end) return null;
-    const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-    return { start, end, durationDays };
-  }
-  function buildProjectedChain(): Map<string, ChainEntry | null> {
-    const result = new Map<string, ChainEntry | null>();
-    for (const t of orderedTasks) {
-      if (t.depth === 0 && hasChildren(t.id)) continue;
-      result.set(t.id, computeProjectedEntry(t));
-    }
-    for (const t of orderedTasks) {
-      if (t.depth !== 0 || !hasChildren(t.id)) continue;
-      const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === t.id);
-      const entries = children.map((c) => result.get(c.id)).filter((e): e is ChainEntry => !!e);
-      if (entries.length === children.length && entries.length > 0) {
-        const start = entries.reduce((min, e) => (e.start < min ? e.start : min), entries[0].start);
-        const end = entries.reduce((max, e) => (e.end > max ? e.end : max), entries[0].end);
-        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-        result.set(t.id, { start, end, durationDays });
-      } else {
-        result.set(t.id, null);
-      }
-    }
-    return result;
-  }
-  const projectedChain = buildProjectedChain();
-
-
   // Gantt chart (Sandra, 2026-07-24): a visual timeline below the task
   // table, built LAST and deliberately after every scheduling-logic
   // change above so it renders the final, settled model. Shows whichever
@@ -2350,7 +2340,7 @@ export default function WbsPlanning() {
               {MODES.map((m, i) => {
                 const s = summaries[m];
                 const color = m === "full_capacity" ? "#3b82f6" : "#22c55e";
-                const rate = m === "full_capacity" ? "7.5 h/day" : "4 h/day";
+                const rate = m === "full_capacity" ? "7.5 h/day" : null;
                 const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, 1);
                 const widthPct = s.durationDays ? Math.max(18, Math.round((s.durationDays / maxDuration) * 100)) : 0;
                 // Sandra, 2026-07-29 follow-up: label moved ABOVE the bar
@@ -2359,7 +2349,7 @@ export default function WbsPlanning() {
                 return (
                   <div key={m} style={{ marginBottom: i === MODES.length - 1 ? 0 : 14 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color, marginBottom: 6 }}>
-                      {MODE_LABEL[m]} ({rate})
+                      {MODE_LABEL[m]}{rate ? ` (${rate})` : ""}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                       <div style={{ flex: 1, minWidth: 100 }}>
@@ -2589,7 +2579,7 @@ export default function WbsPlanning() {
                     Full Effort
                   </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }}>
-                    Conservative Effort
+                    Capacity-Based
                   </th>
                 </tr>
                 <tr>
@@ -3056,184 +3046,6 @@ export default function WbsPlanning() {
               </div>
             );
           })}
-          {(() => {
-            const { startDate: ganttStartDate, days: ganttDays, widthPx: ganttWidthPx } = ganttMetricsFor(projectedChain);
-            return (
-              <div key="projected" className="card" style={{ padding: 14, marginTop: 12 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, marginBottom: 10 }}>
-                  <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Timeline (Gantt) — Projected (Capacity-Aware)</strong>
-                  <span style={{ fontSize: 10.5, color: "var(--muted)" }}>
-                    Reflects each assignee's real workload across ALL their projects and tasks, walked forward day by day from today -- for reference only, not saved or locked with Full Effort/Conservative Effort above.
-                  </span>
-                </div>
-                {ganttDays.length === 0 ? (
-                  <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>
-                    No projected schedule yet -- assign a person and set Estimated hours on at least one task to see a capacity-aware projection.
-                  </div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    {/* Sandra, 2026-07-24: "is it ok if we show dependencies via
-                        a light broken or thin line just to show relationship?"
-                        -- a single SVG overlay (`ganttConnectors()` below)
-                        spans the whole header+rows area so an elbow line can be
-                        drawn from any predecessor row to any successor row
-                        (they're rarely adjacent). This wrapping div is what
-                        that overlay is absolutely positioned against; nothing
-                        else changed about the header/row markup below, just
-                        moved their shared `minWidth` up onto this one wrapper
-                        instead of repeating it on every row. Read-only lines
-                        only -- NOT the deferred drag-to-create-a-dependency
-                        feature, which is a separate, bigger interaction and
-                        still not started. */}
-                    <div style={{ position: "relative", minWidth: GANTT_NAME_COL_WIDTH + ganttWidthPx }}>
-                    <div style={{ display: "flex" }}>
-                      <div style={{ width: GANTT_NAME_COL_WIDTH, flexShrink: 0, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }} />
-                      <div style={{ position: "relative", width: ganttWidthPx, height: 24, flexShrink: 0 }}>
-                        {ganttDays.map((d, i) => {
-                          const iso = toISO(d);
-                          const offDay = !isWorkingDay(d, holidaySet);
-                          const isFirstOfMonth = d.getDate() === 1 || i === 0;
-                          return (
-                            <div
-                              key={iso}
-                              title={iso}
-                              style={{
-                                position: "absolute",
-                                left: i * GANTT_DAY_WIDTH,
-                                top: 0,
-                                width: GANTT_DAY_WIDTH,
-                                height: "100%",
-                                fontSize: 9.5,
-                                textAlign: "center",
-                                color: offDay ? "var(--muted)" : "var(--text)",
-                                background: offDay ? "var(--hover-bg)" : undefined,
-                                fontWeight: isFirstOfMonth ? 700 : 400,
-                                borderLeft: isFirstOfMonth ? "1px solid var(--border)" : undefined,
-                              }}
-                            >
-                              {String(d.getMonth() + 1).padStart(2, "0")}/{String(d.getDate()).padStart(2, "0")}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    {orderedTasks.map((t) => {
-                      const entry = projectedChain.get(t.id);
-                      const isParent = t.depth === 0 && hasChildren(t.id);
-                      const assignee = people.find((p) => p.id === t.assignee_id);
-                      const barColor = assignee ? colorForPerson(assignee) : UNASSIGNED_BAR_COLOR;
-                      return (
-                        <div key={t.id} style={{ display: "flex" }}>
-                          <div
-                            style={{
-                              width: GANTT_NAME_COL_WIDTH,
-                              flexShrink: 0,
-                              position: "sticky",
-                              left: 0,
-                              background: "var(--surface)",
-                              zIndex: 1,
-                              fontSize: 11.5,
-                              fontWeight: t.depth === 0 ? 600 : 400,
-                              paddingLeft: 8 + t.depth * 16,
-                              paddingRight: 8,
-                              height: 26,
-                              display: "flex",
-                              alignItems: "center",
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              borderBottom: "1px solid var(--hover-bg)",
-                            }}
-                            title={assignee ? `${t.name} \u00b7 ${assignee.name}` : t.name}
-                          >
-                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{t.name}</span>
-                            {assignee && (
-                              <span
-                                style={{
-                                  marginLeft: 5,
-                                  flexShrink: 0,
-                                  fontSize: 10,
-                                  fontWeight: 400,
-                                  color: "var(--muted)",
-                                }}
-                              >
-                                &middot; {assignee.name}
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ position: "relative", width: ganttWidthPx, height: 26, flexShrink: 0, borderBottom: "1px solid var(--hover-bg)" }}>
-                            {ganttDays.map((d) => {
-                              const iso = toISO(d);
-                              if (isWorkingDay(d, holidaySet)) return null;
-                              return (
-                                <div
-                                  key={iso}
-                                  style={{
-                                    position: "absolute",
-                                    left: ganttDayOffsetPx(ganttStartDate, iso),
-                                    top: 0,
-                                    bottom: 0,
-                                    width: GANTT_DAY_WIDTH,
-                                    background: "var(--hover-bg)",
-                                  }}
-                                />
-                              );
-                            })}
-                            {entry ? (
-                              <div
-                                title={`${t.name} · ${assignee?.name ?? "Unassigned"} · ${formatDate(entry.start)} → ${formatDate(entry.end)}`}
-                                style={{
-                                  position: "absolute",
-                                  left: ganttDayOffsetPx(ganttStartDate, entry.start),
-                                  width: ganttBarWidthPx(entry.start, entry.end),
-                                  top: isParent ? 9 : 4,
-                                  height: isParent ? 8 : 18,
-                                  background: barColor,
-                                  opacity: isParent ? 0.55 : 1,
-                                  borderRadius: 4,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  paddingLeft: 5,
-                                  color: "#fff",
-                                  fontSize: 9.5,
-                                  fontWeight: 600,
-                                  whiteSpace: "nowrap",
-                                  overflow: "hidden",
-                                }}
-                              >
-                                {!isParent && entry.durationDays}
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <svg
-                      width={GANTT_NAME_COL_WIDTH + ganttWidthPx}
-                      height={GANTT_HEADER_HEIGHT + orderedTasks.length * GANTT_ROW_HEIGHT}
-                      style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
-                    >
-                      {/* Sandra, 2026-07-28: wants the dependency connectors
-                          to read as arrows, not bare lines -- two markers
-                          (neutral gray / conflict amber, matching each
-                          path's own stroke) so the arrowhead color always
-                          matches the line it's attached to. */}
-                      <defs>
-                        <marker id={`gantt-arrow-neutral-projected`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                          <path d="M0,0 L8,4 L0,8 Z" fill="var(--muted, #8a94a6)" />
-                        </marker>
-                        <marker id={`gantt-arrow-conflict-projected`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                          <path d="M0,0 L8,4 L0,8 Z" fill="var(--warning-text, #b45309)" />
-                        </marker>
-                      </defs>
-                      {ganttConnectors(projectedChain, "projected", ganttStartDate)}
-                    </svg>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
         </div>
 
         {project.wbs_status !== "draft" && (
