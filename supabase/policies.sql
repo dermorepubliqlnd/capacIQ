@@ -1281,7 +1281,7 @@ create table if not exists task_planning_snapshots (
   id uuid primary key default gen_random_uuid(),
   task_id uuid references tasks(id) not null,
   finalize_batch_id uuid not null,
-  mode text not null check (mode in ('full_capacity', 'standard', 'capacity_based')),
+  mode text not null check (mode in ('full_capacity', 'standard', 'capacity_based', 'manual')), -- widened for 'manual' in phase16_migration.sql (2026-08-21)
   applied boolean not null default false,
   target_start_date date not null,
   person_id uuid references people(id), -- only set for capacity_based rows
@@ -1457,7 +1457,7 @@ create table if not exists project_baselines (
   project_id uuid references projects(id) on delete cascade not null unique,
   captured_at timestamptz not null default now(),
   captured_by uuid references people(id),
-  mode text not null check (mode in ('full_capacity', 'standard')),
+  mode text not null check (mode in ('full_capacity', 'standard', 'manual')), -- widened for 'manual' in phase16_migration.sql (2026-08-21)
   total_est_hours numeric not null,
   task_count integer not null,
   start_date date,
@@ -1477,7 +1477,7 @@ create table if not exists project_closeouts (
   project_id uuid references projects(id) on delete cascade not null unique,
   closed_at timestamptz not null default now(),
   closed_by uuid references people(id),
-  mode text not null check (mode in ('full_capacity', 'standard')),
+  mode text not null check (mode in ('full_capacity', 'standard', 'manual')), -- widened for 'manual' in phase16_migration.sql (2026-08-21)
   total_est_hours numeric not null,
   task_count integer not null,
   start_date date,

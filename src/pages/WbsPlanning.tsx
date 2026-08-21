@@ -185,19 +185,31 @@ interface DependencyRow {
 // Utilization panel below now carries the "does this person have room"
 // job on its own, and Assignee becomes a normal per-task field again
 // (same as the rest of the app), not something tied to a scheduling mode.
-type Mode = "full_capacity" | "standard";
+type Mode = "full_capacity" | "standard" | "manual";
 const MODE_LABEL: Record<Mode, string> = {
   full_capacity: "Full Effort",
   // Retired Conservative Effort's flat 4h/day rate (Sandra, 2026-08-21):
-  // "standard" keeps its wire value/DB columns (start_date_standard,
-  // scoping_effort_mode='standard', etc. -- zero migration needed, fully
-  // backward compatible with every already-saved/locked project) but now
-  // means Capacity-Based -- computeEntry's "standard" branch walks each
-  // assignee's REAL cross-project task queue via buildForwardSchedule
-  // instead of a flat rate. See [[project_capaciq_wbs_capacity_based_mode]].
+  // "standard" keeps its wire value/DB columns (scoping_effort_mode=
+  // 'standard', etc. -- zero migration needed, fully backward compatible
+  // with every already-saved/locked project) but now means Capacity-
+  // Based -- computeEntry's "standard" branch walks each assignee's REAL
+  // cross-project task queue via buildForwardSchedule instead of a flat
+  // rate. See [[project_capaciq_wbs_capacity_based_mode]].
   standard: "Capacity-Based",
+  // Phase 12 (2026-08-21): Sandra -- Full Effort and Capacity-Based are
+  // now both READ-ONLY, pure computed references; "Manual" is the only
+  // mode where a human date wins. Reuses the exact columns/flag that
+  // used to carry Capacity-Based's in-place override (start_date_
+  // standard/start_standard_auto, Phase 7) -- zero migration, since
+  // Capacity-Based no longer needs a draft Start field of its own now
+  // that it can never be overridden. Manual mirrors Capacity-Based's
+  // live suggestion until the user types a Start themselves, then
+  // freezes (same freeze mechanic Phase 7 already had, just always-on
+  // and living in its own column instead of conditionally inside
+  // Capacity-Based's). See [[project_capaciq_phase12_manual_mode_split]].
+  manual: "Manual",
 };
-const MODES: Mode[] = ["full_capacity", "standard"];
+const MODES: Mode[] = ["full_capacity", "standard", "manual"];
 
 // Phase 9 (2026-08-21): the WBS Utilization-snapshot preview toggle is
 // its own, slightly richer set of options than the 2 task-table Modes --
@@ -433,7 +445,11 @@ export default function WbsPlanning() {
     // toggle itself silently showed Full Effort right next to it. Seed
     // activeMode from the persisted value on every load so the toggle
     // and the caption actually agree.
-    if (proj?.scoping_effort_mode === "full_capacity" || proj?.scoping_effort_mode === "standard") {
+    if (
+      proj?.scoping_effort_mode === "full_capacity" ||
+      proj?.scoping_effort_mode === "standard" ||
+      proj?.scoping_effort_mode === "manual"
+    ) {
       setActiveMode(proj.scoping_effort_mode);
     }
     setTasks((tks as TaskRow[]) ?? []);
@@ -979,53 +995,39 @@ export default function WbsPlanning() {
   // genuinely overlap/parallelize -- the utilization heat-map below is
   // where over-allocation actually shows up, not a scheduling
   // constraint here).
-  function computeEntry(t: TaskRow, mode: Mode, opts?: { ignoreOverride?: boolean }): ChainEntry | null {
-    const rawStart = mode === "full_capacity" ? t.start_date_full : t.start_date_standard;
-    const start = rawStart ? rawStart.slice(0, 10) : null;
-    if (!start) return null;
-
-    // Sandra, 2026-07-29 (design discussion on switching effort mode
-    // mid-project): a Done task's dates are historical fact, not a
-    // forecast -- recomputing them off the new mode's daily rate would
-    // silently rewrite something that already happened. Once a task is
-    // Done, its own Start/End stay exactly as last saved (current_due_date
-    // is the single canonical End written by Save, same value regardless
-    // of which mode is toggled) instead of being re-derived from hours.
-    // It still anchors dependent tasks normally -- only ITS OWN entry is
-    // frozen, nothing downstream changes.
-    if (t.status === "Done" && t.current_due_date) {
-      const end = t.current_due_date.slice(0, 10);
-      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-      return { start, end, durationDays };
-    }
-
-    const hours = t.estimated_hours;
-    if (hours === null || hours === undefined) return null;
-
-    if (mode === "standard") {
-      // Capacity-Based: read this assignee's whole-queue forward walk
-      // (memoized per person, built from effectiveTasksForSched above)
-      // rather than a flat rate -- both the Start AND End here can differ
-      // from the plain stored `start_date_standard` field if this person
-      // has other real work queued ahead of it.
+  function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
+    // Phase 12 (2026-08-21): Sandra -- "add a table for Manual... the
+    // manual timetable would basically reflect Capacity-Based by
+    // default, meaning any changes can only be done in Manual... don't
+    // allow edits in the start/end dates of Capacity-Based and Full
+    // Effort." Capacity-Based is now a pure, always-computed reference
+    // (no draft field, never overridable); Manual is the only place a
+    // typed date wins, and it reuses the exact start_date_standard/
+    // start_standard_auto columns that used to carry Capacity-Based's
+    // in-place override (Phase 7) -- Capacity-Based never needed that
+    // draft field for anything except the override it can no longer
+    // have, so repurposing it here is zero-migration.
+    if (mode === "manual") {
+      // Done tasks: dates are historical fact, same as every mode.
+      if (t.status === "Done" && t.current_due_date) {
+        const start = (t.start_date_standard ?? t.current_due_date).slice(0, 10);
+        const end = t.current_due_date.slice(0, 10);
+        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+        return { start, end, durationDays };
+      }
+      const hours = t.estimated_hours;
+      if (hours === null || hours === undefined) return null;
       if (!t.assignee_id) return null;
       const sched = scheduleFor(t.assignee_id);
       const schedStart = sched.taskStartDates.get(t.id);
       const schedEnd = sched.taskDueDates.get(t.id);
-
-      // Phase 7 (2026-08-21): Sandra's ask -- a manually-typed Start date
-      // in Capacity-Based mode used to get silently overwritten by this
-      // same queue walk the moment Save ran. `start_standard_auto` is
-      // already flipped to false the instant the user edits this field
-      // (see the InlineDate onCommit below), so it doubles perfectly as
-      // "this date is a deliberate commitment, not a suggestion" -- no
-      // new column needed. When overridden, honor the typed Start exactly
-      // and walk hours forward at a flat daily rate (same math as Full
-      // Effort) instead of deferring to the person's whole-queue position.
-      // The queue's own answer is still computed above and carried along
-      // as suggestedStart/suggestedEnd purely so the UI can flag the
-      // deviation -- it never overrides the committed date.
-      if (t.start_standard_auto === false && !opts?.ignoreOverride) {
+      // Touched -- the typed Start always wins, walked forward at a flat
+      // daily rate (same math as Full Effort) rather than deferring to
+      // the person's whole-queue position. Capacity-Based's own answer
+      // is still carried along as suggestedStart/suggestedEnd purely so
+      // the UI can flag the deviation.
+      if (t.start_standard_auto === false && t.start_date_standard) {
+        const start = t.start_date_standard.slice(0, 10);
         const r = fullCapacityScenario(hours, start, holidaySet);
         return {
           start,
@@ -1037,12 +1039,47 @@ export default function WbsPlanning() {
           suggestedEnd: schedEnd,
         };
       }
-
+      // Not yet touched -- mirror Capacity-Based's live suggestion
+      // exactly, so Manual always "reflects Capacity-Based by default."
       if (!schedStart || !schedEnd) return null;
       const durationDays = workingDaysBetween(parseLocalDate(schedStart), parseLocalDate(schedEnd), holidaySet).length;
       return { start: schedStart, end: schedEnd, durationDays };
     }
 
+    if (mode === "standard") {
+      // Capacity-Based: ALWAYS this assignee's whole-queue forward walk
+      // (memoized per person) -- read-only, never overridable. Manual
+      // (above) is the only mode where a human date can win now.
+      if (t.status === "Done" && t.current_due_date) {
+        const end = t.current_due_date.slice(0, 10);
+        const start = (t.start_date_standard ?? end).slice(0, 10);
+        const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+        return { start, end, durationDays };
+      }
+      const hours = t.estimated_hours;
+      if (hours === null || hours === undefined) return null;
+      if (!t.assignee_id) return null;
+      const sched = scheduleFor(t.assignee_id);
+      const schedStart = sched.taskStartDates.get(t.id);
+      const schedEnd = sched.taskDueDates.get(t.id);
+      if (!schedStart || !schedEnd) return null;
+      const durationDays = workingDaysBetween(parseLocalDate(schedStart), parseLocalDate(schedEnd), holidaySet).length;
+      return { start: schedStart, end: schedEnd, durationDays };
+    }
+
+    // full_capacity: flat daily rate from its own auto-derived Start
+    // (start_date_full/start_full_auto) -- also read-only now; it only
+    // ever moves via the dependency auto-sync effect, never a direct
+    // edit, so there's no override concept to worry about here either.
+    const start = t.start_date_full ? t.start_date_full.slice(0, 10) : null;
+    if (!start) return null;
+    if (t.status === "Done" && t.current_due_date) {
+      const end = t.current_due_date.slice(0, 10);
+      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
+      return { start, end, durationDays };
+    }
+    const hours = t.estimated_hours;
+    if (hours === null || hours === undefined) return null;
     const r = fullCapacityScenario(hours, start, holidaySet);
     return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
   }
@@ -1051,11 +1088,11 @@ export default function WbsPlanning() {
   // own Start date; a parent task's entry is then derived as the
   // min(start)/max(end) span across its own sub-tasks (never computed
   // from its own Start field directly, same as Est. hrs).
-  function buildChain(mode: Mode, opts?: { ignoreOverride?: boolean }): Map<string, ChainEntry | null> {
+  function buildChain(mode: Mode): Map<string, ChainEntry | null> {
     const result = new Map<string, ChainEntry | null>();
     for (const t of orderedTasks) {
       if (t.depth === 0 && hasChildren(t.id)) continue; // parents handled below
-      result.set(t.id, computeEntry(t, mode, opts));
+      result.set(t.id, computeEntry(t, mode));
     }
     for (const t of orderedTasks) {
       if (t.depth !== 0 || !hasChildren(t.id)) continue;
@@ -1075,21 +1112,25 @@ export default function WbsPlanning() {
 
   const fullChain = buildChain("full_capacity");
   const standardChain = buildChain("standard");
+  // Phase 12 (2026-08-21): Manual is now its own real Mode/column (not a
+  // conditional override folded into Capacity-Based) -- see computeEntry
+  // above for the mirror-then-freeze behavior.
+  const manualChain = buildChain("manual");
   const chainByMode: Record<Mode, Map<string, ChainEntry | null>> = {
     full_capacity: fullChain,
     standard: standardChain,
+    manual: manualChain,
   };
-  // Phase 9: pure queue-suggested Capacity-Based, ignoring any per-task
-  // manual override -- used only by the Utilization-snapshot preview's
-  // "Capacity-Based" option so it can be shown side-by-side with "Manual"
-  // (standardChain, which already folds overrides in). Identical to
-  // standardChain for any project with no overridden tasks.
-  const standardSuggestedChain = buildChain("standard", { ignoreOverride: true });
+  // Phase 9/10 simplified by Phase 12: Capacity-Based is now ALWAYS the
+  // pure queue-suggested chain (never overridable), so the Utilization
+  // snapshot's "Capacity-Based" preview and "Manual" preview can just
+  // point straight at chainByMode.standard/chainByMode.manual -- no
+  // separate ignoreOverride variant needed anymore.
   function previewChainFor(m: UtilPreviewMode): Map<string, ChainEntry | null> | null {
     if (m === "actual") return null;
     if (m === "full_capacity") return fullChain;
-    if (m === "standard_suggested") return standardSuggestedChain;
-    return standardChain; // "standard_committed"
+    if (m === "standard_suggested") return standardChain;
+    return manualChain; // "standard_committed"
   }
 
 
@@ -1100,10 +1141,20 @@ export default function WbsPlanning() {
   // duplicate refreshDates'/computeEntry's real business logic in two
   // places and risk drift), the RPC just persists whatever is already
   // showing on screen at the moment of Lock/Apply/Close.
+  // Phase 12 (2026-08-21): the baseline snapshot's JSON shape still only
+  // has ONE non-Full-Effort slot (start_date_standard/end_date_standard --
+  // no DB/RPC schema change made for this). When Manual is the active
+  // Scoping Effort mode, that slot now carries Manual's own dates instead
+  // of pure Capacity-Based's -- exactly mirroring how Manual reuses the
+  // tasks table's start_date_standard/start_standard_auto columns
+  // in-place rather than getting its own. decide_baseline_request's SQL
+  // was updated to match (reads whichever mode is <> 'full_capacity' from
+  // this same slot).
   function buildTaskSnapshotPayload() {
+    const modeChain = activeMode === "manual" ? manualChain : standardChain;
     return orderedTasks.map((t) => {
       const fullEntry = fullChain.get(t.id);
-      const standardEntry = standardChain.get(t.id);
+      const modeEntry = modeChain.get(t.id);
       return {
         task_id: t.id,
         parent_task_id: t.parent_task_id,
@@ -1114,8 +1165,8 @@ export default function WbsPlanning() {
         depends_on: dependsOnIdsFor(t.id),
         start_date_full: fullEntry?.start ?? null,
         end_date_full: fullEntry?.end ?? null,
-        start_date_standard: standardEntry?.start ?? null,
-        end_date_standard: standardEntry?.end ?? null,
+        start_date_standard: modeEntry?.start ?? null,
+        end_date_standard: modeEntry?.end ?? null,
       };
     });
   }
@@ -1924,7 +1975,15 @@ export default function WbsPlanning() {
   // mode -- there's no single "active" preview anymore since all 4
   // scenarios render as simultaneous rows.
   function modeColStyle(m: Mode): CSSProperties {
-    const color = m === "full_capacity" ? UTIL_PREVIEW_COLOR.full_capacity : UTIL_PREVIEW_COLOR.standard_suggested;
+    // Phase 12 (2026-08-21): now 3 real columns -- Full Effort blue,
+    // Capacity-Based green, Manual yellow -- matching UTIL_PREVIEW_COLOR
+    // everywhere else on the page (snapshot rows, override pin).
+    const color =
+      m === "full_capacity"
+        ? UTIL_PREVIEW_COLOR.full_capacity
+        : m === "standard"
+        ? UTIL_PREVIEW_COLOR.standard_suggested
+        : UTIL_PREVIEW_COLOR.standard_committed;
     return { background: `${color}14` }; // ~8% opacity tint, hex alpha suffix
   }
 
@@ -1959,12 +2018,45 @@ export default function WbsPlanning() {
   // own conflict warning) alongside End/Duration -- replaces the old
   // single shared Start column entirely. `field` picks which of the two
   // per-mode columns this cell reads/writes.
+  // Phase 12 (2026-08-21): Sandra -- "the manual time table would
+  // basically reflect the capacity based by default, meaning any changes
+  // can only be done in the manual... don't allow edits in the start
+  // dates and end dates of capacity based [or full effort]." Full Effort
+  // and Capacity-Based Start cells are now plain read-only display (no
+  // InlineDate, no conflict-edit affordance); only Manual keeps the old
+  // editable behavior (reusing the same start_date_standard/
+  // start_standard_auto columns Capacity-Based used to own -- see
+  // computeEntry's "manual" branch, which mirrors Capacity-Based until
+  // touched, then freezes).
   function renderModeCells(t: TaskRow & { depth: number }, mode: Mode, isParent: boolean) {
-    const field = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
-    const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
     const entry = chainByMode[mode].get(t.id);
     const conflict = dependencyConflict(t, mode);
     const style = { fontSize: 12, ...modeColStyle(mode) };
+
+    if (mode !== "manual") {
+      return (
+        <>
+          <td style={style}>
+            <span
+              title={
+                isParent
+                  ? `Computed from this task's own sub-tasks (earliest Start under ${MODE_LABEL[mode]})`
+                  : `${MODE_LABEL[mode]} is read-only -- edit dates under Manual instead.`
+              }
+              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            >
+              {entry ? formatDate(entry.start) : "—"}
+              {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
+            </span>
+          </td>
+          <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? formatDate(entry.end) : "—"}</td>
+          <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.durationDays : "—"}</td>
+        </>
+      );
+    }
+
+    const field = "start_date_standard";
+    const autoField = "start_standard_auto";
     return (
       <>
         <td style={style}>
@@ -1982,11 +2074,10 @@ export default function WbsPlanning() {
               value={t[field]}
               editable={canEditWbs && !isParent}
               onCommit={(v) =>
-                // A manual edit here means this Start is no longer "on
-                // auto-pilot" for this mode -- stop the sync effect above
-                // from re-deriving it from the dependency chain from now
-                // on. Re-adding/re-selecting the same dependency (or a new
-                // one) turns auto-pilot back on, same as before (Round 10).
+                // A manual edit here freezes this task's Manual date --
+                // it stops mirroring Capacity-Based from now on. Re-adding/
+                // re-selecting a dependency turns auto-pilot back on, same
+                // as before (Round 10).
                 saveTaskField(t.id, { [field]: v, [autoField]: false } as Partial<TaskRow>)
               }
             />
@@ -2016,6 +2107,7 @@ export default function WbsPlanning() {
   const summaries: Record<Mode, ReturnType<typeof chainOverallSummary>> = {
     full_capacity: chainOverallSummary(fullChain),
     standard: chainOverallSummary(standardChain),
+    manual: chainOverallSummary(manualChain),
   };
 
   // Real-time utilization heat-map (Sandra, 2026-07-24): "when we
@@ -2383,8 +2475,6 @@ export default function WbsPlanning() {
           alongside the main content (not a full-width toggle panel like
           before), matching her reference mockup. Main content is the
           flex:1 left column; the rail is a fixed-width sibling. */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
           <div className="card" style={{ padding: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "nowrap", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Project:</span>
@@ -2515,7 +2605,18 @@ export default function WbsPlanning() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: project.wbs_status === "draft" ? "1fr" : "1fr 1fr",
+              // Phase 13 (2026-08-21): Sandra -- "once the baseline is
+              // locked... the width... decreases because there is a
+              // place order for version history in the second column...
+              // lock the version history size to match the first row...
+              // keep the width at full window view." Revision
+              // Summary/History used to be a page-spanning flex sibling
+              // (shrinking the ENTIRE main content -- table, both
+              // Gantts, Utilization snapshot -- for the whole page
+              // height once a baseline existed). Moved into THIS grid
+              // row only, as a 3rd fixed-width column, so everything
+              // below reclaims full page width unconditionally.
+              gridTemplateColumns: project.wbs_status === "draft" ? "1fr" : "1fr 1fr 260px",
               gap: 12,
               marginBottom: 12,
               // Sandra, 2026-07-29: "align the overall variance box
@@ -2556,9 +2657,12 @@ export default function WbsPlanning() {
               <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)", marginBottom: 12 }}>Effort Comparison (by Duration)</div>
               {MODES.map((m, i) => {
                 const s = summaries[m];
-                const color = m === "full_capacity" ? "#3b82f6" : "#22c55e";
+                // Phase 12 (2026-08-21): 3rd mode added -- reuse the same
+                // blue/green/yellow identity everywhere else on the page.
+                const color =
+                  m === "full_capacity" ? UTIL_PREVIEW_COLOR.full_capacity : m === "standard" ? UTIL_PREVIEW_COLOR.standard_suggested : UTIL_PREVIEW_COLOR.standard_committed;
                 const rate = m === "full_capacity" ? "7.5 h/day" : null;
-                const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, 1);
+                const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, summaries.manual.durationDays, 1);
                 const widthPct = s.durationDays ? Math.max(18, Math.round((s.durationDays / maxDuration) * 100)) : 0;
                 // Sandra, 2026-07-29 follow-up: label moved ABOVE the bar
                 // (was to its left) per her reference mockup -- same
@@ -2613,6 +2717,147 @@ export default function WbsPlanning() {
           {project.wbs_status !== "draft" && (
             <CompareWithBaselinePanel projectId={project.id} liveTasks={buildTaskSnapshotPayload()} />
           )}
+        {project.wbs_status !== "draft" && (
+          <div style={{ width: 260, flexShrink: 0 }}>
+            <div className="card" style={{ padding: 14 }}>
+              {/* Sandra, 2026-07-29 follow-up: plain icon+label+value rows,
+                  no per-row card/box (per her reference mockup). */}
+              {latestRevisionChanges.length > 0 && (
+                <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
+                  <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision Summary</strong>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, fontSize: 11.5 }}>
+                    {[
+                      { icon: <Clock size={13} />, label: "Total effort change", value: `${revisionSummary.totalAddedHours > 0 ? "+" : ""}${revisionSummary.totalAddedHours}h` },
+                      { icon: <ListPlus size={13} />, label: "Total tasks added", value: revisionSummary.tasksAdded },
+                      { icon: <Trash2 size={13} />, label: "Total tasks removed", value: revisionSummary.tasksRemoved },
+                      { icon: <TrendingUp size={13} />, label: "Estimates increased", value: revisionSummary.hoursIncreased },
+                      { icon: <TrendingDown size={13} />, label: "Estimates decreased", value: revisionSummary.hoursDecreased },
+                      { icon: <Calendar size={13} />, label: "Dates changed", value: revisionSummary.datesChanged },
+                      { icon: <Link2 size={13} />, label: "Dependencies changed", value: revisionSummary.dependenciesChanged },
+                      { icon: <User size={13} />, label: "Assignees changed", value: revisionSummary.assigneesChanged },
+                    ].map((row) => (
+                      <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color: "var(--muted)", flexShrink: 0, display: "inline-flex" }}>{row.icon}</span>
+                        <span style={{ flex: 1, color: "var(--text-secondary)" }}>{row.label}</span>
+                        <strong>{row.value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
+              {/* Sandra, 2026-07-29 follow-up: replaced the bordered-box-
+                  per-revision look with a flat timeline (circle marker +
+                  connecting line), Impact shown inline (no click-to-
+                  expand needed), capped to the last 5 revisions, and a
+                  clearer placeholder when nothing's been recorded yet. */}
+              {revisionHistory.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No changes made yet.</div>
+              ) : (
+                <div style={{ marginTop: 10, position: "relative", paddingLeft: 16 }}>
+                  <div style={{ position: "absolute", left: 3, top: 4, bottom: 4, width: 2, background: "var(--border)" }} />
+                  {revisionHistory.slice(0, 5).map((r, idx, arr) => {
+                    const changes = revisionChangesById[r.id] ?? [];
+                    const hoursDelta = changes
+                      .filter((c) => c.change_type === "hours_changed")
+                      .reduce((sum, c) => sum + (Number(c.new_value ?? 0) - Number(c.previous_value ?? 0)), 0);
+                    const tasksAdded = changes.filter((c) => c.change_type === "task_added").length;
+                    const tasksRemoved = changes.filter((c) => c.change_type === "task_removed").length;
+                    const datesChanged = changes.filter((c) => c.change_type === "date_changed").length;
+                    const impactParts = [
+                      hoursDelta !== 0 ? `${hoursDelta > 0 ? "+" : ""}${hoursDelta}h` : null,
+                      tasksAdded > 0 ? `+${tasksAdded} task${tasksAdded === 1 ? "" : "s"}` : null,
+                      tasksRemoved > 0 ? `-${tasksRemoved} task${tasksRemoved === 1 ? "" : "s"}` : null,
+                      datesChanged > 0 ? `${datesChanged} date${datesChanged === 1 ? "" : "s"} changed` : null,
+                    ].filter(Boolean);
+                    const statusTone =
+                      r.status === "applied"
+                        ? { bg: "var(--success-bg)", color: "var(--success-text)" }
+                        : r.status === "discarded"
+                        ? { bg: "var(--hover-bg)", color: "var(--muted)" }
+                        : { bg: "var(--warning-bg)", color: "var(--warning-text)" };
+                    return (
+                      <div key={r.id} style={{ position: "relative", marginBottom: idx === arr.length - 1 ? 0 : 14 }}>
+                        <span
+                          style={{
+                            position: "absolute",
+                            left: -16,
+                            top: 3,
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            background: statusTone.color,
+                          }}
+                        />
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              padding: "1px 6px",
+                              borderRadius: "var(--radius-btn)",
+                              background: statusTone.bg,
+                              color: statusTone.color,
+                            }}
+                          >
+                            {r.status}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{formatDate(r.started_at.slice(0, 10))}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                          {impactParts.length > 0 ? `Impact: ${impactParts.join(", ")}` : "No changes recorded"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {activeBaseline && (
+                    <div style={{ position: "relative", marginTop: 14 }}>
+                      <span
+                        style={{
+                          position: "absolute",
+                          left: -16,
+                          top: 3,
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          background: "var(--muted)",
+                        }}
+                      />
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <strong style={{ fontSize: 12 }}>Baseline V{activeBaseline.version_number}</strong>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            padding: "1px 6px",
+                            borderRadius: "var(--radius-btn)",
+                            background: "var(--hover-bg)",
+                            color: "var(--muted)",
+                          }}
+                        >
+                          Locked
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                        {formatDate(activeBaseline.captured_at.slice(0, 10))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              <button
+                className="btn-secondary"
+                style={{ width: "100%", marginTop: 12 }}
+                onClick={() => navigate(`/projects/${project.id}/audit-trail`)}
+              >
+                View Full Audit Trail
+              </button>
+            </div>
+          </div>
+        )}
           </div>
 
           {/* Phase 10 (2026-08-21): redesigned per Sandra's spec -- all 4
@@ -2901,11 +3146,14 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 190 }} title="vs the active Baseline">
                     Changes vs Baseline
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }}>
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }} title="Read-only -- edit dates under Manual instead">
                     Full Effort
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }}>
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }} title="Read-only -- edit dates under Manual instead">
                     Capacity-Based
+                  </th>
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("manual") }} title="Mirrors Capacity-Based until edited, then freezes">
+                    Manual
                   </th>
                 </tr>
                 <tr>
@@ -2915,6 +3163,9 @@ export default function WbsPlanning() {
                   <th style={{ width: 110, ...modeColStyle("standard") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
+                  <th style={{ width: 110, ...modeColStyle("manual") }}>Start</th>
+                  <th style={{ width: 100, ...modeColStyle("manual") }}>End Date</th>
+                  <th style={{ width: 90, ...modeColStyle("manual") }}>Duration (days)</th>
                 </tr>
               </thead>
               <tbody>
@@ -3173,12 +3424,13 @@ export default function WbsPlanning() {
                       </td>
                       {renderModeCells(t, "full_capacity", isParent)}
                       {renderModeCells(t, "standard", isParent)}
+                      {renderModeCells(t, "manual", isParent)}
                     </tr>
                   );
                 })}
                 {canEditWbs && (
                   <tr>
-                    <td colSpan={14} className="add-row-cell">
+                    <td colSpan={17} className="add-row-cell">
                       <div className="add-row-trigger" onClick={addTopLevelTask}>
                         <Plus size={12} />
                         New task
@@ -3372,150 +3624,7 @@ export default function WbsPlanning() {
               </div>
             );
           })}
-        </div>
 
-        {project.wbs_status !== "draft" && (
-          <div style={{ width: 300, flexShrink: 0 }}>
-            <div className="card" style={{ padding: 14 }}>
-              {/* Sandra, 2026-07-29 follow-up: plain icon+label+value rows,
-                  no per-row card/box (per her reference mockup). */}
-              {latestRevisionChanges.length > 0 && (
-                <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid var(--border)" }}>
-                  <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision Summary</strong>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, fontSize: 11.5 }}>
-                    {[
-                      { icon: <Clock size={13} />, label: "Total effort change", value: `${revisionSummary.totalAddedHours > 0 ? "+" : ""}${revisionSummary.totalAddedHours}h` },
-                      { icon: <ListPlus size={13} />, label: "Total tasks added", value: revisionSummary.tasksAdded },
-                      { icon: <Trash2 size={13} />, label: "Total tasks removed", value: revisionSummary.tasksRemoved },
-                      { icon: <TrendingUp size={13} />, label: "Estimates increased", value: revisionSummary.hoursIncreased },
-                      { icon: <TrendingDown size={13} />, label: "Estimates decreased", value: revisionSummary.hoursDecreased },
-                      { icon: <Calendar size={13} />, label: "Dates changed", value: revisionSummary.datesChanged },
-                      { icon: <Link2 size={13} />, label: "Dependencies changed", value: revisionSummary.dependenciesChanged },
-                      { icon: <User size={13} />, label: "Assignees changed", value: revisionSummary.assigneesChanged },
-                    ].map((row) => (
-                      <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ color: "var(--muted)", flexShrink: 0, display: "inline-flex" }}>{row.icon}</span>
-                        <span style={{ flex: 1, color: "var(--text-secondary)" }}>{row.label}</span>
-                        <strong>{row.value}</strong>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Revision History</strong>
-              {/* Sandra, 2026-07-29 follow-up: replaced the bordered-box-
-                  per-revision look with a flat timeline (circle marker +
-                  connecting line), Impact shown inline (no click-to-
-                  expand needed), capped to the last 5 revisions, and a
-                  clearer placeholder when nothing's been recorded yet. */}
-              {revisionHistory.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>No changes made yet.</div>
-              ) : (
-                <div style={{ marginTop: 10, position: "relative", paddingLeft: 16 }}>
-                  <div style={{ position: "absolute", left: 3, top: 4, bottom: 4, width: 2, background: "var(--border)" }} />
-                  {revisionHistory.slice(0, 5).map((r, idx, arr) => {
-                    const changes = revisionChangesById[r.id] ?? [];
-                    const hoursDelta = changes
-                      .filter((c) => c.change_type === "hours_changed")
-                      .reduce((sum, c) => sum + (Number(c.new_value ?? 0) - Number(c.previous_value ?? 0)), 0);
-                    const tasksAdded = changes.filter((c) => c.change_type === "task_added").length;
-                    const tasksRemoved = changes.filter((c) => c.change_type === "task_removed").length;
-                    const datesChanged = changes.filter((c) => c.change_type === "date_changed").length;
-                    const impactParts = [
-                      hoursDelta !== 0 ? `${hoursDelta > 0 ? "+" : ""}${hoursDelta}h` : null,
-                      tasksAdded > 0 ? `+${tasksAdded} task${tasksAdded === 1 ? "" : "s"}` : null,
-                      tasksRemoved > 0 ? `-${tasksRemoved} task${tasksRemoved === 1 ? "" : "s"}` : null,
-                      datesChanged > 0 ? `${datesChanged} date${datesChanged === 1 ? "" : "s"} changed` : null,
-                    ].filter(Boolean);
-                    const statusTone =
-                      r.status === "applied"
-                        ? { bg: "var(--success-bg)", color: "var(--success-text)" }
-                        : r.status === "discarded"
-                        ? { bg: "var(--hover-bg)", color: "var(--muted)" }
-                        : { bg: "var(--warning-bg)", color: "var(--warning-text)" };
-                    return (
-                      <div key={r.id} style={{ position: "relative", marginBottom: idx === arr.length - 1 ? 0 : 14 }}>
-                        <span
-                          style={{
-                            position: "absolute",
-                            left: -16,
-                            top: 3,
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            background: statusTone.color,
-                          }}
-                        />
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                          <strong style={{ fontSize: 12 }}>Revision {r.revision_number}</strong>
-                          <span
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 600,
-                              textTransform: "uppercase",
-                              padding: "1px 6px",
-                              borderRadius: "var(--radius-btn)",
-                              background: statusTone.bg,
-                              color: statusTone.color,
-                            }}
-                          >
-                            {r.status}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{formatDate(r.started_at.slice(0, 10))}</div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-                          {impactParts.length > 0 ? `Impact: ${impactParts.join(", ")}` : "No changes recorded"}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {activeBaseline && (
-                    <div style={{ position: "relative", marginTop: 14 }}>
-                      <span
-                        style={{
-                          position: "absolute",
-                          left: -16,
-                          top: 3,
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: "var(--muted)",
-                        }}
-                      />
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <strong style={{ fontSize: 12 }}>Baseline V{activeBaseline.version_number}</strong>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 600,
-                            textTransform: "uppercase",
-                            padding: "1px 6px",
-                            borderRadius: "var(--radius-btn)",
-                            background: "var(--hover-bg)",
-                            color: "var(--muted)",
-                          }}
-                        >
-                          Locked
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                        {formatDate(activeBaseline.captured_at.slice(0, 10))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-              <button
-                className="btn-secondary"
-                style={{ width: "100%", marginTop: 12 }}
-                onClick={() => navigate(`/projects/${project.id}/audit-trail`)}
-              >
-                View Full Audit Trail
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Design spec item 8 (Sandra, 2026-07-29): bottom status bar --
           mirrors the top banner's status chip but adds forward-looking
