@@ -1463,14 +1463,27 @@ export default function Projects() {
   }
 
   async function deleteTaskPermanently(t: TaskRow) {
+    // Quality audit follow-on (2026-08-20 review, Data Integrity #3):
+    // this used to be one-task-at-a-time and didn't bundle sub-tasks,
+    // unlike bulkDeleteTasks below which correctly does. Not a
+    // corruption risk (a sub-task whose parent no longer exists just
+    // fails to load cleanly) but a confusing dead end -- someone
+    // deleting a parent from Archived Items would find its sub-tasks
+    // stuck there with no parent to restore alongside. A sub-task only
+    // ever ends up archived here as a side effect of its whole project
+    // being archived (tasks have no standalone archive action), so any
+    // live sub-tasks of `t` are already sitting in this same
+    // archivedTasks list -- just find them by parent_task_id.
+    const childIds = archivedTasks.filter((c) => c.parent_task_id === t.id).map((c) => c.id);
+    const allIds = Array.from(new Set([t.id, ...childIds]));
     const ok = await confirm({
       title: "Delete permanently",
-      message: `Permanently delete "${t.name}"? This can't be undone.`,
+      message: `Permanently delete "${t.name}"${childIds.length ? ` (and ${childIds.length} sub-task${childIds.length > 1 ? "s" : ""})` : ""}? This can't be undone.`,
       confirmLabel: "Delete permanently",
       danger: true,
     });
     if (!ok) return;
-    const { error } = await deleteTasksAndDependents([t.id]);
+    const { error } = await deleteTasksAndDependents(allIds);
     if (error) {
       alert(`Couldn't delete: ${error}`);
       return;
@@ -1839,7 +1852,7 @@ export default function Projects() {
       },
       {
         key: "effort_level",
-        label: "Effort",
+        label: "Complexity",
         defaultWidth: 100,
         maxWidth: 130,
         render: (p) => (
@@ -2077,8 +2090,8 @@ export default function Projects() {
     },
     {
       key: "effort_level",
-      label: "Effort",
-      getGroup: (p) => p.effort_level ?? "No effort set",
+      label: "Complexity",
+      getGroup: (p) => p.effort_level ?? "No complexity set",
       getTone: (p) => PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral",
     },
     {
@@ -2142,8 +2155,8 @@ export default function Projects() {
     },
     {
       key: "effort_level",
-      label: "Effort",
-      getGroup: (p) => p.effort_level ?? "No effort set",
+      label: "Complexity",
+      getGroup: (p) => p.effort_level ?? "No complexity set",
       getTone: (p) => PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral",
       boardGroupable: true,
     },
@@ -2168,6 +2181,7 @@ export default function Projects() {
     value: status,
     label: WBS_STATUS_META[status].label,
     tone: WBS_STATUS_TONES[status] ?? "neutral",
+    hint: WBS_STATUS_META[status].hint,
   }));
 
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
@@ -2214,7 +2228,7 @@ export default function Projects() {
     { key: "status", label: "Status", getValue: (p) => PROJECT_STATUS_OPTIONS.indexOf(p.status ?? "") },
     { key: "phase", label: "Phase", getValue: (p) => PROJECT_PHASE_ALL.indexOf(p.phase ?? "") },
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
-    { key: "effort_level", label: "Effort", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
+    { key: "effort_level", label: "Complexity", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
     { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },

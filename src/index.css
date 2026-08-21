@@ -364,7 +364,13 @@ input, select { font-family: var(--font); }
 .view-tab-menu-btn {
   display: flex;
   align-items: center;
-  opacity: 0;
+  /* Quality audit (2026-08-20 review, UX #8): this used to be opacity: 0
+     -- invisible until hover, with no default-state affordance at all,
+     so someone wouldn't even know a rename/duplicate/delete/color menu
+     existed here. A faint always-visible dot at rest, full opacity on
+     hover/active-tab/menu-open, keeps the tab bar quiet without hiding
+     the affordance entirely. */
+  opacity: 0.35;
   background: none;
   border: none;
   cursor: pointer;
@@ -372,7 +378,7 @@ input, select { font-family: var(--font); }
   padding: 2px;
   border-radius: var(--radius-sm);
 }
-.view-tab:hover .view-tab-menu-btn, .view-tab-menu-btn.menu-open { opacity: 1; }
+.view-tab:hover .view-tab-menu-btn, .view-tab-menu-btn.menu-open, .view-tab.active .view-tab-menu-btn { opacity: 1; }
 .view-tab-menu-btn:hover { background: var(--border); }
 .view-tab-dropdown {
   position: absolute;

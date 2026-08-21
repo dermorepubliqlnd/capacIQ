@@ -13,6 +13,11 @@ export interface BoardColumnDef {
   // column of each run.
   clusterLabel?: string;
   tone?: string;
+  // Quality audit (2026-08-20 review, UX #8): WBS status names (Draft,
+  // Baseline Locked, etc.) had no inline explanation anywhere on Board's
+  // column headers -- shown as a native title tooltip on hover, same
+  // idea as the WBS Status table-cell pill's own `title={meta?.hint}`.
+  hint?: string;
 }
 
 interface BoardViewProps<T> {
@@ -92,7 +97,7 @@ export default function BoardView<T>({
         return (
           <div key={col.value} className="board-column" style={{ background: tone.bg }}>
             <div className="board-column-cluster" style={{ color: tone.text }}>{isClusterStart ? col.clusterLabel : " "}</div>
-            <div className="board-column-header" style={{ color: tone.text }}>
+            <div className="board-column-header" style={{ color: tone.text }} title={col.hint}>
               {col.label}
               <span className="board-column-count">{colRows.length}</span>
             </div>
