@@ -24,6 +24,12 @@ export interface UtilTaskRow {
   start_date: string | null;
   current_due_date: string;
   effort: string | null;
+  // Optional -- only populated by callers that also shape this same row
+  // for capacityScheduler.ts's SchedTaskRow (WbsPlanning.tsx's Projected
+  // Gantt, added 2026-08-21). Not selected/used by the points-based
+  // utilization math in this file.
+  parent_task_id?: string | null;
+  estimated_hours?: number | null;
 }
 export interface UtilProjectRow {
   id: string;

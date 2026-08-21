@@ -103,6 +103,11 @@ export interface ForwardScheduleDay {
 export interface ForwardScheduleResult {
   perDay: Map<string, ForwardScheduleDay>;
   taskDueDates: Map<string, string>;
+  // First date the forward walk actually consumed hours toward this task
+  // (added 2026-08-21 for WBS Timeline's capacity-aware "Projected" Gantt,
+  // which needs a start AND end per task to draw a bar -- Utilization.tsx's
+  // grid only ever needed the end date, so this was never tracked before).
+  taskStartDates: Map<string, string>;
 }
 
 function maxDate(a: Date, b: Date): Date {
@@ -170,11 +175,13 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
     });
 
   const taskDueDates = new Map<string, string>();
+  const taskStartDates = new Map<string, string>();
   const lastGuardDate = toISO(addDays(fromDate, Math.max(0, maxDaysGuard - 1)));
 
   for (const task of queue) {
     let remaining = task.estimated_hours ?? 0;
     let d = effectiveStart(task);
+    let firstWorkedDate: string | null = null;
     let lastWorkedDate: string | null = null;
     let guard = 0;
     while (remaining > 0 && guard < maxDaysGuard) {
@@ -197,13 +204,15 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
           day.taskHours.set(task.id, (day.taskHours.get(task.id) ?? 0) + consume);
           day.totalHours += consume;
           remaining -= consume;
+          if (!firstWorkedDate) firstWorkedDate = dateStr;
           lastWorkedDate = dateStr;
         }
       }
       if (remaining > 0) d = addDays(d, 1);
     }
     taskDueDates.set(task.id, lastWorkedDate ?? lastGuardDate);
+    taskStartDates.set(task.id, firstWorkedDate ?? lastWorkedDate ?? lastGuardDate);
   }
 
-  return { perDay, taskDueDates };
+  return { perDay, taskDueDates, taskStartDates };
 }
