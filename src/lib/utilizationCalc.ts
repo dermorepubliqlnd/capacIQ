@@ -31,6 +31,7 @@ export interface UtilTaskRow {
   parent_task_id?: string | null;
   estimated_hours?: number | null;
   sort_order?: number | null;
+  work_type_id?: string | null;
 }
 export interface UtilProjectRow {
   id: string;

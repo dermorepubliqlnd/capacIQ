@@ -37,6 +37,7 @@ interface TaskRow {
   estimated_hours: number | null;
   is_archived: boolean;
   sort_order: number | null;
+  work_type_id: string | null;
 }
 interface AvailabilityRow {
   id: string;
@@ -213,6 +214,7 @@ export default function Utilization() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
+  const [workTypes, setWorkTypes] = useState<{ id: string; is_fixed_schedule: boolean }[]>([]);
   const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
   const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
   const [deletedHours, setDeletedHours] = useState<DeletedHourRow[]>([]);
@@ -225,12 +227,13 @@ export default function Utilization() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: wts }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
-      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived,sort_order").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived,sort_order,work_type_id").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
+      supabase.from("work_types").select("id,is_fixed_schedule"),
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
       supabase.from("deleted_person_day_hours").select("person_id,date,hours"),
@@ -241,6 +244,7 @@ export default function Utilization() {
     setTasks((tk as TaskRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
+    setWorkTypes((wts as { id: string; is_fixed_schedule: boolean }[]) ?? []);
     // Sandra, 2026-08-14: "we're still playing around with the system" --
     // a global off switch (app_settings.historical_locking_enabled,
     // default false) for freezing past ownership/assignee attribution.
@@ -397,6 +401,7 @@ export default function Utilization() {
   // if it falls past the currently-visible week range.
   const isCompleteStatus = (status: string | null) => statusGroupOf(TASK_STATUS_GROUPED, status) === "complete";
   const schedulesByPerson = useMemo(() => {
+    const fixedWorkTypeIds = new Set(workTypes.filter((w) => w.is_fixed_schedule).map((w) => w.id));
     const schedTasks: SchedTaskRow[] = tasks.map((t) => ({
       id: t.id,
       project_id: t.project_id,
@@ -407,6 +412,7 @@ export default function Utilization() {
       current_due_date: t.current_due_date,
       estimated_hours: t.estimated_hours,
       sort_order: t.sort_order,
+      is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
     }));
     const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date }));
     const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
@@ -430,7 +436,7 @@ export default function Utilization() {
     });
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [people, tasks, projects, availability, holidaySet, today]);
+  }, [people, tasks, projects, availability, holidaySet, today, workTypes]);
 
   // Single source of truth for a rollup cell's numeric hours value, for
   // BOTH the daily grid and the weekly aggregation below -- past dates use

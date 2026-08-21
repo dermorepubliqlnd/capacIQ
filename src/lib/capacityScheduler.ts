@@ -39,6 +39,18 @@ export interface SchedTaskRow {
   // queue sort below. Falls back to `id` comparison when absent, same
   // as before this field existed.
   sort_order?: number | null;
+  // Optional (2026-08-21, Phase 3 -- Fixed-Schedule work types): true
+  // when this task's Work Type is flagged is_fixed_schedule (e.g.
+  // Training Delivery). Fixed tasks are placed onto their own calendar
+  // day(s) FIRST, using the person's full raw daily capacity as the
+  // per-day ceiling (same assumption as Full Effort) -- never deferred
+  // by competing work. Flexible tasks are queued afterward against
+  // whatever capacity is left once fixed tasks (and PM overhead) have
+  // already claimed their share, so genuine overallocation on a fixed
+  // task's day shows up honestly instead of quietly pushing hours to
+  // tomorrow. Missing/false behaves exactly as before this field
+  // existed (fully flexible, deferrable).
+  is_fixed_schedule?: boolean | null;
 }
 export interface SchedProjectRow {
   id: string;
@@ -164,15 +176,14 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
     const raw = parseLocalDate(t.start_date ?? t.current_due_date);
     return maxDate(raw, fromDate);
   };
-  const queue = tasks
-    .filter(
-      (t) =>
-        t.assignee_id === personId &&
-        !parentTaskIds.has(t.id) &&
-        !isCompleteStatus(t.status) &&
-        (t.estimated_hours ?? 0) > 0
-    )
-    .sort((a, b) => {
+  const eligible = tasks.filter(
+    (t) =>
+      t.assignee_id === personId &&
+      !parentTaskIds.has(t.id) &&
+      !isCompleteStatus(t.status) &&
+      (t.estimated_hours ?? 0) > 0
+  );
+  const sortByEffectiveDate = (a: SchedTaskRow, b: SchedTaskRow) => {
       const aStart = effectiveStart(a).getTime();
       const bStart = effectiveStart(b).getTime();
       if (aStart !== bStart) return aStart - bStart;
@@ -191,13 +202,58 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
         return a.sort_order - b.sort_order;
       }
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    });
+  };
+
+  const fixedQueue = eligible.filter((t) => t.is_fixed_schedule).sort(sortByEffectiveDate);
+  const flexQueue = eligible.filter((t) => !t.is_fixed_schedule).sort(sortByEffectiveDate);
 
   const taskDueDates = new Map<string, string>();
   const taskStartDates = new Map<string, string>();
   const lastGuardDate = toISO(addDays(fromDate, Math.max(0, maxDaysGuard - 1)));
 
-  for (const task of queue) {
+  // Fixed-Schedule tasks placed FIRST, independently of each other and of
+  // the flexible queue below: each one's own daily ceiling is the
+  // person's full raw capacity for that date (capacityOnDate), NOT
+  // `day.capacity - day.totalHours` -- so it never gets crowded out or
+  // deferred by PM overhead, another fixed task, or flexible work
+  // already sitting on that day. Stamping still adds into the SAME
+  // shared `day.totalHours` the flexible loop reads afterward, so if two
+  // fixed sessions (or a fixed session + PM overhead) really do add up
+  // to more than the day's capacity, that overage is real and visible --
+  // exactly the "honest overallocation instead of deferring" behavior
+  // this phase exists for.
+  for (const task of fixedQueue) {
+    let remaining = task.estimated_hours ?? 0;
+    let d = effectiveStart(task);
+    let firstWorkedDate: string | null = null;
+    let lastWorkedDate: string | null = null;
+    let guard = 0;
+    while (remaining > 0 && guard < maxDaysGuard) {
+      guard++;
+      if (isWorkingDay(d, holidaySet)) {
+        const dateStr = toISO(d);
+        let day = perDay.get(dateStr);
+        const dayCeiling = capacityOnDate(person, dateStr, holidaySet, availability);
+        if (!day) {
+          day = { capacity: dayCeiling, pmHours: new Map(), taskHours: new Map(), totalHours: 0 };
+          perDay.set(dateStr, day);
+        }
+        if (dayCeiling > 0) {
+          const consume = Math.min(dayCeiling, remaining);
+          day.taskHours.set(task.id, (day.taskHours.get(task.id) ?? 0) + consume);
+          day.totalHours += consume;
+          remaining -= consume;
+          if (!firstWorkedDate) firstWorkedDate = dateStr;
+          lastWorkedDate = dateStr;
+        }
+      }
+      if (remaining > 0) d = addDays(d, 1);
+    }
+    taskDueDates.set(task.id, lastWorkedDate ?? lastGuardDate);
+    taskStartDates.set(task.id, firstWorkedDate ?? lastWorkedDate ?? lastGuardDate);
+  }
+
+  for (const task of flexQueue) {
     let remaining = task.estimated_hours ?? 0;
     let d = effectiveStart(task);
     let firstWorkedDate: string | null = null;

@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { ShieldCheck, ShieldOff, Pencil, Check, X, Plus, ArrowUp, ArrowDown, Trash2 } from "lucide-react";
+import { ShieldCheck, ShieldOff, Pencil, Check, X, Plus, ArrowUp, ArrowDown, Trash2, CalendarClock, CalendarDays } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 
@@ -28,6 +28,7 @@ interface WorkTypeRow {
   name: string;
   sort_order: number;
   is_active: boolean;
+  is_fixed_schedule: boolean;
 }
 
 export default function SiteSettings() {
@@ -78,7 +79,7 @@ export default function SiteSettings() {
 
   async function loadWorkTypes() {
     setWorkTypesLoading(true);
-    const { data } = await supabase.from("work_types").select("id,name,sort_order,is_active").order("sort_order");
+    const { data } = await supabase.from("work_types").select("id,name,sort_order,is_active,is_fixed_schedule").order("sort_order");
     setWorkTypes((data as WorkTypeRow[]) ?? []);
     setWorkTypesLoading(false);
   }
@@ -120,6 +121,25 @@ export default function SiteSettings() {
   async function toggleWorkTypeActive(w: WorkTypeRow) {
     setWorkTypeBusy(true);
     const { error } = await supabase.from("work_types").update({ is_active: !w.is_active }).eq("id", w.id);
+    setWorkTypeBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadWorkTypes();
+  }
+
+  // Phase 3 (2026-08-21, quality-audit follow-on): Fixed-Schedule work
+  // types (Training Delivery is the concrete case) don't defer their
+  // hours to the next day when the assignee is already busy -- they land
+  // on their own scheduled day(s) exactly like Full Effort assumes, so
+  // Utilization/Day Planner can honestly show over 100% instead of
+  // quietly smoothing the overflow into tomorrow. See
+  // capacityScheduler.ts's fixedQueue pass for the scheduling-side half
+  // of this.
+  async function toggleWorkTypeFixedSchedule(w: WorkTypeRow) {
+    setWorkTypeBusy(true);
+    const { error } = await supabase.from("work_types").update({ is_fixed_schedule: !w.is_fixed_schedule }).eq("id", w.id);
     setWorkTypeBusy(false);
     if (error) {
       window.alert(`Couldn't update: ${error.message}`);
@@ -217,7 +237,11 @@ export default function SiteSettings() {
               The list of Work Type options offered on every task (Projects &amp; WBS Planning). Reorder with the arrows,
               rename inline, deactivate a type you no longer want offered on NEW tasks (deactivating keeps its label on
               any task that already has it set, it just disappears from the picker), or delete one outright if no task
-              uses it.
+              uses it. Mark a type <strong>Fixed-Schedule</strong> (e.g. Training Delivery) if its hours happen on
+              specific calendar days regardless of what else is competing for that person's time -- its tasks land on
+              their own day(s) and never defer, so Utilization/Day Planner can honestly show over 100% instead of
+              quietly pushing the overflow to tomorrow. Leave a type Flexible (the default) if its work can genuinely
+              shift to whenever capacity frees up.
             </div>
           </div>
         </div>
@@ -227,18 +251,19 @@ export default function SiteSettings() {
               <th style={{ width: 40 }} />
               <th>Name</th>
               <th style={{ width: 90 }}>Status</th>
-              <th style={{ width: 120 }} />
+              <th style={{ width: 110 }}>Scheduling</th>
+              <th style={{ width: 150 }} />
             </tr>
           </thead>
           <tbody>
             {workTypesLoading && (
               <tr>
-                <td colSpan={4} style={{ color: "var(--muted)" }}>Loading…</td>
+                <td colSpan={5} style={{ color: "var(--muted)" }}>Loading…</td>
               </tr>
             )}
             {!workTypesLoading && workTypes.length === 0 && (
               <tr>
-                <td colSpan={4} style={{ color: "var(--muted)" }}>None yet.</td>
+                <td colSpan={5} style={{ color: "var(--muted)" }}>None yet.</td>
               </tr>
             )}
             {workTypes.map((w, idx) => {
@@ -282,6 +307,18 @@ export default function SiteSettings() {
                     <span className={`status-pill ${w.is_active ? "success" : "neutral"}`}>{w.is_active ? "Active" : "Deactivated"}</span>
                   </td>
                   <td>
+                    <span
+                      className={`status-pill ${w.is_fixed_schedule ? "warning" : "neutral"}`}
+                      title={
+                        w.is_fixed_schedule
+                          ? "Fixed-Schedule: this type's hours land on their own calendar day(s) and never defer, even if that overloads the day."
+                          : "Flexible: this type's hours can defer to a later day if the assignee doesn't have room."
+                      }
+                    >
+                      {w.is_fixed_schedule ? "Fixed-Schedule" : "Flexible"}
+                    </span>
+                  </td>
+                  <td>
                     <div style={{ display: "flex", gap: 8 }}>
                       {isEditing ? (
                         <>
@@ -317,6 +354,14 @@ export default function SiteSettings() {
                             style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: w.is_active ? "var(--danger-text)" : "var(--success-text)" }}
                           >
                             {w.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                          </button>
+                          <button
+                            onClick={() => toggleWorkTypeFixedSchedule(w)}
+                            disabled={workTypeBusy}
+                            title={w.is_fixed_schedule ? "Make Flexible (hours can defer to a later day)" : "Make Fixed-Schedule (hours never defer)"}
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: w.is_fixed_schedule ? "var(--warning-text)" : "var(--muted)" }}
+                          >
+                            {w.is_fixed_schedule ? <CalendarClock size={13} /> : <CalendarDays size={13} />}
                           </button>
                           <button
                             onClick={() => deleteWorkType(w)}

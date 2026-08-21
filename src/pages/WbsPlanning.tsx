@@ -91,6 +91,7 @@ interface WorkTypeOption {
   name: string;
   is_active: boolean;
   sort_order: number;
+  is_fixed_schedule: boolean;
 }
 interface PersonRow {
   id: string;
@@ -337,9 +338,9 @@ export default function WbsPlanning() {
       supabase.from("people").select("id,name,daily_capacity_hours,is_active,color").eq("is_active", true).order("name"),
       supabase.from("person_availability").select("person_id,date,status"),
       supabase.from("holidays").select("date"),
-      supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order,work_type_id").eq("is_archived", false),
       supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
-      supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
     // Bug fix (2026-08-20): activeMode ("which mode Save/Scoping Effort
@@ -816,6 +817,7 @@ export default function WbsPlanning() {
   // first -- reading the stored field directly (same field the existing
   // dependency-auto-refresh machinery already keeps up to date) breaks
   // that cycle cleanly.
+  const fixedWorkTypeIds = new Set(workTypes.filter((w) => w.is_fixed_schedule).map((w) => w.id));
   const effectiveTasksForSched: SchedTaskRow[] = [
     ...allTasks
       .filter((t) => t.project_id !== projectId)
@@ -829,6 +831,7 @@ export default function WbsPlanning() {
         current_due_date: t.current_due_date,
         estimated_hours: t.estimated_hours ?? null,
         sort_order: t.sort_order ?? null,
+        is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
       })),
     ...tasks.map((t) => ({
       id: t.id,
@@ -840,6 +843,7 @@ export default function WbsPlanning() {
       current_due_date: t.current_due_date,
       estimated_hours: t.estimated_hours,
       sort_order: t.sort_order,
+      is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
     })),
   ];
   const effectiveProjectsForSched: SchedProjectRow[] = [
@@ -1374,7 +1378,16 @@ export default function WbsPlanning() {
       function entryWithOverride(t: TaskRow, overrideStart?: string): ChainEntry | null {
         if (!overrideStart) return computeEntry(t, mode);
         if (t.estimated_hours === null || t.estimated_hours === undefined) return null;
-        if (mode === "full_capacity") {
+        const isFixedSchedule = !!t.work_type_id && workTypes.find((w) => w.id === t.work_type_id)?.is_fixed_schedule;
+        if (mode === "full_capacity" || isFixedSchedule) {
+          // Phase 3 (2026-08-21): a Fixed-Schedule task (e.g. Training
+          // Delivery) is never capacity-gated by competing work, even
+          // under Capacity-Based mode -- same full-day-ceiling assumption
+          // as Full Effort, so its own duration reflects its hours vs a
+          // full day, not whatever's left after other people's queued
+          // work. See capacityScheduler.ts's fixedQueue pass for the
+          // matching change to the whole-queue walk this override
+          // recomputes a hypothetical alternative to.
           const r = fullCapacityScenario(t.estimated_hours, overrideStart, holidaySet);
           return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
         }
