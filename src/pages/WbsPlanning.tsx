@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { useState, useEffect, useRef, Fragment, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin } from "lucide-react";
@@ -211,11 +211,24 @@ const MODES: Mode[] = ["full_capacity", "standard"];
 // these two are identical unless at least one task has been overridden.
 type UtilPreviewMode = "actual" | "full_capacity" | "standard_suggested" | "standard_committed";
 const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "full_capacity", "standard_suggested", "standard_committed"];
+// Phase 10 (2026-08-21): Sandra -- show all 4 scenarios as simultaneous
+// rows per person instead of a tab you switch between, so they can be
+// compared at a glance. Labels/colors confirmed with her directly.
 const UTIL_PREVIEW_LABEL: Record<UtilPreviewMode, string> = {
-  actual: "Actual",
+  actual: "Committed (Existing)",
   full_capacity: "Full Effort",
-  standard_suggested: "Capacity-Based",
-  standard_committed: "Manual",
+  standard_suggested: "Capacity-Based (Auto)",
+  standard_committed: "Manual Override",
+};
+// Consistent identity color per scenario -- used for the snapshot row
+// marker AND (for full_capacity/standard_suggested) the task table's own
+// Full Effort/Capacity-Based column tint, so the same scheduling method
+// always reads as the same color everywhere it shows up in the page.
+const UTIL_PREVIEW_COLOR: Record<UtilPreviewMode, string> = {
+  actual: "var(--muted)",
+  full_capacity: "#2f6fed", // blue
+  standard_suggested: "#1f9d55", // green
+  standard_committed: "#c9971b", // yellow/amber
 };
 
 // Phase 3 (2026-07-28): status banner copy/colors for the Draft/Baseline/
@@ -324,7 +337,8 @@ export default function WbsPlanning() {
   // preview below; `activeMode` is now purely "which mode Save/Scoping
   // Effort points at." Both Gantts render always, unconditionally, so
   // neither state drives Gantt selection anymore.
-  const [utilPreviewMode, setUtilPreviewMode] = useState<UtilPreviewMode>("actual");
+  // Phase 10: no longer a single selected preview -- all 4 scenarios
+  // render simultaneously as rows now, see effectiveForMode below.
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
 
@@ -1061,7 +1075,7 @@ export default function WbsPlanning() {
     if (m === "standard_suggested") return standardSuggestedChain;
     return standardChain; // "standard_committed"
   }
-  const utilPreviewChain = previewChainFor(utilPreviewMode);
+
 
   // Phase 2 (2026-07-28): builds the exact per-task snapshot the
   // lock/apply/decide RPCs persist. Deliberately reuses the SAME
@@ -1886,18 +1900,16 @@ export default function WbsPlanning() {
       .reduce((sum, c) => sum + (Number(c.new_value ?? 0) - Number(c.previous_value ?? 0)), 0),
   };
 
-  // Design spec item 3 (Sandra, 2026-07-29 follow-up): the task list's
-  // Full Effort/Conservative Effort column tint now follows utilPreviewMode
-  // (the toggle inside the Utilization snapshot section) instead of
-  // activeMode (the Scoping Effort/Save selector) -- so the two stay
-  // visually linked without duplicating the control itself, per the
-  // original design spec item 3.
+  // Phase 10 (2026-08-21): Sandra -- "color code each: Full Effort blue,
+  // Capacity-Based green, Manual yellow" so the same scheduling method
+  // always reads as the same color everywhere on the page (task table
+  // columns AND the snapshot rows below, via UTIL_PREVIEW_COLOR). This is
+  // now a persistent identity tint, not tied to any selected/toggled
+  // mode -- there's no single "active" preview anymore since all 4
+  // scenarios render as simultaneous rows.
   function modeColStyle(m: Mode): CSSProperties {
-    const highlight =
-      m === "full_capacity"
-        ? utilPreviewMode === "full_capacity"
-        : utilPreviewMode === "standard_suggested" || utilPreviewMode === "standard_committed";
-    return highlight ? { background: "#eaf1fb" } : {};
+    const color = m === "full_capacity" ? UTIL_PREVIEW_COLOR.full_capacity : UTIL_PREVIEW_COLOR.standard_suggested;
+    return { background: `${color}14` }; // ~8% opacity tint, hex alpha suffix
   }
 
   // A visible box around the header's editable fields (Project name,
@@ -1974,7 +1986,7 @@ export default function WbsPlanning() {
                 }
                 style={{ display: "inline-flex", flexShrink: 0 }}
               >
-                <Pin size={11} style={{ color: "var(--accent, #6d5bd0)" }} />
+                <Pin size={11} style={{ color: UTIL_PREVIEW_COLOR.standard_committed }} />
               </span>
             )}
           </span>
@@ -2016,70 +2028,90 @@ export default function WbsPlanning() {
   // (their last-Saved dates), not recomputed from any draft chain, so the
   // heat-map reflects what's genuinely true right now. The other three
   // preview options keep the original live-draft substitution below.
-  const effectiveTasksForUtil: UtilTaskRow[] =
-    utilPreviewMode === "actual"
-      ? allTasks.map((t) => ({
-          id: t.id,
-          project_id: t.project_id,
-          assignee_id: t.assignee_id,
-          status: t.status,
-          start_date: t.start_date,
-          current_due_date: t.current_due_date,
-          effort: t.effort,
-        }))
-      : [
-          ...allTasks.filter((t) => t.project_id !== projectId),
-          // Parent rows (tasks with their own sub-tasks) are excluded here on
-          // purpose -- see parentAssigneeState/the Effort "N/A" cell above.
-          // A parent's own span is just the union of its children's, so
-          // counting it too would double the points/utilization contribution
-          // for whoever it's (rolled-up-)assigned to.
-          ...orderedTasks
-            .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
-            .map((t) => {
-              const entry = utilPreviewChain?.get(t.id);
-              return {
-                id: t.id,
-                project_id: t.project_id,
-                assignee_id: t.assignee_id,
-                status: t.status,
-                start_date: entry?.start ?? t.start_date,
-                current_due_date: entry?.end ?? t.current_due_date,
-                effort: t.effort,
-              };
-            }),
-        ];
+  // Phase 10 (2026-08-21): pulled into a per-mode function so the
+  // snapshot can render all 4 scenarios as simultaneous rows instead of
+  // computing just the one currently-toggled mode -- identical logic to
+  // the Phase 9 version, just callable once per scenario.
+  function buildEffectiveForMode(mode: UtilPreviewMode): { tasks: UtilTaskRow[]; projects: UtilProjectRow[] } {
+    const chain = previewChainFor(mode);
+    const tasks: UtilTaskRow[] =
+      mode === "actual"
+        ? allTasks.map((t) => ({
+            id: t.id,
+            project_id: t.project_id,
+            assignee_id: t.assignee_id,
+            status: t.status,
+            start_date: t.start_date,
+            current_due_date: t.current_due_date,
+            effort: t.effort,
+          }))
+        : [
+            ...allTasks.filter((t) => t.project_id !== projectId),
+            // Parent rows (tasks with their own sub-tasks) are excluded here
+            // on purpose -- see parentAssigneeState/the Effort "N/A" cell
+            // above. A parent's own span is just the union of its
+            // children's, so counting it too would double the
+            // points/utilization contribution for whoever it's
+            // (rolled-up-)assigned to.
+            ...orderedTasks
+              .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
+              .map((t) => {
+                const entry = chain?.get(t.id);
+                return {
+                  id: t.id,
+                  project_id: t.project_id,
+                  assignee_id: t.assignee_id,
+                  status: t.status,
+                  start_date: entry?.start ?? t.start_date,
+                  current_due_date: entry?.end ?? t.current_due_date,
+                  effort: t.effort,
+                };
+              }),
+          ];
 
-  // Same live-draft idea for THIS project's own row in the PM-overhead
-  // calculation (Sandra: "when project owner has been selected and start
-  // date - fill out the heat map based on how we have set up PM
-  // overheads... update the PM overhead utilization to fill as the dates
-  // progress while building the WBS"). `allProjects` is a one-time
-  // snapshot fetched at page load -- swap this project's row for a live
-  // one built from the current draft Owner + derived Start/End span, so
-  // picking an Owner or extending the schedule (adding/replanning tasks)
-  // updates PM-overhead points immediately, same pattern as
-  // effectiveTasksForUtil above.
-  const utilPreviewSummary = utilPreviewChain ? chainOverallSummary(utilPreviewChain) : null;
-  const effectiveProjectsForUtil: UtilProjectRow[] = [
-    ...allProjects.filter((p) => p.id !== projectId),
-    utilPreviewMode === "actual"
-      // Actual: use this project's own already-committed row verbatim
-      // (falls back to the live draft Owner/Start only if it's somehow
-      // missing from the snapshot, e.g. a brand-new unsaved project).
-      ? allProjects.find((p) => p.id === projectId) ?? {
-          id: projectId ?? "",
-          owner_id: project.owner_id,
-          start_date: project.start_date,
-          end_date: project.start_date,
-        }
-      : {
-          id: projectId ?? "",
-          owner_id: project.owner_id,
-          start_date: project.start_date,
-          end_date: utilPreviewSummary?.end ?? project.start_date,
-        },
-  ];
+    // Same live-draft idea for THIS project's own row in the PM-overhead
+    // calculation (Sandra: "when project owner has been selected and start
+    // date - fill out the heat map based on how we have set up PM
+    // overheads... update the PM overhead utilization to fill as the dates
+    // progress while building the WBS"). `allProjects` is a one-time
+    // snapshot fetched at page load -- swap this project's row for a live
+    // one built from the current draft Owner + derived Start/End span, so
+    // picking an Owner or extending the schedule (adding/replanning tasks)
+    // updates PM-overhead points immediately, same pattern as tasks above.
+    const summary = mode !== "actual" && chain ? chainOverallSummary(chain) : null;
+    // Narrowing note: `project` was already confirmed non-null by the
+    // early `if (!project) return ...` guard above this whole render --
+    // TS just can't see across this nested function's boundary, hence
+    // the assertions.
+    const proj = project!;
+    const projects: UtilProjectRow[] = [
+      ...allProjects.filter((p) => p.id !== projectId),
+      mode === "actual"
+        // Actual: use this project's own already-committed row verbatim
+        // (falls back to the live draft Owner/Start only if it's somehow
+        // missing from the snapshot, e.g. a brand-new unsaved project).
+        ? allProjects.find((p) => p.id === projectId) ?? {
+            id: projectId ?? "",
+            owner_id: proj.owner_id,
+            start_date: proj.start_date,
+            end_date: proj.start_date,
+          }
+        : {
+            id: projectId ?? "",
+            owner_id: proj.owner_id,
+            start_date: proj.start_date,
+            end_date: summary?.end ?? proj.start_date,
+          },
+    ];
+    return { tasks, projects };
+  }
+
+  const effectiveForMode: Record<UtilPreviewMode, { tasks: UtilTaskRow[]; projects: UtilProjectRow[] }> = {
+    actual: buildEffectiveForMode("actual"),
+    full_capacity: buildEffectiveForMode("full_capacity"),
+    standard_suggested: buildEffectiveForMode("standard_suggested"),
+    standard_committed: buildEffectiveForMode("standard_committed"),
+  };
 
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
@@ -2567,29 +2599,23 @@ export default function WbsPlanning() {
           )}
           </div>
 
-          {/* Live utilization heat-map -- same points/tier formula as the
-              Utilization page, fed this project's DRAFT plan (including
-              its own draft Owner/derived-span for PM overhead) */}
+          {/* Phase 10 (2026-08-21): redesigned per Sandra's spec -- all 4
+              scenarios (Committed/Full Effort/Capacity-Based/Manual) now
+              render as simultaneous rows per person instead of a tab you
+              switch between, so they can be compared at a glance. Pure
+              presentation change -- every cell still comes from the exact
+              same dailyPointsFor/tierOf formula as before and as the
+              standalone Utilization page, just called once per scenario
+              via effectiveForMode instead of once for a toggled mode. */}
           <div className="card" style={{ padding: 14, marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Utilization snapshot</strong>
               <span
-                title={
-                  utilPreviewMode === "actual"
-                    ? "Today's real committed utilization -- this project's own DRAFT edits are not included."
-                    : `Preview -- blends this project's DRAFT plan into everyone's real committed workload, using ${UTIL_PREVIEW_LABEL[utilPreviewMode]}'s schedule.`
-                }
+                title="Preview how this project's draft plan would land on top of everyone's real committed workload, under each scheduling method."
                 style={{ display: "inline-flex", cursor: "help", color: "var(--muted)" }}
               >
                 <Info size={13} />
               </span>
-              <div className="timeline-segmented" title="Preview only -- doesn't affect Scoping Effort or Save.">
-                {UTIL_PREVIEW_MODES.map((m) => (
-                  <button key={m} className={`timeline-segmented-btn${utilPreviewMode === m ? " active" : ""}`} onClick={() => setUtilPreviewMode(m)}>
-                    {UTIL_PREVIEW_LABEL[m]}
-                  </button>
-                ))}
-              </div>
               <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
                 <button className="planner-nav-btn" title="Previous 4 weeks" onClick={() => setUtilWindowOffset((o) => o - 1)}>
                   <ChevronLeft size={14} />
@@ -2602,11 +2628,15 @@ export default function WbsPlanning() {
                 </button>
               </div>
             </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>
+              Projected rows are previews only -- not saved to schedules until you click Save.
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th style={{ width: 130, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }}>Person</th>
+                    <th style={{ width: 150, position: "sticky", left: 130, background: "var(--surface)", zIndex: 1 }}>Scenario</th>
                     {utilDays.map((d) => {
                       const iso = toISO(d);
                       const weekend = d.getDay() === 0 || d.getDay() === 6;
@@ -2625,44 +2655,74 @@ export default function WbsPlanning() {
                 </thead>
                 <tbody>
                   {people.map((p) => (
-                    <tr key={p.id}>
-                      <td style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)" }}>{p.name}</td>
-                      {utilDays.map((d) => {
-                        const iso = toISO(d);
-                        if (!isWorkingDay(d, holidaySet)) {
-                          return (
-                            <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)", background: "var(--hover-bg)" }}>
-                              –
-                            </td>
-                          );
-                        }
-                        const av = utilAvailability(p.id, iso);
-                        if (av?.status === "off") {
-                          return (
-                            <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
-                              Off
-                            </td>
-                          );
-                        }
-                        const points = dailyPointsFor(p.id, iso, effectiveTasksForUtil, effectiveProjectsForUtil);
-                        const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
-                        const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
-                        const tier = tierOf(pct);
+                    <Fragment key={p.id}>
+                      {UTIL_PREVIEW_MODES.map((mode, mi) => {
+                        const { tasks: modeTasks, projects: modeProjects } = effectiveForMode[mode];
                         return (
-                          <td
-                            key={iso}
-                            style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600 }}
-                            title={`${p.name} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
-                          >
-                            {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
-                          </td>
+                          <tr key={mode} style={mi === 0 ? { borderTop: "2px solid var(--border)" } : undefined}>
+                            {mi === 0 && (
+                              <td
+                                rowSpan={UTIL_PREVIEW_MODES.length}
+                                style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)", verticalAlign: "top", paddingTop: 8 }}
+                              >
+                                {p.name}
+                              </td>
+                            )}
+                            <td
+                              style={{
+                                fontSize: 10.5,
+                                position: "sticky",
+                                left: 130,
+                                background: "var(--surface)",
+                                color: UTIL_PREVIEW_COLOR[mode],
+                                fontWeight: 600,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                <span style={{ width: 7, height: 7, borderRadius: "50%", background: UTIL_PREVIEW_COLOR[mode], flexShrink: 0 }} />
+                                {UTIL_PREVIEW_LABEL[mode]}
+                              </span>
+                            </td>
+                            {utilDays.map((d) => {
+                              const iso = toISO(d);
+                              if (!isWorkingDay(d, holidaySet)) {
+                                return (
+                                  <td key={iso} style={{ textAlign: "center", fontSize: 10.5, color: "var(--muted)", background: "var(--hover-bg)" }}>
+                                    –
+                                  </td>
+                                );
+                              }
+                              const av = utilAvailability(p.id, iso);
+                              if (av?.status === "off") {
+                                return (
+                                  <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
+                                    Off
+                                  </td>
+                                );
+                              }
+                              const points = dailyPointsFor(p.id, iso, modeTasks, modeProjects);
+                              const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
+                              const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
+                              const tier = tierOf(pct);
+                              return (
+                                <td
+                                  key={iso}
+                                  style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600 }}
+                                  title={`${p.name} · ${UTIL_PREVIEW_LABEL[mode]} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
+                                >
+                                  {tier.key === "none" ? "–" : `${Math.round(pct)}%`}
+                                </td>
+                              );
+                            })}
+                          </tr>
                         );
                       })}
-                    </tr>
+                    </Fragment>
                   ))}
                   {people.length === 0 && (
                     <tr>
-                      <td colSpan={UTIL_WINDOW_DAYS + 1} style={{ padding: 10, color: "var(--muted)", fontSize: 12 }}>
+                      <td colSpan={UTIL_WINDOW_DAYS + 2} style={{ padding: 10, color: "var(--muted)", fontSize: 12 }}>
                         No active people to show.
                       </td>
                     </tr>
