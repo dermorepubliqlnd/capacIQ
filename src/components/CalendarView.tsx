@@ -60,6 +60,13 @@ interface CalendarViewProps<T> {
   // column from propertyColumns to avoid showing it twice. Also shown
   // inline on multi-day spanning bars, same idea.
   titleBadge?: (row: T) => ReactNode;
+  // Optional per-card action affordance (e.g. a "..." menu), rendered on
+  // the same title row as titleBadge, pinned to the far right. Quality
+  // audit follow-on (2026-08-21, UX #5): Board/Calendar/Timeline had no
+  // delete/archive affordance at all -- only Table view's toolbar did.
+  // Shown on both single-day cards and multi-day span bars, same as
+  // titleBadge.
+  renderActions?: (row: T) => ReactNode;
   // Marks a day cell with a very light gray tint -- weekends and, if the
   // caller passes this, Holiday-calendar non-working days too (Legal PH
   // Holiday / Local Holiday / Internal Time Off). Sandra: "put a very
@@ -191,6 +198,7 @@ export default function CalendarView<T>({
   getParentLabel,
   getProjectLabel,
   titleBadge,
+  renderActions,
   isNonWorkingDay,
 }: CalendarViewProps<T>) {
   const today = useMemo(() => new Date(), []);
@@ -365,6 +373,7 @@ export default function CalendarView<T>({
                               <div className="calendar-card-title-row">
                                 <div className="calendar-card-title">{renderLabel(e.row)}</div>
                                 {titleBadge && <div className="calendar-card-title-badge">{titleBadge(e.row)}</div>}
+                                {renderActions && <div className="calendar-card-actions">{renderActions(e.row)}</div>}
                               </div>
                               {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
                               {propertyColumns?.map((c) => (
@@ -419,6 +428,7 @@ export default function CalendarView<T>({
                         <div className="calendar-card-title-row">
                           <div className="calendar-card-title">{renderLabel(p.row)}</div>
                           {titleBadge && <div className="calendar-card-title-badge">{titleBadge(p.row)}</div>}
+                          {renderActions && <div className="calendar-card-actions">{renderActions(p.row)}</div>}
                         </div>
                         {projectLabel && <div className="calendar-card-project">{projectLabel}</div>}
                         {propertyColumns?.map((c) => (

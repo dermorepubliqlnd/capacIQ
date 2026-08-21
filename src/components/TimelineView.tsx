@@ -12,6 +12,11 @@ interface TimelineViewProps<T> {
   // column), mirroring how BoardView's renderCard reuses column renderers
   // instead of building its own label markup from scratch.
   renderLabel: (row: T) => ReactNode;
+  // Optional per-row action affordance (e.g. a "..." menu), rendered at
+  // the end of the label row next to the property chips. Quality audit
+  // follow-on (2026-08-21, UX #5): Timeline had no delete/archive
+  // affordance at all -- only Table view's toolbar did.
+  renderActions?: (row: T) => ReactNode;
   getStart: (row: T) => string | null;
   getDue: (row: T) => string | null;
   dateMode: TimelineDateMode;
@@ -188,6 +193,7 @@ export default function TimelineView<T>({
   rows,
   rowKey,
   renderLabel,
+  renderActions,
   getStart,
   getDue,
   dateMode,
@@ -464,6 +470,7 @@ export default function TimelineView<T>({
                 ))}
               </div>
             )}
+            {renderActions && <span className="timeline-label-actions">{renderActions(row)}</span>}
           </div>
           <span
             className="timeline-label-resize-handle"

@@ -8,6 +8,7 @@ import DataTable from "../components/DataTable";
 import BoardView, { type BoardColumnDef } from "../components/BoardView";
 import TimelineView, { TimelineControls } from "../components/TimelineView";
 import CalendarView from "../components/CalendarView";
+import CardActionMenu from "../components/CardActionMenu";
 import ViewTabs from "../components/ViewTabs";
 import ViewSettingsMenu, { ViewFilterPills } from "../components/ViewSettingsMenu";
 import Modal from "../components/Modal";
@@ -1384,8 +1385,13 @@ export default function Projects() {
     }
   }
 
-  async function bulkDeleteProjects() {
-    const ids = selectedProjectIds;
+  // Shared archive-projects logic, used by both the Table view's bulk
+  // "Archive" bar button and the new single-card action menu on
+  // Board/Calendar/Timeline (Quality audit follow-on, UX #5, 2026-08-21:
+  // those three views had no delete/archive affordance at all -- only
+  // Table view's toolbar did). Confirmation copy pluralizes correctly for
+  // either a bulk selection or a single card.
+  async function archiveProjects(ids: string[]) {
     if (ids.length === 0) return;
     const childTaskCount = tasks.filter((t) => ids.includes(t.project_id)).length;
     // Sandra, quality audit 2026-08-20 (UX #2): this button archives, it
@@ -1393,23 +1399,27 @@ export default function Projects() {
     // (and the confirm copy to match) so it isn't confused with Archived
     // Items' actually-irreversible "Delete permanently".
     const ok = await confirm({
-      title: "Archive projects",
+      title: ids.length > 1 ? "Archive projects" : "Archive project",
       message:
         childTaskCount > 0
           ? `Archive ${ids.length} project${ids.length > 1 ? "s" : ""}? This will also archive ${childTaskCount} task${childTaskCount > 1 ? "s" : ""} in them. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
-          : `Archive ${ids.length} project${ids.length > 1 ? "s" : ""}? They can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
+          : `Archive ${ids.length > 1 ? `${ids.length} projects` : "this project"}? ${ids.length > 1 ? "They" : "It"} can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
       confirmLabel: "Archive",
     });
     if (!ok) return;
     const now = new Date().toISOString();
     const { error } = await supabase.from("projects").update({ is_archived: true, archived_at: now }).in("id", ids);
     if (error) {
-      alert(`Couldn't delete: ${error.message}`);
+      alert(`Couldn't archive: ${error.message}`);
       return;
     }
     await supabase.from("tasks").update({ is_archived: true, archived_at: now }).in("project_id", ids);
-    setSelectedProjectIds([]);
+    setSelectedProjectIds((prev) => prev.filter((id) => !ids.includes(id)));
     loadAll();
+  }
+
+  async function bulkDeleteProjects() {
+    await archiveProjects(selectedProjectIds);
   }
 
   async function reorderProjects(draggedId: string, targetId: string) {
@@ -2002,7 +2012,25 @@ export default function Projects() {
     );
     return (
       <>
-        {!hidden.includes("name") && <div>{find("name")?.render(p)}</div>}
+        <div className="board-card-name-row">
+          {!hidden.includes("name") && <div className="board-card-name-row-title">{find("name")?.render(p)}</div>}
+          {/* Quality audit follow-on (2026-08-21, UX #5): Board had no
+              delete/archive affordance at all -- only Table view's
+              toolbar did. Projects only (not Tasks) -- Tasks' bulk
+              delete was deliberately removed from Table view itself by
+              the 2026-07-29 governance lockdown, so adding it back here
+              would contradict that decision. */}
+          <CardActionMenu
+            items={[
+              {
+                icon: <Archive size={13} />,
+                label: "Archive",
+                tone: "danger",
+                onClick: () => archiveProjects([p.id]),
+              },
+            ]}
+          />
+        </div>
         {propertyColumns.map((c) => (
           <div key={c.key} className="board-card-property">
             {showLabels && (
@@ -3367,6 +3395,13 @@ export default function Projects() {
               getTooltip={(p) => `${p.name} · ${formatDate(p.start_date)} → ${formatDate(p.end_date)}`}
               emptyLabel="No projects yet. Add one below."
               propertyColumns={projectTimelinePropertyColumns}
+              renderActions={(p) => (
+                <CardActionMenu
+                  items={[
+                    { icon: <Archive size={13} />, label: "Archive", tone: "danger", onClick: () => archiveProjects([p.id]) },
+                  ]}
+                />
+              )}
               getProgress={(p) => actualProgress(p.id, tasks)}
               getGroup={projectTimelineGroupOption ? (p) => projectTimelineGroupOption.getGroup(p) : undefined}
               getGroupTone={projectTimelineGroupOption?.getTone}
@@ -3400,6 +3435,13 @@ export default function Projects() {
                   {projectColumns.find((c) => c.key === "priority")?.render(p)}
                   {projectColumns.find((c) => c.key === "effort_level")?.render(p)}
                 </div>
+              )}
+              renderActions={(p) => (
+                <CardActionMenu
+                  items={[
+                    { icon: <Archive size={13} />, label: "Archive", tone: "danger", onClick: () => archiveProjects([p.id]) },
+                  ]}
+                />
               )}
               isNonWorkingDay={(d) => !isWorkingDay(d, holidayDates)}
             />

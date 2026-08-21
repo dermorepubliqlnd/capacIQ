@@ -606,6 +606,16 @@ input, select { font-family: var(--font); }
   gap: 6px;
   font-size: 12px;
 }
+.board-card-name-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+.board-card-name-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .board-card-property {
   display: flex;
   align-items: center;
@@ -1104,6 +1114,16 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .timeline-label-row .task-collapse-toggle {
   pointer-events: auto;
 }
+/* Same carve-out as the collapse toggle above -- the new per-row action
+   menu (Quality audit UX #5) is view-state/action, not a data edit, so
+   it needs to stay clickable despite the read-only row's
+   pointer-events: none. */
+.timeline-label-actions {
+  pointer-events: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
 .timeline-label-name {
   flex: 1 1 auto;
   /* Protects the project/task name from being squeezed down to a couple
@@ -1547,6 +1567,11 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
   flex: 1 1 auto;
 }
 .calendar-card-title-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+.calendar-card-actions {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
