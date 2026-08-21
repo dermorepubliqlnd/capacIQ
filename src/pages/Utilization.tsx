@@ -36,6 +36,7 @@ interface TaskRow {
   current_due_date: string;
   estimated_hours: number | null;
   is_archived: boolean;
+  sort_order: number | null;
 }
 interface AvailabilityRow {
   id: string;
@@ -227,7 +228,7 @@ export default function Utilization() {
     const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
-      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived,sort_order").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
       supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
@@ -405,6 +406,7 @@ export default function Utilization() {
       start_date: t.start_date,
       current_due_date: t.current_due_date,
       estimated_hours: t.estimated_hours,
+      sort_order: t.sort_order,
     }));
     const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date }));
     const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));

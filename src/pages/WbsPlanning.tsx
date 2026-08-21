@@ -337,7 +337,7 @@ export default function WbsPlanning() {
       supabase.from("people").select("id,name,daily_capacity_hours,is_active,color").eq("is_active", true).order("name"),
       supabase.from("person_availability").select("person_id,date,status"),
       supabase.from("holidays").select("date"),
-      supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order").eq("is_archived", false),
       supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
       supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
     ]);
@@ -828,6 +828,7 @@ export default function WbsPlanning() {
         start_date: t.start_date,
         current_due_date: t.current_due_date,
         estimated_hours: t.estimated_hours ?? null,
+        sort_order: t.sort_order ?? null,
       })),
     ...tasks.map((t) => ({
       id: t.id,
@@ -838,6 +839,7 @@ export default function WbsPlanning() {
       start_date: t.start_date_standard ?? t.start_date,
       current_due_date: t.current_due_date,
       estimated_hours: t.estimated_hours,
+      sort_order: t.sort_order,
     })),
   ];
   const effectiveProjectsForSched: SchedProjectRow[] = [

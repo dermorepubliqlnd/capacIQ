@@ -33,6 +33,12 @@ export interface SchedTaskRow {
   start_date: string | null;
   current_due_date: string;
   estimated_hours: number | null;
+  // Optional (2026-08-21): WBS row order, used ONLY as a tie-break when
+  // two tasks for the same person land on the exact same effective
+  // start AND due date (e.g. a same-day AM/PM training pair) -- see the
+  // queue sort below. Falls back to `id` comparison when absent, same
+  // as before this field existed.
+  sort_order?: number | null;
 }
 export interface SchedProjectRow {
   id: string;
@@ -171,6 +177,19 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
       const bStart = effectiveStart(b).getTime();
       if (aStart !== bStart) return aStart - bStart;
       if (a.current_due_date !== b.current_due_date) return a.current_due_date < b.current_due_date ? -1 : 1;
+      // Bugfix (2026-08-21, Sandra: same-day AM/PM training pair queued in
+      // an unpredictable order): previously fell straight to comparing
+      // raw task UUIDs here, which has no relationship to anything a user
+      // controls -- effectively arbitrary which of two same-day, same-
+      // person tasks got "first dibs" on the day's capacity (and which
+      // one showed a full clean number vs. a partial-plus-overflow). Sort
+      // by the WBS table's own row order first when both tasks have one;
+      // only fall back to the id comparison if sort_order is missing or
+      // tied (e.g. one side is a cross-project task with no comparable
+      // ordering against this project's own rows).
+      if (a.sort_order != null && b.sort_order != null && a.sort_order !== b.sort_order) {
+        return a.sort_order - b.sort_order;
+      }
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
 

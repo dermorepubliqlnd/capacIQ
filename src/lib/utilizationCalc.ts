@@ -30,6 +30,7 @@ export interface UtilTaskRow {
   // utilization math in this file.
   parent_task_id?: string | null;
   estimated_hours?: number | null;
+  sort_order?: number | null;
 }
 export interface UtilProjectRow {
   id: string;
