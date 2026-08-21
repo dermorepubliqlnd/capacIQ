@@ -7,6 +7,7 @@ import { parseCsvToObjects, getField, toCsv } from "../lib/csv";
 import Modal from "../components/Modal";
 import UserDrawer from "../components/UserDrawer";
 import UserRowMenu from "../components/UserRowMenu";
+import { useConfirm } from "../lib/useConfirm";
 
 // CSV bulk-import (Sandra, 2026-08-14): "data only for now, no emails sent
 // -- I'll give pilot users the link and a randomly-generated password
@@ -97,6 +98,7 @@ function AccessDenied() {
 
 export default function Admin() {
   const { person: me, loading: sessionLoading } = useSession();
+  const { confirm, alert, dialog } = useConfirm();
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
@@ -243,7 +245,14 @@ export default function Admin() {
   }
 
   async function resetPassword(p: Person) {
-    if (!window.confirm(`Reset ${p.name}'s password? Their old password stops working immediately -- you'll need to share the new one with them yourself.`)) {
+    if (
+      !(await confirm({
+        title: "Reset password",
+        message: `Reset ${p.name}'s password? Their old password stops working immediately -- you'll need to share the new one with them yourself.`,
+        confirmLabel: "Reset password",
+        danger: true,
+      }))
+    ) {
       return;
     }
     setResettingId(p.id);
@@ -254,7 +263,7 @@ export default function Admin() {
     const result = data as { error?: string; password?: string } | null;
     if (error || result?.error) {
       const message = await extractFunctionError(error, data, "Failed to reset password.");
-      window.alert(`Couldn't reset password for ${p.name}: ${message}`);
+      await alert(`Couldn't reset password for ${p.name}: ${message}`);
       return;
     }
     setCsvResults([{ rowNumber: 1, name: p.name, email: p.email, action: "updated", message: "Password reset.", password: result?.password }]);
@@ -266,7 +275,13 @@ export default function Admin() {
   // login after the fact, without disturbing their existing roster row
   // (reports-to links, role, etc. all stay put).
   async function grantLogin(p: Person) {
-    if (!window.confirm(`Create a login for ${p.name} (${p.email})? You'll get a password to share with them.`)) {
+    if (
+      !(await confirm({
+        title: "Create login",
+        message: `Create a login for ${p.name} (${p.email})? You'll get a password to share with them.`,
+        confirmLabel: "Create login",
+      }))
+    ) {
       return;
     }
     setResettingId(p.id);
@@ -277,7 +292,7 @@ export default function Admin() {
     const result = data as { error?: string; password?: string } | null;
     if (error || result?.error) {
       const message = await extractFunctionError(error, data, "Failed to create login.");
-      window.alert(`Couldn't create a login for ${p.name}: ${message}`);
+      await alert(`Couldn't create a login for ${p.name}: ${message}`);
       return;
     }
     setCsvResults([{ rowNumber: 1, name: p.name, email: p.email, action: "created", password: result?.password }]);
@@ -286,7 +301,7 @@ export default function Admin() {
 
   async function toggleActive(p: Person) {
     if (p.id === me?.id && p.is_active) {
-      window.alert(
+      await alert(
         "You can't deactivate your own account from here \u2014 it would immediately lock you out of Admin, " +
           "since deactivating removes Full Access on the spot. Ask another Full Access person to do it, or deactivate " +
           "yourself last."
@@ -299,11 +314,19 @@ export default function Admin() {
       ? `Deactivate ${p.name}? They'll immediately lose access to CapacIQ. You can reactivate them any time.`
       : `Reactivate ${p.name}? They'll regain the access level shown (${p.access_level === "full" ? "Full" : "Limited"}).`;
 
-    if (!window.confirm(warning)) return;
+    if (
+      !(await confirm({
+        title: p.is_active ? "Deactivate account" : "Reactivate account",
+        message: warning,
+        confirmLabel: p.is_active ? "Deactivate" : "Reactivate",
+        danger: p.is_active,
+      }))
+    )
+      return;
 
     const { error } = await supabase.from("people").update({ is_active: !p.is_active }).eq("id", p.id);
     if (error) {
-      window.alert(`Couldn't ${verb} ${p.name}: ${error.message}`);
+      await alert(`Couldn't ${verb} ${p.name}: ${error.message}`);
       return;
     }
     loadPeople();
@@ -311,7 +334,7 @@ export default function Admin() {
 
   async function changeAccessLevel(p: Person, level: "limited" | "full") {
     if (p.id === me?.id && level === "limited") {
-      window.alert(
+      await alert(
         "You can't demote your own account from here \u2014 it would immediately drop you to Limited access " +
           "and lock you out of Admin. Ask another Full Access person to do it, or change your own level last."
       );
@@ -320,14 +343,21 @@ export default function Admin() {
     }
 
     const verb = level === "full" ? "Promote" : "Demote";
-    if (!window.confirm(`${verb} ${p.name} to ${level === "full" ? "Full" : "Limited"} access?`)) {
+    if (
+      !(await confirm({
+        title: `${verb} access`,
+        message: `${verb} ${p.name} to ${level === "full" ? "Full" : "Limited"} access?`,
+        confirmLabel: verb,
+        danger: level === "limited",
+      }))
+    ) {
       loadPeople();
       return;
     }
 
     const { error } = await supabase.from("people").update({ access_level: level }).eq("id", p.id);
     if (error) {
-      window.alert(`Couldn't change access level for ${p.name}: ${error.message}`);
+      await alert(`Couldn't change access level for ${p.name}: ${error.message}`);
     }
     loadPeople();
   }
@@ -445,15 +475,19 @@ export default function Admin() {
   // instead. This keeps the ownership/utilization history features intact.
   async function deletePerson(p: Person) {
     if (p.id === me?.id) {
-      window.alert("You can't delete your own account. Ask another Full Access person to do it.");
+      await alert("You can't delete your own account. Ask another Full Access person to do it.");
       return;
     }
     if (
-      !window.confirm(
-        `Permanently delete ${p.name}? This removes their login and record entirely and can't be undone. ` +
+      !(await confirm({
+        title: "Delete person",
+        message:
+          `Permanently delete ${p.name}? This removes their login and record entirely and can't be undone. ` +
           `Only do this for a mistaken entry (wrong CSV row, duplicate, test account) -- if they have any real ` +
-          `history in the system, this will be rejected and you should use Deactivate instead.`
-      )
+          `history in the system, this will be rejected and you should use Deactivate instead.`,
+        confirmLabel: "Delete permanently",
+        danger: true,
+      }))
     ) {
       return;
     }
@@ -464,11 +498,11 @@ export default function Admin() {
     setDeletingId(null);
     if (error || (data as { error?: string })?.error) {
       const message = await extractFunctionError(error, data, "Failed to delete person.");
-      window.alert(`Couldn't delete ${p.name}: ${message}`);
+      await alert(`Couldn't delete ${p.name}: ${message}`);
       return;
     }
     if ((data as { warning?: string })?.warning) {
-      window.alert((data as { warning: string }).warning);
+      await alert((data as { warning: string }).warning);
     }
     if (selectedPersonId === p.id) {
       setSelectedPersonId(null);
@@ -957,6 +991,7 @@ export default function Admin() {
           </div>
         </Modal>
       )}
+      {dialog}
     </div>
   );
 }

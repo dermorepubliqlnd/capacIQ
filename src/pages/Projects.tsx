@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -1388,14 +1388,17 @@ export default function Projects() {
     const ids = selectedProjectIds;
     if (ids.length === 0) return;
     const childTaskCount = tasks.filter((t) => ids.includes(t.project_id)).length;
+    // Sandra, quality audit 2026-08-20 (UX #2): this button archives, it
+    // doesn't permanently delete -- renamed from "Delete" to "Archive"
+    // (and the confirm copy to match) so it isn't confused with Archived
+    // Items' actually-irreversible "Delete permanently".
     const ok = await confirm({
-      title: "Delete projects",
+      title: "Archive projects",
       message:
         childTaskCount > 0
-          ? `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? This will also archive ${childTaskCount} task${childTaskCount > 1 ? "s" : ""} in them. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
-          : `Delete ${ids.length} project${ids.length > 1 ? "s" : ""}? They'll be archived and can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
-      confirmLabel: "Delete",
-      danger: true,
+          ? `Archive ${ids.length} project${ids.length > 1 ? "s" : ""}? This will also archive ${childTaskCount} task${childTaskCount > 1 ? "s" : ""} in them. Everything can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`
+          : `Archive ${ids.length} project${ids.length > 1 ? "s" : ""}? They can be restored within ${ARCHIVE_RETENTION_DAYS} days unless permanently deleted.`,
+      confirmLabel: "Archive",
     });
     if (!ok) return;
     const now = new Date().toISOString();
@@ -3322,8 +3325,8 @@ export default function Projects() {
               />
               <FieldPickerButton label="Phase" options={PROJECT_PHASE_ALL} onPick={(v) => bulkUpdateProjects({ phase: v || null })} />
               <button className="bulk-bar-delete" onClick={bulkDeleteProjects}>
-                <Trash2 size={12} />
-                Delete
+                <Archive size={12} />
+                Archive
               </button>
             </div>
           </div>
@@ -3569,7 +3572,7 @@ export default function Projects() {
               scale={taskViews.activeView.timelineScale ?? "month"}
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
               getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
-              emptyLabel="No tasks yet. Add one below."
+              emptyLabel="No tasks yet. Add tasks from WBS Planning."
               propertyColumns={taskTimelinePropertyColumns}
               getGroup={taskTimelineGroupOption ? (t) => taskTimelineGroupOption.getGroup(t) : undefined}
               getGroupTone={taskTimelineGroupOption?.getTone}
@@ -3594,7 +3597,7 @@ export default function Projects() {
               getDue={(t) => t.current_due_date}
               getTone={(t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}
               getTooltip={(t) => `${t.name} · ${formatDate(t.start_date)} → ${formatDate(t.current_due_date)}`}
-              emptyLabel="No tasks yet. Add one below."
+              emptyLabel="No tasks yet. Add tasks from WBS Planning."
               dateMode={taskViews.activeView.timelineDateMode ?? "range"}
               onDateModeChange={(timelineDateMode) => taskViews.updateActiveView({ timelineDateMode })}
               propertyColumns={taskCalendarPropertyColumns}
@@ -3613,7 +3616,7 @@ export default function Projects() {
               onViewChange={taskViews.updateActiveView}
               groupOptions={taskGroupOptions}
               sortOptions={taskSortOptions}
-              emptyLabel="No tasks yet. Add one below."
+              emptyLabel="No tasks yet. Add tasks from WBS Planning."
               compactGutter
               selectable
               selectedKeys={selectedTaskIds}

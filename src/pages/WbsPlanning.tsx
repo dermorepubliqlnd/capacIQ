@@ -994,9 +994,12 @@ export default function WbsPlanning() {
       return;
     }
     if (
-      !(await confirm(
-        `Lock ${MODE_LABEL[activeMode]} as this project's Baseline?\n\nThis records the current plan as the official commitment. The page becomes read-only until you Start a Revision.`
-      ))
+      !(await confirm({
+        title: "Lock Baseline",
+        message: `Lock ${MODE_LABEL[activeMode]} as this project's Baseline?\n\nThis records the current plan as the official commitment. The page becomes read-only until you Start a Revision.`,
+        confirmLabel: "Lock Baseline",
+        danger: true,
+      }))
     )
       return;
     setWorkflowBusy(true);
@@ -1016,7 +1019,15 @@ export default function WbsPlanning() {
 
   async function handleStartRevision() {
     if (!project) return;
-    if (!(await confirm("Start a revision on this project? This unlocks editing until you Apply or Discard the revision."))) return;
+    if (
+      !(await confirm({
+        title: "Start Revision",
+        message: "Start a revision on this project? This unlocks editing until you Apply or Discard the revision.",
+        confirmLabel: "Start Revision",
+        danger: true,
+      }))
+    )
+      return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("start_wbs_revision", { p_project_id: project.id, p_reason: "Revision started from WBS page" });
     setWorkflowBusy(false);
@@ -1029,7 +1040,15 @@ export default function WbsPlanning() {
 
   async function handleApplyRevision() {
     if (!project || !activeRevision) return;
-    if (!(await confirm(`Apply this revision? This re-locks the project as the new Current Plan (status becomes Changed After Baseline).`))) return;
+    if (
+      !(await confirm({
+        title: "Apply Revision",
+        message: `Apply this revision? This re-locks the project as the new Current Plan (status becomes Changed After Baseline).`,
+        confirmLabel: "Apply Revision",
+        danger: true,
+      }))
+    )
+      return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("apply_wbs_revision", {
       p_revision_id: activeRevision.id,
@@ -1046,9 +1065,12 @@ export default function WbsPlanning() {
   async function handleDiscardRevision() {
     if (!project || !activeRevision) return;
     if (
-      !(await confirm(
-        `Discard this revision? Every change made since Start Revision -- edited tasks, added tasks, removed tasks -- will be undone back to how it was before. This cannot be undone.`
-      ))
+      !(await confirm({
+        title: "Discard Revision",
+        message: `Discard this revision? Every change made since Start Revision -- edited tasks, added tasks, removed tasks -- will be undone back to how it was before. This cannot be undone.`,
+        confirmLabel: "Discard Revision",
+        danger: true,
+      }))
     )
       return;
     setWorkflowBusy(true);
@@ -1069,9 +1091,12 @@ export default function WbsPlanning() {
   async function handleRebaseline() {
     if (!project) return;
     if (
-      !(await confirm(
-        `Re-baseline "${project.name}"? This promotes the current plan to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`
-      ))
+      !(await confirm({
+        title: "Re-baseline",
+        message: `Re-baseline "${project.name}"? This promotes the current plan to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`,
+        confirmLabel: "Re-baseline",
+        danger: true,
+      }))
     )
       return;
     setWorkflowBusy(true);
