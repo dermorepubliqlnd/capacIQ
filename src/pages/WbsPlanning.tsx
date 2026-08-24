@@ -425,9 +425,17 @@ export default function WbsPlanning() {
   const [changesByTaskId, setChangesByTaskId] = useState<Record<string, RevisionChangeRow[]>>({});
   const [baselineTasksById, setBaselineTasksById] = useState<Record<string, BaselineTaskFull>>({});
 
-  async function loadAll() {
+  async function loadAll(silent = false) {
     if (!projectId) return;
-    setLoading(true);
+    // Sandra, 2026-08-24: "adding a new task ... does not seem to glitch or
+    // refresh and go back at the top of the page" -- loadAll() unconditionally
+    // flipping `loading` true/false unmounts the entire page behind a bare
+    // "Loading..." div (see the `if (loading) return ...` guard below), which
+    // resets scroll to top and reads as a full-page flicker. Background
+    // refreshes triggered by in-place actions (add/delete task, etc.) now
+    // pass silent=true to skip that full-page loading flash entirely --
+    // state still updates underneath, but the page never unmounts.
+    if (!silent) setLoading(true);
     const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
       supabase
@@ -529,7 +537,7 @@ export default function WbsPlanning() {
     // (cheap -- just an empty list on a Draft project with no revisions).
     loadRevisionHistory();
 
-    setLoading(false);
+    if (!silent) setLoading(false);
   }
 
   async function loadRevisionHistory() {
@@ -1441,7 +1449,7 @@ export default function WbsPlanning() {
       await alert(`Couldn't create task: ${error.message}`);
       return;
     }
-    loadAll();
+    loadAll(true);
   }
 
   async function addSubtask(parent: TaskRow & { depth: number }) {
@@ -1478,7 +1486,7 @@ export default function WbsPlanning() {
       await alert(`Couldn't add subtask: ${error.message}`);
       return;
     }
-    loadAll();
+    loadAll(true);
   }
 
   // Sandra, 2026-07-24: "Allow deleting of tasks in WBS. Right now we can
@@ -1510,7 +1518,7 @@ export default function WbsPlanning() {
       await alert(`Couldn't delete: ${error.message}`);
       return;
     }
-    loadAll();
+    loadAll(true);
   }
 
   // Drag-reorder within siblings only -- see draggedTaskId comment above.
