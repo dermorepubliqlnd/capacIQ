@@ -1,0 +1,31 @@
+-- ---------------------------------------------------------------------
+-- Phase 19 migration (2026-08-24): Manual mode gets its own End date +
+-- fix Capacity-Based/Manual cross-contamination bug.
+--
+-- Bug found live (Sandra: "why is the capacity based timelines changing
+-- when i change the manual dates?"): Manual mode's Start override and
+-- Capacity-Based's own whole-queue forward walk were reading/writing the
+-- SAME column pair (start_date_standard/start_standard_auto). That
+-- pairing was a deliberate zero-migration reuse back in Phase 12 (the
+-- column used to be Capacity-Based's own override slot before Phase 12
+-- retired that concept), but WbsPlanning.tsx's `effectiveTasksForSched`
+-- -- the task list that feeds Capacity-Based's forward-walk queue for
+-- THIS project's own tasks -- kept blindly reading start_date_standard
+-- regardless of the auto flag, so a Manual override fed straight into
+-- Capacity-Based's own queue positioning and could ripple into every
+-- other task queued behind it for that person. Fixed in
+-- WbsPlanning.tsx (frontend-only fix, no schema change needed for the
+-- bug itself: once start_standard_auto = false, Capacity-Based now
+-- falls back to the task's plain start_date instead of the override).
+--
+-- Feature (Sandra): "task estimated 15 hours, expected done in 3 days --
+-- should be 5h/day spread across the range" -- Manual mode could only
+-- ever type a Start date; End was always recomputed at a flat 7.5h/day
+-- rate. The Utilization page's default "Realistic" view already spreads
+-- a task's estimated hours evenly across its own start_date/
+-- current_due_date window with zero extra work (hours / working days in
+-- range) -- so the only real gap was Manual mode having no field to
+-- freely type an End date. This adds one.
+-- ---------------------------------------------------------------------
+
+alter table tasks add column if not exists manual_end_date date;

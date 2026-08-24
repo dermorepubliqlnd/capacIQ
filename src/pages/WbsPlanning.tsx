@@ -78,6 +78,12 @@ interface TaskRow {
   // and a manual untick/retick-the-dependency workaround.
   start_full_auto: boolean;
   start_standard_auto: boolean;
+  // Phase 19 (2026-08-24): Manual mode's own typed End date -- when set
+  // (alongside a Manually-overridden Start), the task's hours are spread
+  // evenly across the Start-to-End window instead of a flat 7.5h/day
+  // rate. Null means "no End typed yet," same convention as every other
+  // optional per-task field here.
+  manual_end_date: string | null;
   current_due_date: string;
   estimated_hours: number | null;
   effort: string | null;
@@ -265,6 +271,10 @@ interface ChainEntry {
   isOverridden?: boolean;
   suggestedStart?: string;
   suggestedEnd?: string;
+  // Phase 19 (2026-08-24): set only when Manual mode's typed End date is
+  // driving the span (rather than the flat 7.5h/day fallback) -- the
+  // even-spread rate, purely for display (e.g. "5.0 h/day").
+  avgHoursPerDay?: number;
 }
 
 const UTIL_WINDOW_DAYS = 28; // 4 weeks, daily view
@@ -423,7 +433,7 @@ export default function WbsPlanning() {
       supabase
         .from("tasks")
         .select(
-          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,current_due_date,estimated_hours,effort,work_type_id,is_archived,sort_order"
+          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,manual_end_date,current_due_date,estimated_hours,effort,work_type_id,is_archived,sort_order"
         )
         .eq("project_id", projectId)
         .eq("is_archived", false)
@@ -945,7 +955,17 @@ export default function WbsPlanning() {
       parent_task_id: t.parent_task_id,
       assignee_id: t.assignee_id,
       status: t.status,
-      start_date: t.start_date_standard ?? t.start_date,
+      // Bugfix (2026-08-24, Sandra: "why is the capacity based timelines
+      // changing when i change the manual dates?"): start_date_standard
+      // is Manual mode's own private override column now (Phase 12
+      // repurposed it from Capacity-Based's old, since-retired override
+      // slot) -- reading it unconditionally here fed Manual's typed Start
+      // straight into Capacity-Based's own whole-queue walk. Once a task
+      // has been Manually overridden (start_standard_auto === false),
+      // Capacity-Based must fall back to the task's plain start_date
+      // instead, same as it already does for every OTHER project's tasks
+      // above (which never look at start_date_standard at all).
+      start_date: t.start_standard_auto === false ? t.start_date : (t.start_date_standard ?? t.start_date),
       current_due_date: t.current_due_date,
       estimated_hours: t.estimated_hours,
       sort_order: t.sort_order,
@@ -1028,6 +1048,29 @@ export default function WbsPlanning() {
       // the UI can flag the deviation.
       if (t.start_standard_auto === false && t.start_date_standard) {
         const start = t.start_date_standard.slice(0, 10);
+        // Phase 19 (2026-08-24, Sandra: "15 planned hours but expected to
+        // be done in 3 days -- should be spread across 5 hours for 3
+        // days"): when an End date has also been typed, spread the
+        // task's hours evenly across every working day from Start to
+        // that End, instead of the flat 7.5h/day fallback below. This
+        // needs no changes anywhere else -- Utilization's default
+        // "Realistic" view already spreads a task's estimated hours
+        // evenly across its own start_date/current_due_date window, so
+        // once Save writes this End into current_due_date, the 5h/day
+        // heat-map shows up automatically.
+        if (t.manual_end_date) {
+          const end = t.manual_end_date.slice(0, 10);
+          const durationDays = Math.max(1, workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length);
+          return {
+            start,
+            end,
+            durationDays,
+            avgHoursPerDay: Math.round((hours / durationDays) * 100) / 100,
+            isOverridden: true,
+            suggestedStart: schedStart,
+            suggestedEnd: schedEnd,
+          };
+        }
         const r = fullCapacityScenario(hours, start, holidaySet);
         return {
           start,
@@ -2098,8 +2141,32 @@ export default function WbsPlanning() {
             )}
           </span>
         </td>
-        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? formatDate(entry.end) : "—"}</td>
-        <td style={entry ? style : { ...style, color: "var(--muted)" }}>{entry ? entry.durationDays : "—"}</td>
+        <td style={entry ? style : { ...style, color: "var(--muted)" }}>
+          {/* Phase 19 (2026-08-24): End is now freely typable too, but
+              only once Start has been manually committed -- editing End
+              before Start is touched wouldn't have a fixed point to
+              spread hours from. Typing an End date here is what turns on
+              the even-hours-per-day spread (see computeEntry's "manual"
+              branch); clearing it (native date-input "clear") reverts to
+              the flat 7.5h/day fallback from Start. */}
+          {entry?.isOverridden ? (
+            <span title={entry.avgHoursPerDay != null ? `${entry.avgHoursPerDay}h/day, spread evenly across this window` : "Flat 7.5h/day from Start -- type an End date to spread hours evenly instead"} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <InlineDate
+                value={t.manual_end_date}
+                editable={canEditWbs && !isParent}
+                onCommit={(v) => saveTaskField(t.id, { manual_end_date: v || null } as Partial<TaskRow>)}
+              />
+            </span>
+          ) : (
+            <span>{entry ? formatDate(entry.end) : "—"}</span>
+          )}
+        </td>
+        <td style={entry ? style : { ...style, color: "var(--muted)" }}>
+          {entry ? entry.durationDays : "—"}
+          {entry?.avgHoursPerDay != null && (
+            <span style={{ color: "var(--muted)", marginLeft: 4, fontSize: 11 }}>({entry.avgHoursPerDay}h/day)</span>
+          )}
+        </td>
       </>
     );
   }
