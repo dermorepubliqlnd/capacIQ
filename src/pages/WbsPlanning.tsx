@@ -1239,6 +1239,11 @@ export default function WbsPlanning() {
       }))
     )
       return;
+    // Same bugfix class as addTopLevelTask above -- flush staged edits
+    // first so they are not silently discarded by this action's own
+    // loadAll(), and so the baseline captures what is actually saved.
+    const flushedBeforeRequest = await flushPendingEdits();
+    if (!flushedBeforeRequest) return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("request_baseline_approval", { p_project_id: project.id, p_reason: null });
     setWorkflowBusy(false);
@@ -1262,6 +1267,11 @@ export default function WbsPlanning() {
       }))
     )
       return;
+    // Flush first -- same reasoning as handleRequestBaseline above: the
+    // snapshot this sends should match what is actually saved, and this
+    // action's own loadAll() must not discard unrelated staged edits.
+    const flushedBeforeDecide = await flushPendingEdits();
+    if (!flushedBeforeDecide) return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("decide_baseline_request", {
       p_request_id: pendingBaselineRequest.id,
@@ -1281,6 +1291,8 @@ export default function WbsPlanning() {
   async function handleRequestClosure() {
     if (!project) return;
     if (!(await confirm(`Request closure for "${project.name}"? This asks an approver to lock in the current plan as Final Scope.`))) return;
+    const flushedBeforeClosureRequest = await flushPendingEdits();
+    if (!flushedBeforeClosureRequest) return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("request_wbs_closure", { p_project_id: project.id });
     setWorkflowBusy(false);
@@ -1294,6 +1306,8 @@ export default function WbsPlanning() {
   async function handleDecideClosure(approve: boolean) {
     if (!project || !pendingClosure) return;
     if (!(await confirm(approve ? "Approve this closure? This locks in the current plan as Final Scope -- final, no re-opening." : "Reject this closure request?"))) return;
+    const flushedBeforeClosureDecide = await flushPendingEdits();
+    if (!flushedBeforeClosureDecide) return;
     setWorkflowBusy(true);
     const { error } = await supabase.rpc("decide_wbs_closure", {
       p_request_id: pendingClosure.id,
@@ -1342,6 +1356,18 @@ export default function WbsPlanning() {
 
   async function addTopLevelTask() {
     if (!project) return;
+    // Bugfix (2026-08-24, Sandra: "when adding a task -- all existing
+    // tasks become untitled"): this used to call loadAll() right after
+    // inserting the new row, which does a full fresh fetch and blows
+    // away any edits still only staged in pendingTaskPatches/
+    // pendingProjectPatch (name, hours, assignee, etc. typed but not yet
+    // Saved) -- every unsaved field on every other task silently reverted
+    // to whatever's actually in the DB, which for a freshly-added task is
+    // still its literal insert defaults ("Untitled task", no hours). Now
+    // flushes those staged edits first, same as Save does, so adding a
+    // task can never discard in-progress work on other rows.
+    const flushed = await flushPendingEdits();
+    if (!flushed) return;
     const today = new Date().toISOString().slice(0, 10);
     const roots = orderedTasks.filter((t) => t.depth === 0);
     const anchor = project.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
@@ -1374,6 +1400,10 @@ export default function WbsPlanning() {
 
   async function addSubtask(parent: TaskRow & { depth: number }) {
     if (parent.depth > 0) return; // only 2 layers total: parent + 1 sub-task level
+    // Same bugfix as addTopLevelTask above -- flush staged edits before
+    // this insert's own loadAll() can discard them.
+    const flushed = await flushPendingEdits();
+    if (!flushed) return;
     const siblings = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === parent.id);
     const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
     let defaultStartFull = parent.start_date_full ? parent.start_date_full.slice(0, 10) : projectAnchor;
@@ -1422,6 +1452,11 @@ export default function WbsPlanning() {
       danger: true,
     });
     if (!ok) return;
+    // Same bugfix as addTopLevelTask/addSubtask -- flush staged edits on
+    // OTHER tasks first, so deleting one task can't silently discard
+    // unsaved edits sitting on a different row.
+    const flushed = await flushPendingEdits();
+    if (!flushed) return;
     const { error } = await supabase.rpc("delete_tasks_and_dependents", { p_task_ids: allIds });
     if (error) {
       await alert(`Couldn't delete: ${error.message}`);

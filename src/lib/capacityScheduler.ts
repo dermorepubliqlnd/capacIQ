@@ -16,9 +16,15 @@ import { addDays, isWorkingDay, parseLocalDate, toISO, type HolidaySet } from ".
 // 2.25h cap across all owned projects). Phase 2 replaces both with one
 // flat allowance: every project a person owns gets this many hours/day of
 // PM overhead on its own working days, with NO combined cross-project cap
-// -- if you own three active projects, that's 3 * 0.5h = 1.5h/day of PM
-// time, uncapped. Intentional per Sandra's Phase 2 sign-off.
-export const PROJECT_PM_DAILY_HOURS = 0.5;
+// -- if you own three active projects, that is 3 * rate = however many
+// hours/day of PM time, uncapped. Intentional per Sandra's Phase 2 sign-off.
+// Lowered 0.5 -> 0.25 (2026-08-24, Sandra): 30 min/day/project was an
+// uncalibrated placeholder feeding directly into the Actual view, which
+// exists specifically to expose true overallocation -- an overstated
+// PM assumption was manufacturing overload that was not real work. Still
+// uncapped per Sandra's call to revisit a combined cap only if a
+// multi-project owner still looks overloaded from overhead alone.
+export const PROJECT_PM_DAILY_HOURS = 0.25;
 
 export interface SchedPersonRow {
   id: string;
