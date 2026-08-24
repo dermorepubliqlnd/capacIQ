@@ -10,12 +10,13 @@ import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { fullCapacityScenario, capacityBasedScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
-import { buildForwardSchedule, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
-import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
+import { buildForwardSchedule, PROJECT_PM_DAILY_HOURS, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
+import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES, TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import {
-  dailyPointsFor,
   dailyCapacityFor,
   tierOf,
+  taskWorkingDays,
+  projectWorkingDays,
   STANDARD_DAILY_HOURS,
   type UtilTaskRow,
   type UtilProjectRow,
@@ -2399,6 +2400,10 @@ export default function WbsPlanning() {
   // the Phase 9 version, just callable once per scenario.
   function buildEffectiveForMode(mode: UtilPreviewMode): { tasks: UtilTaskRow[]; projects: UtilProjectRow[] } {
     const chain = previewChainFor(mode);
+    // Phase 23 (2026-08-24) bugfix: estimated_hours now carried through
+    // onto these rows -- see previewDailyHoursFor below for why this
+    // matters (the old points-based dailyPointsFor never used it at all,
+    // which was the actual bug Sandra reported).
     const tasks: UtilTaskRow[] =
       mode === "actual"
         ? allTasks.map((t) => ({
@@ -2409,6 +2414,7 @@ export default function WbsPlanning() {
             start_date: t.start_date,
             current_due_date: t.current_due_date,
             effort: t.effort,
+            estimated_hours: t.estimated_hours,
           }))
         : [
             ...allTasks.filter((t) => t.project_id !== projectId),
@@ -2430,6 +2436,7 @@ export default function WbsPlanning() {
                   start_date: entry?.start ?? t.start_date,
                   current_due_date: entry?.end ?? t.current_due_date,
                   effort: t.effort,
+                  estimated_hours: t.estimated_hours,
                 };
               }),
           ];
@@ -2477,6 +2484,46 @@ export default function WbsPlanning() {
     standard_suggested: buildEffectiveForMode("standard_suggested"),
     standard_committed: buildEffectiveForMode("standard_committed"),
   };
+
+  // Phase 23 (2026-08-24) bugfix: Sandra -- "the utilization snapshot
+  // only captures the PM overhead... does not actually capture the
+  // foreseen utilization if ever the tasks will be plotted." Root cause:
+  // this snapshot panel was calling utilizationCalc.ts's dailyPointsFor,
+  // a leftover from BEFORE the Phase 1/2 hours-based Utilization/Day
+  // Planner refactor (2026-08-20) -- it only reads a task's coarse
+  // `effort` tier (Light/Moderate/Heavy -> a fixed 0.5/1/2 points/day via
+  // TASK_EFFORT_POINTS) and completely ignores estimated_hours, plus its
+  // own separate PM-overhead constant (PROJECT_PM_POINTS_PER_DAY = 0.1pt
+  // ~= 0.75h) that was never updated when the real one
+  // (PROJECT_PM_DAILY_HOURS) got lowered to 0.25h. That's exactly why
+  // Fritzie's row showed a flat 10%/0.8h no matter what hours were typed
+  // on her tasks -- it was PM overhead alone; the task's real hours never
+  // factored in at all.
+  //
+  // Fix: mirror Utilization.tsx's own hours-based even-spread math
+  // (taskHoursOnDate/pmHoursFor/dailyHoursFor) instead -- a task's real
+  // estimated_hours spread evenly across its own (mode-resolved) working
+  // days, plus PROJECT_PM_DAILY_HOURS per owned project per working day.
+  // No history-awareness needed here (same as before) -- this previews
+  // the CURRENT draft plan, not historical truth.
+  function previewTaskHoursOnDate(t: UtilTaskRow, dateStr: string, forPersonId?: string): number {
+    const hours = t.estimated_hours ?? 0;
+    if (hours === 0) return 0;
+    const workingDays = taskWorkingDays(t);
+    if (!workingDays.includes(dateStr)) return 0;
+    if (forPersonId && t.assignee_id !== forPersonId) return 0;
+    return hours / workingDays.length;
+  }
+  function previewPmHoursFor(personId: string, dateStr: string, projects: UtilProjectRow[]): number {
+    const owned = projects.filter((p) => p.owner_id === personId && projectWorkingDays(p).includes(dateStr));
+    return owned.length * PROJECT_PM_DAILY_HOURS;
+  }
+  function previewDailyHoursFor(personId: string, dateStr: string, tasks: UtilTaskRow[], projects: UtilProjectRow[]): number {
+    const taskHours = tasks
+      .filter((t) => t.assignee_id === personId && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete")
+      .reduce((sum, t) => sum + previewTaskHoursOnDate(t, dateStr, personId), 0);
+    return taskHours + previewPmHoursFor(personId, dateStr, projects);
+  }
 
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
@@ -3305,7 +3352,17 @@ export default function WbsPlanning() {
                                     </td>
                                   );
                                 }
-                                const points = dailyPointsFor(p.id, iso, modeTasks, modeProjects);
+                                // Phase 23: hours-based now (see
+                                // previewDailyHoursFor above) -- `points`
+                                // is kept as a name purely so the
+                                // capacity/pct/tier math below (which
+                                // expects a points-shaped ratio) didn't
+                                // need touching, but the VALUE feeding it
+                                // is now a real hours/STANDARD_DAILY_HOURS
+                                // conversion, not the old effort-tier
+                                // lookup.
+                                const hoursTotal = previewDailyHoursFor(p.id, iso, modeTasks, modeProjects);
+                                const points = hoursTotal / STANDARD_DAILY_HOURS;
                                 const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
                                 const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
                                 const tier = tierOf(pct);
