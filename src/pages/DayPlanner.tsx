@@ -185,7 +185,7 @@ export default function DayPlanner() {
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
-  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(2);
+  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [offMenu, setOffMenu] = useState<{ personId: string; date: string; x: number; y: number } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -223,20 +223,42 @@ export default function DayPlanner() {
     loadAll();
   }, []);
 
+  // Phase 8 parity fix (2026-08-24, Sandra -- same ask she already made for
+  // Utilization.tsx on 2026-08-21, ported here since Day Planner never got
+  // it: "the current view is locked on a show option and isn't flawless...
+  // default should always be 4 weeks from today's date, with the option to
+  // scroll further back and forth. We can back-track dates as far as Jan
+  // 2026 only." The window used to anchor to startOfWeek(today) (Monday-
+  // snapped) with a 2-week default -- now the anchor for weekOffset=0 is
+  // literally today (no Monday snap), and backward navigation is clamped
+  // to a fixed EARLIEST_ANCHOR floor, identical logic to Utilization.tsx.
+  const EARLIEST_ANCHOR = useMemo(() => new Date(2026, 0, 1), []);
+  const todayRaw = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
+  const minWeekOffset = useMemo(
+    () => Math.ceil((EARLIEST_ANCHOR.getTime() - todayRaw.getTime()) / (7 * 24 * 60 * 60 * 1000)),
+    [EARLIEST_ANCHOR, todayRaw]
+  );
+  function clampWeekOffset(next: number): number {
+    return Math.max(next, minWeekOffset);
+  }
+
   const days = useMemo(() => {
-    const base = addDays(startOfWeek(new Date()), weekOffset * 7);
+    const base = addDays(todayRaw, weekOffset * 7);
     return Array.from({ length: rangeWeeks * 7 }, (_, i) => addDays(base, i));
-  }, [weekOffset, rangeWeeks]);
+  }, [weekOffset, rangeWeeks, todayRaw]);
 
   // Jump directly to the week containing a chosen date, instead of only
   // stepping week by week.
   function jumpToDate(dateStr: string) {
     if (!dateStr) return;
     const [y, m, d] = dateStr.split("-").map(Number);
-    const chosenMonday = startOfWeek(new Date(y, (m ?? 1) - 1, d ?? 1));
-    const todayMonday = startOfWeek(new Date());
-    const diffWeeks = Math.round((chosenMonday.getTime() - todayMonday.getTime()) / (7 * 24 * 60 * 60 * 1000));
-    setWeekOffset(diffWeeks);
+    const chosen = new Date(y, (m ?? 1) - 1, d ?? 1);
+    const diffWeeks = Math.round((chosen.getTime() - todayRaw.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    setWeekOffset(clampWeekOffset(diffWeeks));
   }
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
@@ -412,7 +434,13 @@ export default function DayPlanner() {
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-        <button onClick={() => setWeekOffset((w) => w - rangeWeeks)} className="planner-nav-btn" title={`Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
+        <button
+          onClick={() => setWeekOffset((w) => clampWeekOffset(w - rangeWeeks))}
+          className="planner-nav-btn"
+          disabled={weekOffset <= minWeekOffset}
+          title={weekOffset <= minWeekOffset ? "Can't go earlier than Jan 2026" : `Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}
+          style={weekOffset <= minWeekOffset ? { opacity: 0.4, cursor: "default" } : undefined}
+        >
           <ChevronLeft size={14} />
         </button>
         <span style={{ fontSize: 12, fontWeight: 600, color: "var(--navy)", minWidth: 150 }}>
@@ -452,6 +480,7 @@ export default function DayPlanner() {
           Jump to
           <input
             type="date"
+            min="2026-01-01"
             onChange={(e) => jumpToDate(e.target.value)}
             style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
           />
