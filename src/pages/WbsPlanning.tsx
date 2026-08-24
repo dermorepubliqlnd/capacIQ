@@ -204,7 +204,7 @@ type Mode = "full_capacity" | "standard" | "manual";
 // is a display-only rename/reorder to avoid any migration on a live
 // project store. See [[project_capaciq_forecasted_rename_reorder_color]].
 const MODE_LABEL: Record<Mode, string> = {
-  full_capacity: "Full",
+  full_capacity: "Theoretical",
   // Retired Conservative Effort's flat 4h/day rate (Sandra, 2026-08-21):
   // "standard" keeps its wire value/DB columns (scoping_effort_mode=
   // 'standard', etc. -- zero migration needed, fully backward compatible
@@ -246,7 +246,7 @@ const SCENARIO_ORDER: ScenarioKey[] = ["forecasted", "capacity_based", "full"];
 const SCENARIO_LABEL: Record<ScenarioKey, string> = {
   forecasted: "Forecasted",
   capacity_based: "Capacity-Based",
-  full: "Full",
+  full: "Theoretical",
 };
 // Colors confirmed with Sandra 2026-08-24: Forecasted green,
 // Capacity-Based blue, Full yellow -- a straight 3-way swap of the
@@ -299,7 +299,7 @@ const UTIL_MODE_TO_SCENARIO: Partial<Record<UtilPreviewMode, ScenarioKey>> = {
 // match the rename everywhere else.
 const UTIL_PREVIEW_LABEL: Record<UtilPreviewMode, string> = {
   actual: "Committed (Existing)",
-  full_capacity: "Full",
+  full_capacity: "Theoretical",
   standard_suggested: "Capacity-Based",
   standard_committed: "Forecasted",
 };
@@ -3497,7 +3497,7 @@ export default function WbsPlanning() {
                     Capacity-Based
                   </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }} title="Read-only reference -- edit dates under Forecasted instead">
-                    Full
+                    Theoretical
                   </th>
                 </tr>
                 <tr>
