@@ -2152,7 +2152,14 @@ export default function WbsPlanning() {
           {entry?.isOverridden ? (
             <span title={entry.avgHoursPerDay != null ? `${entry.avgHoursPerDay}h/day, spread evenly across this window` : "Flat 7.5h/day from Start -- type an End date to spread hours evenly instead"} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <InlineDate
-                value={t.manual_end_date}
+                // Bugfix (2026-08-24, found in post-ship audit): when no
+                // End has been typed yet, this must still show the
+                // computed flat-rate End (entry.end) -- falling back to
+                // t.manual_end_date alone rendered a BLANK date box the
+                // moment Start was overridden, hiding a real computed
+                // date behind an empty-looking input. Typing a new value
+                // still only ever writes manual_end_date.
+                value={t.manual_end_date ?? entry.end}
                 editable={canEditWbs && !isParent}
                 onCommit={(v) => saveTaskField(t.id, { manual_end_date: v || null } as Partial<TaskRow>)}
               />
