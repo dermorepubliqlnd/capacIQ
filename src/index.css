@@ -142,7 +142,10 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 .metric-icon-flat.neutral { color: var(--muted); }
 .metric-label {
   font-family: var(--font);
-  font-size: var(--font-caption);
+  /* Sandra: bump KPI header text to 12px -- overridden here rather than
+     touching --font-caption (10px), which many unrelated labels/pills
+     share app-wide. */
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-secondary);
