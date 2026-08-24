@@ -348,7 +348,7 @@ function AttentionChip({
     >
       <span style={{ color: TONE_COLOR[tone], display: "flex" }}>{icon}</span>
       <span style={{ fontSize: 22, fontWeight: 700, color: TONE_COLOR[tone] }}>{count}</span>
-      <span style={{ fontSize: 14, color: "var(--text-secondary)", flex: 1 }}>{label}</span>
+      <span style={{ fontSize: 12, color: "var(--text-secondary)", flex: 1 }}>{label}</span>
       <ChevronRight size={19} color="var(--muted)" />
     </Link>
   );
