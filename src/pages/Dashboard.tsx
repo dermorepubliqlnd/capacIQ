@@ -278,22 +278,21 @@ function StatCard({
   tone,
   label,
   value,
-  sub,
   placeholder,
 }: {
   icon: React.ReactNode;
   tone: "teal" | "warning" | "danger" | "accent" | "neutral";
   label: string;
   value: string | number;
-  sub: string;
   placeholder?: boolean;
 }) {
   return (
     <div className="metric-card" style={placeholder ? { opacity: 0.7, borderStyle: "dashed" } : undefined}>
-      <div className={`metric-icon ${tone === "accent" ? "" : tone}`}>{icon}</div>
-      <p className="metric-label">{label}</p>
-      <p className="metric-value metric-value-lg">{value}</p>
-      <p className="metric-sub">{sub}</p>
+      <div className="metric-card-header">
+        <span className={`metric-icon-circle ${tone}`}>{icon}</span>
+        <p className="metric-label">{label}</p>
+      </div>
+      <p className={`metric-value metric-value-lg metric-value-${tone}`}>{value}</p>
     </div>
   );
 }
@@ -612,13 +611,13 @@ export default function Dashboard() {
 
       {/* Top stat strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
-        <StatCard icon={<Folder size={15} />} tone="accent" label="Total Projects" value={stats.total} sub="In current view" />
-        <StatCard icon={<Activity size={15} />} tone="teal" label="Active" value={stats.active} sub="In Progress" />
-        <StatCard icon={<CheckCircle2 size={15} />} tone="teal" label="Completed" value={stats.completed} sub="Delivered" />
-        <StatCard icon={<PauseCircle size={15} />} tone="warning" label="On Hold" value={stats.onHold} sub="Paused" />
-        <StatCard icon={<AlertTriangle size={15} />} tone="warning" label="At Risk" value={stats.atRisk} sub="Behind expected pace" />
-        <StatCard icon={<Clock3 size={15} />} tone="danger" label="Overdue" value={stats.overdue} sub="Past due date" />
-        <StatCard icon={<Package size={15} />} tone="neutral" label="Materials Output" value="—" sub="Coming soon" placeholder />
+        <StatCard icon={<Folder size={15} />} tone="accent" label="Total Projects" value={stats.total} />
+        <StatCard icon={<Activity size={15} />} tone="accent" label="Active" value={stats.active} />
+        <StatCard icon={<CheckCircle2 size={15} />} tone="teal" label="Completed" value={stats.completed} />
+        <StatCard icon={<PauseCircle size={15} />} tone="warning" label="On Hold" value={stats.onHold} />
+        <StatCard icon={<AlertTriangle size={15} />} tone="warning" label="At Risk" value={stats.atRisk} />
+        <StatCard icon={<Clock3 size={15} />} tone="danger" label="Overdue" value={stats.overdue} />
+        <StatCard icon={<Package size={15} />} tone="neutral" label="Materials Output" value="—" placeholder />
       </div>
 
       {/* Row 2: 3 donuts */}

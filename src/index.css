@@ -113,18 +113,31 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; }
 
-.metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+/* Icon + label share one row (Sandra: "make the icons and card header in
+   one line") instead of the icon sitting on its own row above the label --
+   one fewer stacked line per card, and the trailing "sub" caption line
+   (e.g. "In current view") was dropped entirely as redundant, matching the
+   Portfolio Dashboard mockup Sandra shared. */
+.metric-card-header { display: flex; align-items: center; gap: 8px; }
 .metric-icon { width: 28px; height: 28px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; background: var(--hover-bg); color: var(--accent); }
 .metric-icon.teal { background: var(--success-bg); color: var(--success-text); }
 .metric-icon.warning { background: var(--warning-bg); color: var(--warning-text); }
 .metric-icon.danger { background: var(--danger-bg); color: var(--danger-text); }
+/* Round badge variant (mockup uses a filled circle, not a rounded square)
+   -- colored the same way as .metric-icon per tone, just circular. */
+.metric-icon-circle { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--hover-bg); color: var(--accent); }
+.metric-icon-circle.accent { background: var(--accent-bg, var(--hover-bg)); color: var(--accent); }
+.metric-icon-circle.teal { background: var(--success-bg); color: var(--success-text); }
+.metric-icon-circle.warning { background: var(--warning-bg); color: var(--warning-text); }
+.metric-icon-circle.danger { background: var(--danger-bg); color: var(--danger-text); }
+.metric-icon-circle.neutral { background: var(--hover-bg); color: var(--muted); }
 .metric-label {
   font-family: var(--font);
   font-size: var(--font-caption);
   font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--muted);
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
   margin: 0;
 }
 .metric-value {
@@ -135,6 +148,13 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
   color: var(--navy);
   margin: 0;
 }
+/* Mockup colors each stat's big number to match its own icon tone, rather
+   than every card sharing the same navy value text. */
+.metric-value-accent { color: var(--accent); }
+.metric-value-teal { color: var(--success-text); }
+.metric-value-warning { color: var(--warning-text); }
+.metric-value-danger { color: var(--danger-text); }
+.metric-value-neutral { color: var(--navy); }
 .metric-sub { font-family: var(--font); font-size: var(--font-meta); color: var(--muted); margin: 0; }
 
 .status-pill { display: inline-block; padding: 2px 8px; border-radius: var(--radius-sm); font-size: var(--font-caption); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }

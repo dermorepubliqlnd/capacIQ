@@ -191,7 +191,7 @@ const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "h
 // createView) -- per Sandra's curated Timeline-chip spec, Category/Effort/
 // Timelines(lock state)/Days Extended start hidden but stay available to
 // turn on via Properties; Status/Owner/Priority/Health start visible.
-const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "effort_level", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "source", "effort_level", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
 // Same idea for Tasks Timeline: "Days +/-" (Sandra: a signed day-count is
 // redundant once you can already see a bar's length/position on the
 // chart), Hrs Variance/%/Est./Spent (effort-tracking detail, not
@@ -486,7 +486,7 @@ const TASK_TIMING_BOARD_COLUMNS: BoardColumnDef[] = [
 // enumerable set of Kanban columns); anything else (free text, dates,
 // computed percentages) is marked boardGroupable: false on the relevant
 // GroupOption instead and falls back to this list's first/default entry.
-const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "effort_level", "owner", "wbs_status"];
+const PROJECT_BOARD_GROUPABLE_KEYS = ["status", "phase", "priority", "category", "source", "effort_level", "owner", "wbs_status"];
 const TASK_BOARD_GROUPABLE_KEYS = ["status", "assignee", "effort", "work_type", "project", "timing", "due_date_ext"];
 
 function resolveBoardGroupBy(groupBy: string | null, groupableKeys: string[], fallback: string): string {
@@ -2167,6 +2167,12 @@ export default function Projects() {
       getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
     },
     {
+      key: "source",
+      label: "Source",
+      getGroup: (p) => projectSources.find((s) => s.id === p.source_id)?.name ?? "Not set",
+      getTone: () => "neutral",
+    },
+    {
       key: "effort_level",
       label: "Complexity",
       getGroup: (p) => p.effort_level ?? "No complexity set",
@@ -2232,6 +2238,13 @@ export default function Projects() {
       boardGroupable: true,
     },
     {
+      key: "source",
+      label: "Source",
+      getGroup: (p) => projectSources.find((s) => s.id === p.source_id)?.name ?? "Not set",
+      getTone: () => "neutral",
+      boardGroupable: true,
+    },
+    {
       key: "effort_level",
       label: "Complexity",
       getGroup: (p) => p.effort_level ?? "No complexity set",
@@ -2265,6 +2278,8 @@ export default function Projects() {
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: priorityLabel(v), tone: priorityTone(v) }));
     if (groupBy === "category") return PROJECT_CATEGORY_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
+    if (groupBy === "source")
+      return projectSources.filter((s) => s.is_active).map((s) => ({ value: s.id, label: s.name, tone: "neutral" }));
     if (groupBy === "effort_level")
       return PROJECT_EFFORT_LEVEL_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_EFFORT_LEVEL_TONES[v] ?? "neutral" }));
     if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
@@ -2276,6 +2291,7 @@ export default function Projects() {
   function getProjectBoardValue(p: ProjectRow, groupBy: string): string | null {
     if (groupBy === "priority") return p.priority;
     if (groupBy === "category") return p.category;
+    if (groupBy === "source") return p.source_id;
     if (groupBy === "effort_level") return p.effort_level;
     if (groupBy === "owner") return p.owner_id;
     if (groupBy === "wbs_status") return p.wbs_status;
@@ -2286,6 +2302,7 @@ export default function Projects() {
   function getProjectBoardMoveHandler(groupBy: string): ((p: ProjectRow, newValue: string) => void) | undefined {
     if (groupBy === "priority") return (p, v) => updateProject(p.id, { priority: (v || null) as ProjectRow["priority"] });
     if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
+    if (groupBy === "source") return (p, v) => updateProject(p.id, { source_id: v || null });
     if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
     // Owner is WBS-only (Round 21) -- dragging a card grouped by Owner used
     // to silently reassign it here too, bypassing that lockdown. No
@@ -2306,6 +2323,7 @@ export default function Projects() {
     { key: "status", label: "Status", getValue: (p) => PROJECT_STATUS_OPTIONS.indexOf(p.status ?? "") },
     { key: "phase", label: "Phase", getValue: (p) => PROJECT_PHASE_ALL.indexOf(p.phase ?? "") },
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
+    { key: "source", label: "Source", getValue: (p) => projectSources.find((s) => s.id === p.source_id)?.name ?? "" },
     { key: "effort_level", label: "Complexity", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
     { key: "start_date", label: "Start", getValue: (p) => (p.start_date ? new Date(p.start_date).getTime() : null) },
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
@@ -3219,7 +3237,7 @@ export default function Projects() {
   // NOT the same left-to-right order as PROJECT_COLUMN_ORDER (which drives
   // Table view and lists Owner before Status), so Table's own column order
   // is untouched by this Timeline-only preference.
-  const PROJECT_TIMELINE_CHIP_ORDER = ["status", "phase", "owner", "priority", "health", "category", "effort_level", "wbs_status", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
+  const PROJECT_TIMELINE_CHIP_ORDER = ["status", "phase", "owner", "priority", "health", "category", "source", "effort_level", "wbs_status", "days_extended", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct"];
   const projectTimelinePropertyColumns = visibleOrderedColumns(projectColumns, projectViews.activeView)
     .filter((c) => !PROJECT_TIMELINE_EXCLUDED_KEYS.includes(c.key))
     .slice()
