@@ -38,6 +38,11 @@ export interface UtilProjectRow {
   owner_id: string | null;
   start_date: string | null;
   end_date: string | null;
+  // Optional (2026-08-24): a project's wbs_status, threaded through to
+  // capacityScheduler.ts's SchedProjectRow so the forward-schedule queue
+  // can give already-baselined work precedence over Draft-project tasks.
+  // See capacityScheduler.ts's SchedProjectRow for the full rationale.
+  wbs_status?: string | null;
 }
 export interface UtilPersonRow {
   id: string;

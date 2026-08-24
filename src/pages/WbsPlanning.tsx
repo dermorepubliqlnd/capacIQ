@@ -528,7 +528,7 @@ export default function WbsPlanning() {
       supabase.from("person_availability").select("person_id,date,status"),
       supabase.from("holidays").select("date"),
       supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order,work_type_id").eq("is_archived", false),
-      supabase.from("projects").select("id,owner_id,start_date,end_date").eq("is_archived", false),
+      supabase.from("projects").select("id,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
@@ -1087,8 +1087,16 @@ export default function WbsPlanning() {
     })),
   ];
   const effectiveProjectsForSched: SchedProjectRow[] = [
-    ...allProjects.filter((p) => p.id !== projectId).map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date })),
-    { id: projectId ?? "", owner_id: project?.owner_id ?? null, start_date: project?.start_date ?? null, end_date: project?.end_date ?? null },
+    ...allProjects
+      .filter((p) => p.id !== projectId)
+      .map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date, wbs_status: p.wbs_status })),
+    {
+      id: projectId ?? "",
+      owner_id: project?.owner_id ?? null,
+      start_date: project?.start_date ?? null,
+      end_date: project?.end_date ?? null,
+      wbs_status: project?.wbs_status ?? null,
+    },
   ];
   const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
   const schedParentTaskIds = new Set(effectiveTasksForSched.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));

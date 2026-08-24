@@ -63,6 +63,15 @@ export interface SchedProjectRow {
   owner_id: string | null;
   start_date: string | null;
   end_date: string | null;
+  // Optional (2026-08-24, Sandra: "whatever is committed/locked in the
+  // baseline [should take] precedence before deciding on Capacity-Based"):
+  // a project's wbs_status ('draft' | 'baseline_locked' |
+  // 'changed_after_baseline' | 'revision_in_progress' | 'closed').
+  // Missing/undefined is treated as committed (not draft) so callers that
+  // don't pass this (Day Planner has none of its own; any caller that
+  // predates this field) see zero behavior change -- only an EXPLICIT
+  // 'draft' demotes a project's tasks in the queue below.
+  wbs_status?: string | null;
 }
 export interface SchedAvailabilityRow {
   person_id: string;
@@ -189,7 +198,25 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
       !isCompleteStatus(t.status) &&
       (t.estimated_hours ?? 0) > 0
   );
+  // Bugfix (2026-08-24, Sandra -- Utlization Conflict Test: "whatever is
+  // committed/locked in the baseline [should take] precedence before
+  // deciding on capacity based"): a brand-new Draft-project task (never
+  // baselined) was winning shared capacity over an already-baseline-
+  // locked task purely because its own Start floor happened to be
+  // earlier -- e.g. a just-created "Stress Test" task deferred a real,
+  // committed "Post-Training Eval" task instead of the other way around.
+  // Committed work (any wbs_status other than 'draft' -- baseline_locked,
+  // changed_after_baseline, revision_in_progress, closed) now always
+  // gets first claim on a person's shared capacity; Draft-project tasks
+  // only fill in whatever's left over, and among themselves (or among
+  // several committed tasks) the existing Start-floor/due-date/sort_order
+  // ordering below still decides who goes first.
+  const draftProjectIds = new Set(projects.filter((p) => p.wbs_status === "draft").map((p) => p.id));
+  const isDraftTask = (t: SchedTaskRow): boolean => draftProjectIds.has(t.project_id);
   const sortByEffectiveDate = (a: SchedTaskRow, b: SchedTaskRow) => {
+      const aDraft = isDraftTask(a) ? 1 : 0;
+      const bDraft = isDraftTask(b) ? 1 : 0;
+      if (aDraft !== bDraft) return aDraft - bDraft;
       const aStart = effectiveStart(a).getTime();
       const bStart = effectiveStart(b).getTime();
       if (aStart !== bStart) return aStart - bStart;

@@ -24,6 +24,11 @@ interface ProjectRow {
   owner_id: string | null;
   start_date: string | null;
   end_date: string | null;
+  // Optional (2026-08-24): threaded into SchedProjectRow so the forward
+  // scheduler can give already-baselined work precedence over Draft
+  // projects, same as WBS Planning -- see capacityScheduler.ts's
+  // SchedProjectRow for the rationale.
+  wbs_status?: string | null;
 }
 interface TaskRow {
   id: string;
@@ -253,7 +258,7 @@ export default function Utilization() {
     setLoading(true);
     const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: wts }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
-      supabase.from("projects").select("id,name,owner_id,start_date,end_date").eq("is_archived", false),
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived,sort_order,work_type_id").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
@@ -454,7 +459,7 @@ export default function Utilization() {
       sort_order: t.sort_order,
       is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
     }));
-    const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date }));
+    const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date, wbs_status: p.wbs_status }));
     const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
     const map = new Map<string, ReturnType<typeof buildForwardSchedule>>();
     people.forEach((person) => {
