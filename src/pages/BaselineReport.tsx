@@ -30,7 +30,11 @@ import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
 // Projects page (shown once wbs_status has moved past Draft, i.e. once a
 // baseline exists).
 
-const MODE_LABEL: Record<string, string> = { full_capacity: "Full Effort", standard: "Conservative Effort" };
+// Phase 21 (2026-08-24): kept in sync with WbsPlanning.tsx rename --
+// baseline.mode will always be "manual" (Forecasted) going forward now
+// that Save no longer offers a mode picker, but old baselines captured
+// under full_capacity/standard still need a readable label here.
+const MODE_LABEL: Record<string, string> = { full_capacity: "Full", standard: "Capacity-Based", manual: "Forecasted" };
 
 interface ProjectRow {
   id: string;

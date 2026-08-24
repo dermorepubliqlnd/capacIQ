@@ -192,8 +192,18 @@ interface DependencyRow {
 // job on its own, and Assignee becomes a normal per-task field again
 // (same as the rest of the app), not something tied to a scheduling mode.
 type Mode = "full_capacity" | "standard" | "manual";
+// Phase 21 (2026-08-24): Sandra -- rename "Manual" to "Forecasted"
+// everywhere in the UI (it's the committed/planned schedule, not a
+// manual-entry concept) and standardize display order to Forecasted,
+// Capacity-Based, Full everywhere the 3 scenarios appear together
+// (this table's columns, the Utilization snapshot rows, the Gantt
+// sections, the Effort Comparison chart). Internal wire values
+// ("manual", "standard", "full_capacity") are UNCHANGED -- DB columns,
+// scoping_effort_mode, and every RPC still use the old identifiers, this
+// is a display-only rename/reorder to avoid any migration on a live
+// project store. See [[project_capaciq_forecasted_rename_reorder_color]].
 const MODE_LABEL: Record<Mode, string> = {
-  full_capacity: "Full Effort",
+  full_capacity: "Full",
   // Retired Conservative Effort's flat 4h/day rate (Sandra, 2026-08-21):
   // "standard" keeps its wire value/DB columns (scoping_effort_mode=
   // 'standard', etc. -- zero migration needed, fully backward compatible
@@ -203,19 +213,59 @@ const MODE_LABEL: Record<Mode, string> = {
   // rate. See [[project_capaciq_wbs_capacity_based_mode]].
   standard: "Capacity-Based",
   // Phase 12 (2026-08-21): Sandra -- Full Effort and Capacity-Based are
-  // now both READ-ONLY, pure computed references; "Manual" is the only
-  // mode where a human date wins. Reuses the exact columns/flag that
-  // used to carry Capacity-Based's in-place override (start_date_
-  // standard/start_standard_auto, Phase 7) -- zero migration, since
-  // Capacity-Based no longer needs a draft Start field of its own now
-  // that it can never be overridden. Manual mirrors Capacity-Based's
-  // live suggestion until the user types a Start themselves, then
-  // freezes (same freeze mechanic Phase 7 already had, just always-on
-  // and living in its own column instead of conditionally inside
-  // Capacity-Based's). See [[project_capaciq_phase12_manual_mode_split]].
-  manual: "Manual",
+  // now both READ-ONLY, pure computed references; "Manual" (now labeled
+  // "Forecasted", Phase 21) is the only mode where a human date wins.
+  // Reuses the exact columns/flag that used to carry Capacity-Based's
+  // in-place override (start_date_standard/start_standard_auto, Phase 7)
+  // -- zero migration, since Capacity-Based no longer needs a draft
+  // Start field of its own now that it can never be overridden.
+  // Forecasted mirrors Capacity-Based's live suggestion until the user
+  // types a Start themselves, then freezes (same freeze mechanic Phase 7
+  // already had, just always-on and living in its own column instead of
+  // conditionally inside Capacity-Based's). See
+  // [[project_capaciq_phase12_manual_mode_split]].
+  manual: "Forecasted",
 };
-const MODES: Mode[] = ["full_capacity", "standard", "manual"];
+// Phase 21 reorder: Forecasted, Capacity-Based, Full (was Full,
+// Capacity-Based, Manual) -- drives column order in the task table,
+// Timeline (Gantt) section order, and (via the scenario-key mapping
+// below) the Utilization snapshot row order.
+const MODES: Mode[] = ["manual", "standard", "full_capacity"];
+
+// Phase 21 (2026-08-24): a single small vocabulary ("scenario") that
+// both Mode (task table / Gantt) and UtilPreviewMode (Utilization
+// snapshot) map onto, so ONE centralized toggle can filter both areas at
+// once. Sandra: "select which views he wants to see -- if I only want
+// to see forecasted, then scenarios and gantt will only show forecasted
+// ones." "Actual" is deliberately NOT a ScenarioKey -- it always stays
+// visible in the snapshot as the ground-truth reference row, per
+// Sandra's explicit confirmation, and has no Gantt equivalent at all.
+type ScenarioKey = "forecasted" | "capacity_based" | "full";
+const SCENARIO_ORDER: ScenarioKey[] = ["forecasted", "capacity_based", "full"];
+const SCENARIO_LABEL: Record<ScenarioKey, string> = {
+  forecasted: "Forecasted",
+  capacity_based: "Capacity-Based",
+  full: "Full",
+};
+// Colors confirmed with Sandra 2026-08-24: Forecasted green,
+// Capacity-Based blue, Full yellow -- a straight 3-way swap of the
+// Phase 10 palette (which had Full=blue, Capacity-Based=green,
+// Manual=yellow).
+const SCENARIO_COLOR: Record<ScenarioKey, string> = {
+  forecasted: "#1f9d55", // green
+  capacity_based: "#2f6fed", // blue
+  full: "#c9971b", // yellow/amber
+};
+const MODE_TO_SCENARIO: Record<Mode, ScenarioKey> = {
+  manual: "forecasted",
+  standard: "capacity_based",
+  full_capacity: "full",
+};
+const SCENARIO_TO_MODE: Record<ScenarioKey, Mode> = {
+  forecasted: "manual",
+  capacity_based: "standard",
+  full: "full_capacity",
+};
 
 // Phase 9 (2026-08-21): the WBS Utilization-snapshot preview toggle is
 // its own, slightly richer set of options than the 2 task-table Modes --
@@ -230,25 +280,40 @@ const MODES: Mode[] = ["full_capacity", "standard", "manual"];
 // Save will actually persist, including any committed overrides) --
 // these two are identical unless at least one task has been overridden.
 type UtilPreviewMode = "actual" | "full_capacity" | "standard_suggested" | "standard_committed";
-const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "full_capacity", "standard_suggested", "standard_committed"];
+// Phase 21 reorder (2026-08-24): Actual first (always-shown baseline
+// reference), then Forecasted/Capacity-Based/Full in the same standard
+// order used everywhere else on the page.
+const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "standard_committed", "standard_suggested", "full_capacity"];
+// Maps each preview mode onto the shared ScenarioKey vocabulary above --
+// "actual" has no ScenarioKey (it's not toggle-able, always shown).
+const UTIL_MODE_TO_SCENARIO: Partial<Record<UtilPreviewMode, ScenarioKey>> = {
+  standard_committed: "forecasted",
+  standard_suggested: "capacity_based",
+  full_capacity: "full",
+};
 // Phase 10 (2026-08-21): Sandra -- show all 4 scenarios as simultaneous
 // rows per person instead of a tab you switch between, so they can be
 // compared at a glance. Labels/colors confirmed with her directly.
+// Phase 21 (2026-08-24): "Manual Override" relabeled "Forecasted" to
+// match the rename everywhere else.
 const UTIL_PREVIEW_LABEL: Record<UtilPreviewMode, string> = {
   actual: "Committed (Existing)",
-  full_capacity: "Full Effort",
-  standard_suggested: "Capacity-Based (Auto)",
-  standard_committed: "Manual Override",
+  full_capacity: "Full",
+  standard_suggested: "Capacity-Based",
+  standard_committed: "Forecasted",
 };
 // Consistent identity color per scenario -- used for the snapshot row
-// marker AND (for full_capacity/standard_suggested) the task table's own
-// Full Effort/Capacity-Based column tint, so the same scheduling method
-// always reads as the same color everywhere it shows up in the page.
+// marker AND (for full_capacity/standard_suggested/standard_committed)
+// the task table's own Full/Capacity-Based/Forecasted column tint, so
+// the same scheduling method always reads as the same color everywhere
+// it shows up in the page. Phase 21: pulled from the shared
+// SCENARIO_COLOR map instead of its own literal hex values, so there's
+// only one place colors are defined.
 const UTIL_PREVIEW_COLOR: Record<UtilPreviewMode, string> = {
   actual: "var(--muted)",
-  full_capacity: "#2f6fed", // blue
-  standard_suggested: "#1f9d55", // green
-  standard_committed: "#c9971b", // yellow/amber
+  full_capacity: SCENARIO_COLOR.full,
+  standard_suggested: SCENARIO_COLOR.capacity_based,
+  standard_committed: SCENARIO_COLOR.forecasted,
 };
 
 // Phase 3 (2026-07-28): status banner copy/colors for the Draft/Baseline/
@@ -355,7 +420,14 @@ export default function WbsPlanning() {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeMode, setActiveMode] = useState<Mode>("full_capacity");
+  // Phase 21 (2026-08-24): Sandra -- "when saving there should no longer
+  // be an option to choose which effort will be used, it will always
+  // capture the planned one." Save (and Baseline/Closure requests) now
+  // always operate on Forecasted ("manual" wire value) -- the mode where
+  // a real committed date can be typed, i.e. the actual plan. This used
+  // to be a user-facing picker (setActiveMode via InlineSelect); the
+  // picker is removed and this is now a fixed constant, not state.
+  const activeMode: Mode = "manual";
   // Separate from `activeMode` (Sandra, 2026-07-28: split the old shared
   // toggle apart) -- this one only drives the Utilization snapshot
   // preview below; `activeMode` is now purely "which mode Save/Scoping
@@ -370,7 +442,12 @@ export default function WbsPlanning() {
   // the exact same computed points/capacity/tier everywhere below, these
   // three only decide what's shown and to whom, never how it's computed.
   const [utilShowHours, setUtilShowHours] = useState(true);
-  const [utilShowFullEffort, setUtilShowFullEffort] = useState(true);
+  // Phase 21 (2026-08-24): replaces the single Full-Effort-only toggle
+  // with the centralized 3-scenario checkbox set -- same state now
+  // drives BOTH the Utilization snapshot rows below and the Timeline
+  // (Gantt) sections further down the page. Defaults to all 3 visible
+  // (unchanged default behavior).
+  const [visibleScenarios, setVisibleScenarios] = useState<Set<ScenarioKey>>(new Set(SCENARIO_ORDER));
   // null = no filter applied yet (show everyone) -- once the user picks
   // from the popover this becomes an explicit allow-list.
   const [utilPersonFilter, setUtilPersonFilter] = useState<Set<string> | null>(null);
@@ -454,22 +531,9 @@ export default function WbsPlanning() {
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
-    // Bug fix (2026-08-20): activeMode ("which mode Save/Scoping Effort
-    // points at") always initialized to "full_capacity" on page load,
-    // regardless of what was actually last saved -- the "Saved as X" /
-    // "Unsaved -- currently saved as X" caption below the toggle already
-    // compared against project.scoping_effort_mode and would correctly
-    // show a project as saved under Conservative Effort, while the
-    // toggle itself silently showed Full Effort right next to it. Seed
-    // activeMode from the persisted value on every load so the toggle
-    // and the caption actually agree.
-    if (
-      proj?.scoping_effort_mode === "full_capacity" ||
-      proj?.scoping_effort_mode === "standard" ||
-      proj?.scoping_effort_mode === "manual"
-    ) {
-      setActiveMode(proj.scoping_effort_mode);
-    }
+    // Phase 21 (2026-08-24): activeMode is now a fixed constant
+    // ("manual"/Forecasted, always), not state -- no more seeding needed
+    // here. See the activeMode declaration above for why.
     setTasks((tks as TaskRow[]) ?? []);
     setPeople((ppl as PersonRow[]) ?? []);
     setAvailability((avail as AvailabilityRow[]) ?? []);
@@ -2203,7 +2267,7 @@ export default function WbsPlanning() {
               title={
                 isParent
                   ? `Computed from this task's own sub-tasks (earliest Start under ${MODE_LABEL[mode]})`
-                  : `${MODE_LABEL[mode]} is read-only -- edit dates under Manual instead.`
+                  : `${MODE_LABEL[mode]} is read-only -- edit dates under Forecasted instead.`
               }
               style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
             >
@@ -2729,25 +2793,20 @@ export default function WbsPlanning() {
               </div>
             )}
             <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+              {/* Phase 21 (2026-08-24): Sandra -- "there should no longer
+                  be an option to choose which effort will be used, it
+                  will always capture the planned one." The Scoping
+                  Effort picker (InlineSelect over MODES) is gone --
+                  Save always operates on Forecasted (activeMode is now a
+                  fixed constant, see its declaration above), so this is
+                  a plain static label instead of an editable field. */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                 <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
-                <div className="wbs-field-box" style={fieldBoxStyle(true, 150, !canEditWbs)}>
-                  <InlineSelect
-                    value={MODE_LABEL[activeMode]}
-                    editable={canEditWbs}
-                    options={MODES.map((m) => MODE_LABEL[m])}
-                    onCommit={(label) => {
-                      const m = MODES.find((mm) => MODE_LABEL[mm] === label);
-                      if (m) setActiveMode(m);
-                    }}
-                  />
+                <div className="wbs-field-box" style={fieldBoxStyle(true, 150, true)}>
+                  <span style={{ fontSize: 12.5, color: SCENARIO_COLOR.forecasted, fontWeight: 600 }}>{MODE_LABEL[activeMode]}</span>
                 </div>
                 <span
-                  title={
-                    project.scoping_effort_mode
-                      ? `Officially saved as ${MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}. Pick a mode here, then Save to change what's officially recorded and written onto every task.`
-                      : "Not saved yet -- pick a mode, then Save to record it as this project's official Scoping Effort and write its dates onto every task."
-                  }
+                  title="Save always records this project's Forecasted (planned) schedule -- the mode where a real committed date can be typed. Full and Capacity-Based are reference/comparison views only and can never be saved as the official plan."
                   style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
                 >
                   <Info size={13} style={{ color: "var(--muted)" }} />
@@ -2758,15 +2817,6 @@ export default function WbsPlanning() {
                   </button>
                 )}
               </div>
-              {/* Sandra, 2026-07-29: "what indicator do I have to see the
-                  type of effort currently in place... if I switch to
-                  another I may tend to forget which one was the
-                  previous" -- the Info icon's hover tooltip already said
-                  this but was easy to miss since it's hover-only. This
-                  small always-visible line shows the officially SAVED
-                  mode at a glance, and turns into an explicit amber
-                  "unsaved" callout the moment the picker above no longer
-                  matches it. */}
               {project.scoping_effort_mode && project.scoping_effort_mode !== activeMode ? (
                 <span style={{ fontSize: 11, color: "var(--warning-text)", fontWeight: 600 }}>
                   Unsaved -- currently saved as {MODE_LABEL[project.scoping_effort_mode as Mode] ?? project.scoping_effort_mode}
@@ -3089,7 +3139,16 @@ export default function WbsPlanning() {
             {/* Phase 11 (2026-08-21): Sandra -- "show/hide hours, show/hide
                 Full Effort, select which people to show." All three are
                 display-only controls; nothing below changes what's
-                computed, only what's rendered and to whom. */}
+                computed, only what's rendered and to whom.
+                Phase 21 (2026-08-24): the single Full-Effort-only toggle
+                is now 3 scenario checkboxes -- Forecasted/Capacity-Based/
+                Full, colored to match everywhere else on the page. This
+                SAME `visibleScenarios` state also filters the Timeline
+                (Gantt) sections further down -- "a centralized toggle...
+                select which views he wants to see... scenarios and gantt
+                will only show forecasted ones." Actual/Committed is
+                intentionally NOT one of these checkboxes -- it always
+                stays visible as the ground-truth reference row. */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
               <button
                 onClick={() => setUtilShowHours((v) => !v)}
@@ -3100,14 +3159,42 @@ export default function WbsPlanning() {
                 <Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
                 Hours
               </button>
-              <button
-                onClick={() => setUtilShowFullEffort((v) => !v)}
-                className={`timeline-segmented-btn${utilShowFullEffort ? " active" : ""}`}
-                style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
-                title="Show/hide the Full Effort (Theoretical) row"
-              >
-                Full Effort
-              </button>
+              <span style={{ width: 1, height: 20, background: "var(--border)", margin: "0 2px" }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>Scenarios shown:</span>
+              {SCENARIO_ORDER.map((key) => {
+                const checked = visibleScenarios.has(key);
+                return (
+                  <label
+                    key={key}
+                    className={`timeline-segmented-btn${checked ? " active" : ""}`}
+                    style={{
+                      borderRadius: "var(--radius-sm)",
+                      border: `1px solid ${checked ? SCENARIO_COLOR[key] : "var(--border)"}`,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      cursor: "pointer",
+                    }}
+                    title={`Show/hide ${SCENARIO_LABEL[key]} in the scenario rows below and in the Timeline (Gantt) sections`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setVisibleScenarios((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(key)) next.delete(key);
+                          else next.add(key);
+                          return next;
+                        })
+                      }
+                      style={{ margin: 0, accentColor: SCENARIO_COLOR[key] }}
+                    />
+                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: SCENARIO_COLOR[key], flexShrink: 0 }} />
+                    {SCENARIO_LABEL[key]}
+                  </label>
+                );
+              })}
               <UtilPersonFilterButton
                 people={people}
                 selected={utilPersonFilter}
@@ -3142,7 +3229,10 @@ export default function WbsPlanning() {
                 </thead>
                 <tbody>
                   {(utilPersonFilter ? people.filter((p) => utilPersonFilter.has(p.id)) : people).map((p) => {
-                    const visibleModes = UTIL_PREVIEW_MODES.filter((m) => utilShowFullEffort || m !== "full_capacity");
+                    const visibleModes = UTIL_PREVIEW_MODES.filter((m) => {
+                      const key = UTIL_MODE_TO_SCENARIO[m];
+                      return !key || visibleScenarios.has(key); // "actual" (no key) always shown
+                    });
                     const isExpanded = expandedUtilPeople.has(p.id);
                     function toggleExpanded() {
                       setExpandedUtilPeople((prev) => {
@@ -3340,26 +3430,29 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 190 }} title="vs the active Baseline">
                     Changes vs Baseline
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }} title="Read-only -- edit dates under Manual instead">
-                    Full Effort
+                  {/* Phase 21 (2026-08-24): column order now Forecasted,
+                      Capacity-Based, Full everywhere (was Full,
+                      Capacity-Based, Manual) -- matches MODES' new order. */}
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("manual") }} title="Mirrors Capacity-Based until edited, then freezes -- this is what Save always records">
+                    Forecasted
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }} title="Read-only -- edit dates under Manual instead">
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }} title="Read-only reference -- edit dates under Forecasted instead">
                     Capacity-Based
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("manual") }} title="Mirrors Capacity-Based until edited, then freezes">
-                    Manual
+                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }} title="Read-only reference -- edit dates under Forecasted instead">
+                    Full
                   </th>
                 </tr>
                 <tr>
-                  <th style={{ width: 110, ...modeColStyle("full_capacity") }}>Start</th>
-                  <th style={{ width: 100, ...modeColStyle("full_capacity") }}>End Date</th>
-                  <th style={{ width: 90, ...modeColStyle("full_capacity") }}>Duration (days)</th>
-                  <th style={{ width: 110, ...modeColStyle("standard") }}>Start</th>
-                  <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
-                  <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
                   <th style={{ width: 110, ...modeColStyle("manual") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("manual") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("manual") }}>Duration (days)</th>
+                  <th style={{ width: 110, ...modeColStyle("standard") }}>Start</th>
+                  <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
+                  <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
+                  <th style={{ width: 110, ...modeColStyle("full_capacity") }}>Start</th>
+                  <th style={{ width: 100, ...modeColStyle("full_capacity") }}>End Date</th>
+                  <th style={{ width: 90, ...modeColStyle("full_capacity") }}>Duration (days)</th>
                 </tr>
               </thead>
               <tbody>
@@ -3616,9 +3709,11 @@ export default function WbsPlanning() {
                           );
                         })()}
                       </td>
-                      {renderModeCells(t, "full_capacity", isParent)}
-                      {renderModeCells(t, "standard", isParent)}
+                      {/* Phase 21: render order matches the reordered
+                          header above -- Forecasted, Capacity-Based, Full. */}
                       {renderModeCells(t, "manual", isParent)}
+                      {renderModeCells(t, "standard", isParent)}
+                      {renderModeCells(t, "full_capacity", isParent)}
                     </tr>
                   );
                 })}
@@ -3636,14 +3731,19 @@ export default function WbsPlanning() {
             </table>
           </div>
 
-          {/* Timeline (Gantt) -- always visible below the table, BOTH
-              modes stacked (2026-07-28: previously just whichever mode was
-              toggled active; Sandra asked for both side by side since the
-              scoping table above already shows both regardless of
-              toggle). renderGantt(mode) below is the same markup as
-              before, just parameterized instead of reading `activeMode`
-              directly, called once per MODE. */}
-          {MODES.map((mode) => {
+          {/* Timeline (Gantt) -- all 3 scenarios stacked (2026-07-28:
+              previously just whichever mode was toggled active; Sandra
+              asked for all side by side since the scoping table above
+              already shows all 3 regardless of toggle). renderGantt(mode)
+              below is the same markup as before, just parameterized
+              instead of reading `activeMode` directly, called once per
+              MODE. Phase 21 (2026-08-24): now filtered by the same
+              `visibleScenarios` centralized toggle that filters the
+              Utilization snapshot rows -- "select which views he wants
+              to see... scenarios and gantt will only show forecasted
+              ones." Order comes for free from MODES' own Phase 21
+              reorder (Forecasted, Capacity-Based, Full). */}
+          {MODES.filter((mode) => visibleScenarios.has(MODE_TO_SCENARIO[mode])).map((mode) => {
             const { startDate: ganttStartDate, days: ganttDays, widthPx: ganttWidthPx } = ganttMetricsFor(chainByMode[mode]);
             return (
               <div key={mode} className="card" style={{ padding: 14, marginTop: 12 }}>
