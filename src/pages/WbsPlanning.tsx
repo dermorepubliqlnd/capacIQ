@@ -115,6 +115,35 @@ interface OutputTypeOption {
   is_active: boolean;
   sort_order: number;
 }
+
+// Column resizing (2026-08-24, Sandra: "can we now allow resizing column
+// width in the WBS"). Scoped to the 10 single-column (rowSpan=2) headers
+// in the task table -- Task/Work Type/Planned Effort Hours/Spent hrs/
+// Effort/Output Type/Output Count/Assignee/Depends on/Changes vs Baseline.
+// The 9 date-mode sub-columns (Start/End/Duration x Forecasted/Capacity-
+// Based/Theoretical) stay at their fixed widths for now -- they're narrow
+// date/number columns that rarely need more room, and resizing them would
+// mean juggling per-mode keys for comparatively little benefit; easy to
+// add later if Sandra asks. Widths persist in localStorage (this table
+// has no "saved views" concept the way Projects/Tasks do, so there's
+// nowhere server-side to put per-user column widths yet) so a reload
+// doesn't reset someone's preferred layout.
+const WBS_TASK_COLUMN_DEFAULTS: Record<string, number> = {
+  task: 240,
+  work_type: 130,
+  effort_hours: 90,
+  spent_hrs: 90,
+  effort: 90,
+  output_type: 140,
+  output_count: 90,
+  assignee: 150,
+  depends_on: 150,
+  changes: 190,
+};
+const WBS_TASK_COLUMN_ORDER = ["task", "work_type", "effort_hours", "spent_hrs", "effort", "output_type", "output_count", "assignee", "depends_on", "changes"];
+const WBS_DATE_COLUMN_WIDTHS = [110, 100, 90, 110, 100, 90, 110, 100, 90]; // Start/End/Duration x3 modes, fixed
+const WBS_COL_WIDTHS_STORAGE_KEY = "capaciq_wbs_task_col_widths";
+const WBS_MIN_COL_WIDTH = 50;
 interface PersonRow {
   id: string;
   name: string;
@@ -413,6 +442,18 @@ export default function WbsPlanning() {
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeOption[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
+  const wbsColWidthsRef = useRef<Record<string, number>>(
+    (() => {
+      try {
+        const raw = localStorage.getItem(WBS_COL_WIDTHS_STORAGE_KEY);
+        return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+      } catch {
+        return {};
+      }
+    })()
+  );
+  const [wbsColWidthsVersion, setWbsColWidthsVersion] = useState(0);
+  const wbsResizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   // Cross-project data, fetched ONLY for the utilization heat-map -- a
   // person's real workload includes every task/project they're on, not
@@ -1365,6 +1406,20 @@ export default function WbsPlanning() {
       await alert("Add at least one task before requesting a baseline.");
       return;
     }
+    // Sandra: "make sure the output type is keyed in before saving
+    // baseline, but the count can be kept optional until project is
+    // closed." Output Type is a hard gate here (no Full Access override,
+    // same as the "add at least one task" check above) -- Output Count
+    // deliberately has no equivalent check anywhere, since it's expected
+    // to often still be a guess/placeholder until the project's real work
+    // is actually done.
+    const missingOutputType = orderedTasks.filter((t) => !t.output_type_id);
+    if (missingOutputType.length) {
+      await alert(
+        `Can't request a baseline yet -- ${missingOutputType.length} task(s) still need an Output Type picked. Output Count can stay blank for now; it only needs to be accurate by the time this project is closed.`
+      );
+      return;
+    }
     const isFirstBaseline = project.wbs_status === "draft";
     if (
       !(await confirm({
@@ -2289,6 +2344,58 @@ export default function WbsPlanning() {
         ? UTIL_PREVIEW_COLOR.standard_suggested
         : UTIL_PREVIEW_COLOR.standard_committed;
     return { background: `${color}14` }; // ~8% opacity tint, hex alpha suffix
+  }
+
+  // Column resizing (see WBS_TASK_COLUMN_DEFAULTS above). wbsColWidth
+  // reads from the ref during/after a drag; wbsColWidthsVersion exists
+  // purely to force a rerender while dragging (the ref mutation itself
+  // doesn't trigger one).
+  function wbsColWidth(key: string): number {
+    void wbsColWidthsVersion;
+    return wbsColWidthsRef.current[key] ?? WBS_TASK_COLUMN_DEFAULTS[key] ?? 120;
+  }
+  function startWbsColResize(key: string, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWidth = wbsColWidth(key);
+    wbsResizeState.current = { key, startX: e.clientX, startWidth };
+    function onMove(ev: MouseEvent) {
+      if (!wbsResizeState.current) return;
+      const delta = ev.clientX - wbsResizeState.current.startX;
+      const newWidth = Math.max(WBS_MIN_COL_WIDTH, wbsResizeState.current.startWidth + delta);
+      wbsColWidthsRef.current = { ...wbsColWidthsRef.current, [wbsResizeState.current.key]: newWidth };
+      setWbsColWidthsVersion((n) => n + 1);
+    }
+    function onUp() {
+      if (wbsResizeState.current) {
+        try {
+          localStorage.setItem(WBS_COL_WIDTHS_STORAGE_KEY, JSON.stringify(wbsColWidthsRef.current));
+        } catch {
+          // ignore -- private browsing / storage full, resizing still
+          // works for the rest of this session, it just won't persist
+        }
+      }
+      wbsResizeState.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+  // One resizable header cell -- rowSpan=2 (spans both header rows, same
+  // as the plain <th>s it replaces), a drag handle on its right edge.
+  function ResizableTh({ colKey, title, children }: { colKey: string; title?: string; children: React.ReactNode }) {
+    const w = wbsColWidth(colKey);
+    return (
+      <th rowSpan={2} style={{ width: w, minWidth: WBS_MIN_COL_WIDTH, maxWidth: w, position: "relative" }} title={title}>
+        {children}
+        <span
+          onMouseDown={(e) => startWbsColResize(colKey, e)}
+          title="Drag to resize"
+          style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 1 }}
+        />
+      </th>
+    );
   }
 
   // A visible box around the header's editable fields (Project name,
@@ -3536,40 +3643,45 @@ export default function WbsPlanning() {
             </button>
           </div>
           <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
-            <table className="data-table" style={{ width: "100%" }}>
+            <table
+              className="data-table"
+              style={{
+                width:
+                  22 +
+                  WBS_TASK_COLUMN_ORDER.reduce((sum, k) => sum + wbsColWidth(k), 0) +
+                  WBS_DATE_COLUMN_WIDTHS.reduce((sum, w) => sum + w, 0),
+                tableLayout: "fixed",
+              }}
+            >
+              {/* colgroup drives the actual rendered column widths under
+                  table-layout:fixed -- more reliable than per-<th> widths
+                  alone given this header spans two rows (rowSpan/colSpan
+                  mixed), where browsers can be inconsistent about which
+                  row's widths "win". */}
+              <colgroup>
+                <col style={{ width: 22 }} />
+                {WBS_TASK_COLUMN_ORDER.map((k) => (
+                  <col key={k} style={{ width: wbsColWidth(k) }} />
+                ))}
+                {WBS_DATE_COLUMN_WIDTHS.map((w, i) => (
+                  <col key={i} style={{ width: w }} />
+                ))}
+              </colgroup>
               <thead>
                 <tr>
                   <th rowSpan={2} className="row-gutter-cell" style={{ width: 22, minWidth: 22 }} />
-                  <th rowSpan={2} style={{ minWidth: 200 }}>
-                    Task
-                  </th>
-                  <th rowSpan={2} style={{ width: 130 }}>
-                    Work Type
-                  </th>
-                  <th rowSpan={2} style={{ width: 90 }}>
-                    Planned Effort Hours
-                  </th>
-                  <th rowSpan={2} style={{ width: 90 }}>
-                    Spent hrs
-                  </th>
-                  <th rowSpan={2} style={{ width: 90 }}>
-                    Effort
-                  </th>
-                  <th rowSpan={2} style={{ width: 140 }}>
-                    Output Type
-                  </th>
-                  <th rowSpan={2} style={{ width: 90 }}>
-                    Output Count
-                  </th>
-                  <th rowSpan={2} style={{ width: 150 }}>
-                    Assignee
-                  </th>
-                  <th rowSpan={2} style={{ width: 150 }}>
-                    Depends on
-                  </th>
-                  <th rowSpan={2} style={{ width: 190 }} title="vs the active Baseline">
+                  <ResizableTh colKey="task">Task</ResizableTh>
+                  <ResizableTh colKey="work_type">Work Type</ResizableTh>
+                  <ResizableTh colKey="effort_hours">Planned Effort Hours</ResizableTh>
+                  <ResizableTh colKey="spent_hrs">Spent hrs</ResizableTh>
+                  <ResizableTh colKey="effort">Effort</ResizableTh>
+                  <ResizableTh colKey="output_type">Output Type</ResizableTh>
+                  <ResizableTh colKey="output_count">Output Count</ResizableTh>
+                  <ResizableTh colKey="assignee">Assignee</ResizableTh>
+                  <ResizableTh colKey="depends_on">Depends on</ResizableTh>
+                  <ResizableTh colKey="changes" title="vs the active Baseline">
                     Changes vs Baseline
-                  </th>
+                  </ResizableTh>
                   {/* Phase 21 (2026-08-24): column order now Forecasted,
                       Capacity-Based, Full everywhere (was Full,
                       Capacity-Based, Manual) -- matches MODES' new order. */}
@@ -3598,7 +3710,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={17} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={20} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -3669,7 +3781,7 @@ export default function WbsPlanning() {
                           </span>
                         </div>
                       </td>
-                      <td>
+                      <td style={{ overflow: "hidden" }}>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <span title={glyph.title} style={{ display: "inline-flex", flexShrink: 0 }}>
                             <glyph.Icon size={13} color={glyph.color} />
@@ -3885,7 +3997,7 @@ export default function WbsPlanning() {
                 })}
                 {canEditWbs && (
                   <tr>
-                    <td colSpan={17} className="add-row-cell">
+                    <td colSpan={20} className="add-row-cell">
                       <div className="add-row-trigger" onClick={addTopLevelTask}>
                         <Plus size={12} />
                         New task

@@ -202,10 +202,19 @@ function DonutLegend({ segments, total }: { segments: { label: string; value: nu
 function MonthlyBarChart({ months, series }: { months: { key: string; label: string }[]; series: { name: string; color: string; values: number[] }[] }) {
   const max = Math.max(1, ...series.flatMap((s) => s.values));
   const chartH = 140;
-  const barGroupW = 100 / months.length;
   return (
     <div>
-      <svg viewBox={`0 0 ${months.length * 40} ${chartH + 20}`} width="100%" height={chartH + 20} preserveAspectRatio="none">
+      {/* preserveAspectRatio="none" (needed so the bars stretch to fill
+          the card's actual width, since the viewBox is a fixed pixel grid
+          unrelated to the card's real rendered width) applies a NON-
+          uniform x/y scale to everything drawn in the SVG -- including
+          <text>, whose glyphs get horizontally squashed/stretched along
+          with the bars. Sandra: "the month text in the portfolio movement
+          is stretched." Fix: keep the bars in SVG (a plain rect doesn't
+          visibly suffer from non-uniform scaling) but render the month
+          labels as normal HTML text in a flex row below, one per month,
+          so their glyphs are never run through that transform. */}
+      <svg viewBox={`0 0 ${months.length * 40} ${chartH}`} width="100%" height={chartH} preserveAspectRatio="none">
         {[0, 0.25, 0.5, 0.75, 1].map((f) => (
           <line key={f} x1={0} x2={months.length * 40} y1={chartH - chartH * f} y2={chartH - chartH * f} stroke="var(--border)" strokeWidth={0.5} />
         ))}
@@ -229,14 +238,18 @@ function MonthlyBarChart({ months, series }: { months: { key: string; label: str
                   />
                 );
               })}
-              <text x={groupX + barW} y={chartH + 14} fontSize={8} textAnchor="middle" fill="var(--muted)">
-                {m.label}
-              </text>
             </g>
           );
         })}
       </svg>
-      <div style={{ display: "flex", gap: 14, marginTop: 4 }}>
+      <div style={{ display: "flex", marginTop: 4 }}>
+        {months.map((m) => (
+          <div key={m.key} style={{ flex: 1, textAlign: "center", fontSize: 10, color: "var(--muted)" }}>
+            {m.label}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 14, marginTop: 8 }}>
         {series.map((s) => (
           <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />
@@ -275,6 +288,52 @@ function CategoryBarList({ rows, total }: { rows: { label: string; value: number
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Materials Output's own bar list -- a two-color STACKED variant of
+// CategoryBarList, per Sandra: "mark those closed green, then if still
+// plotted (tentative count) make it blue, so it will be a stacked bar."
+// Closed-project output is the "real"/counted number (also what the
+// Materials Output stat card's own total reflects); tentative is output
+// logged on a project that hasn't reached Closed yet -- shown for
+// visibility, but deliberately excluded from the authoritative total per
+// Sandra: "only count the output type when the project is tagged closed."
+function MaterialsOutputBarList({ rows, total }: { rows: { label: string; closed: number; tentative: number }[]; total: number }) {
+  if (total === 0) return <div style={{ fontSize: 11, color: "var(--muted)" }}>No output logged yet -- set Output Type + Output Count on tasks in WBS Planning.</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {rows.map((r) => {
+        const rowTotal = r.closed + r.tentative;
+        const closedPct = Math.round((r.closed / total) * 100);
+        const tentativePct = Math.round((r.tentative / total) * 100);
+        return (
+          <div key={r.label}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 3 }}>
+              <span style={{ color: "var(--text-secondary)" }}>{r.label}</span>
+              <span style={{ fontWeight: 600, color: "var(--navy)" }}>
+                {rowTotal}
+                {r.tentative > 0 && <span style={{ fontWeight: 400, color: "var(--muted)" }}> ({r.closed} closed, {r.tentative} tentative)</span>}
+              </span>
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: "var(--hover-bg)", overflow: "hidden", display: "flex" }}>
+              <div style={{ height: "100%", width: `${closedPct}%`, background: "var(--success-text)" }} />
+              <div style={{ height: "100%", width: `${tentativePct}%`, background: "var(--accent)" }} />
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 14, marginTop: 2, fontSize: 11 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--success-text)" }} />
+          <span style={{ color: "var(--text-secondary)" }}>Closed (counted)</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 8, height: 8, borderRadius: 2, background: "var(--accent)" }} />
+          <span style={{ color: "var(--text-secondary)" }}>Tentative (not yet closed)</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -532,31 +591,57 @@ export default function Dashboard() {
     [categoryRows]
   );
 
-  // Materials Output (Phase 21, 2026-08-24): takes over By Category's old
-  // row-3 slot. Sums tasks.output_count grouped by Output Type, scoped to
-  // tasks belonging to a currently-filtered project (same period/owner/
-  // source filters as everything else on this page).
+  // Materials Output (Phase 21, 2026-08-24; stacked-bar redesign
+  // 2026-08-24): takes over By Category's old row-3 slot. Sums
+  // tasks.output_count grouped by Output Type, scoped to tasks belonging
+  // to a currently-filtered project (same period/owner/source filters as
+  // everything else on this page) -- split into a "closed" bucket
+  // (project's wbs_status === "closed", the only output that actually
+  // counts per Sandra) and a "tentative" bucket (everything else --
+  // logged, but the project isn't done yet, so it's a preview number, not
+  // a final one).
+  const projectClosedById = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const p of filteredProjects) m.set(p.id, p.wbs_status === "closed");
+    return m;
+  }, [filteredProjects]);
+
   const materialsOutputRows = useMemo(() => {
-    const counts: Record<string, number> = {};
-    let untyped = 0;
+    const closedCounts: Record<string, number> = {};
+    const tentativeCounts: Record<string, number> = {};
+    let untypedClosed = 0;
+    let untypedTentative = 0;
     for (const t of tasks) {
       if (!filteredProjectIds.has(t.project_id)) continue;
       const n = t.output_count ?? 0;
       if (n <= 0) continue;
+      const isClosed = projectClosedById.get(t.project_id) ?? false;
       if (!t.output_type_id) {
-        untyped += n;
+        if (isClosed) untypedClosed += n;
+        else untypedTentative += n;
         continue;
       }
-      counts[t.output_type_id] = (counts[t.output_type_id] ?? 0) + n;
+      if (isClosed) closedCounts[t.output_type_id] = (closedCounts[t.output_type_id] ?? 0) + n;
+      else tentativeCounts[t.output_type_id] = (tentativeCounts[t.output_type_id] ?? 0) + n;
     }
     const rows = outputTypes
-      .filter((o) => counts[o.id])
-      .map((o) => ({ label: o.name, value: counts[o.id], tone: "neutral" }));
-    if (untyped) rows.push({ label: "Untyped", value: untyped, tone: "neutral" });
-    return rows.sort((a, b) => b.value - a.value);
-  }, [tasks, filteredProjectIds, outputTypes]);
+      .filter((o) => closedCounts[o.id] || tentativeCounts[o.id])
+      .map((o) => ({ label: o.name, closed: closedCounts[o.id] ?? 0, tentative: tentativeCounts[o.id] ?? 0 }));
+    if (untypedClosed || untypedTentative) rows.push({ label: "Untyped", closed: untypedClosed, tentative: untypedTentative });
+    return rows.sort((a, b) => b.closed + b.tentative - (a.closed + a.tentative));
+  }, [tasks, filteredProjectIds, projectClosedById, outputTypes]);
 
-  const materialsOutputTotal = useMemo(() => materialsOutputRows.reduce((sum, r) => sum + r.value, 0), [materialsOutputRows]);
+  // Stat card total: closed-only, per Sandra ("only count the output type
+  // when the project is tagged closed") -- the headline number is the
+  // real, final count, never a still-in-progress preview.
+  const materialsOutputTotal = useMemo(() => materialsOutputRows.reduce((sum, r) => sum + r.closed, 0), [materialsOutputRows]);
+  // Grand total (closed + tentative) is only used to scale the stacked
+  // bar list's percentages, so the chart visually represents everything
+  // plotted so far, not just the counted portion.
+  const materialsOutputGrandTotal = useMemo(
+    () => materialsOutputRows.reduce((sum, r) => sum + r.closed + r.tentative, 0),
+    [materialsOutputRows]
+  );
 
   const portfolioMovement = useMemo(() => {
     const months = lastMonths(8);
@@ -717,11 +802,7 @@ export default function Dashboard() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Materials Output</div>
-          {materialsOutputRows.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "var(--muted)" }}>No output logged yet -- set Output Type + Output Count on tasks in WBS Planning.</div>
-          ) : (
-            <CategoryBarList rows={materialsOutputRows} total={materialsOutputTotal} />
-          )}
+          <MaterialsOutputBarList rows={materialsOutputRows} total={materialsOutputGrandTotal} />
         </div>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Portfolio Movement</div>
