@@ -1752,7 +1752,7 @@ export default function WbsPlanning() {
     // and flips status to Changed After Baseline (record_wbs_edit below).
     const wasBaselineLocked = project.wbs_status === "baseline_locked";
     const confirmMsg = wasBaselineLocked
-      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Request Baseline Approval from the actions above when you're ready to re-lock.`
+      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Baselines are locked once by design and this project's baseline will not be re-lockable.`
       : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting.${
           project.wbs_status === "draft" ? " Nothing is locked yet -- request Baseline Approval from the actions above when you're ready." : ""
         }`;
@@ -2395,9 +2395,10 @@ export default function WbsPlanning() {
               is open the whole time a baseline exists (see canEditWbs),
               and locking/re-locking a baseline is now the single Request
               Baseline Approval action below, whichever case applies. */}
-          {canManageWbs &&
-            (project.wbs_status === "draft" || project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
-            !pendingBaselineRequest && (
+          {/* Sandra, 2026-08-24: re-baselining disabled -- approval is a
+              one-time gate. Once a project has ever been Baseline Locked,
+              this button never reappears, even after further edits. */}
+          {canManageWbs && project.wbs_status === "draft" && !pendingBaselineRequest && (
               <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestBaseline}>
                 Request Baseline Approval
               </button>
@@ -3651,9 +3652,9 @@ export default function WbsPlanning() {
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
           {project.wbs_status === "draft" && "Request Baseline Approval once scoping is final to start tracking against it."}
-          {project.wbs_status === "baseline_locked" && "Edit directly any time -- request Baseline Approval to re-lock, or close the project once work is complete."}
+          {project.wbs_status === "baseline_locked" && "This is the official, final commitment. You can still edit for your own records, but this baseline cannot be re-locked -- close the project once work is complete."}
           {project.wbs_status === "changed_after_baseline" &&
-            "This plan differs from the original baseline. Keep editing, request Baseline Approval to make this the new official plan, or close the project."}
+            "This plan differs from the original baseline. Baselines are locked once by design -- variance tracking measures against the original. Close the project once work is complete."}
           {project.wbs_status === "revision_in_progress" && "This project has a legacy revision in progress -- view the audit trail for its history."}
           {project.wbs_status === "closed" && "Final Scope is locked. View the audit trail for a full history of every change."}
         </span>

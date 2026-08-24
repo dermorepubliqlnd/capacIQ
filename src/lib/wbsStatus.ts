@@ -24,10 +24,10 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   baseline_locked: {
     label: "Baseline Locked",
-    // Phase 6 (2026-08-21): no more "Start a Revision" -- editing is open
-    // the whole time a baseline exists, Request Baseline Approval is
-    // what re-locks it.
-    hint: "This is the official commitment. You can still edit -- request Baseline Approval to re-lock.",
+    // Sandra, 2026-08-24: re-baselining disabled -- approval is a one-time
+    // gate. Once locked, this baseline is permanent; editing continues but
+    // there is no more "request approval to re-lock" path.
+    hint: "This is the official, final commitment. You can still edit for your own records, but this baseline cannot be re-locked.",
     color: "var(--accent)",
     bg: "#eaf1fb",
     border: "#cfe0f5",
@@ -45,7 +45,7 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   changed_after_baseline: {
     label: "Changed After Baseline",
-    hint: "Edited since the Baseline was locked -- request Baseline Approval to make this the new official plan.",
+    hint: "Edited since the Baseline was locked. Baselines are locked once by design -- variance tracking measures against the original baseline.",
     color: "#7b4fb0",
     bg: "#f3ecfa",
     border: "#e2d3f0",
