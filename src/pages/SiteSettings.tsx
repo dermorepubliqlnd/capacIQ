@@ -31,6 +31,19 @@ interface WorkTypeRow {
   is_fixed_schedule: boolean;
 }
 
+// Project Source -- admin-configurable lookup (Phase 20, 2026-08-24) for
+// the Portfolio Dashboard's "Source" donut/filter. Mirrors Work Types'
+// own table/RLS/UI shape exactly, minus the Fixed-Schedule concept
+// (that's a task-scheduling idea, not applicable at the project level).
+// See supabase/phase20_migration.sql for the table itself
+// (project_sources) and projects.source_id.
+interface ProjectSourceRow {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
 export default function SiteSettings() {
   const { person: me, loading: sessionLoading } = useSession();
 
@@ -49,6 +62,15 @@ export default function SiteSettings() {
   const [workTypeBusy, setWorkTypeBusy] = useState(false);
   const [editingWorkTypeId, setEditingWorkTypeId] = useState<string | null>(null);
   const [editWorkTypeName, setEditWorkTypeName] = useState("");
+
+  // Project Sources (Phase 20, 2026-08-24) -- same list-management state
+  // shape as Work Types above, one level up (projects, not tasks).
+  const [projectSources, setProjectSources] = useState<ProjectSourceRow[]>([]);
+  const [projectSourcesLoading, setProjectSourcesLoading] = useState(true);
+  const [newProjectSourceName, setNewProjectSourceName] = useState("");
+  const [projectSourceBusy, setProjectSourceBusy] = useState(false);
+  const [editingProjectSourceId, setEditingProjectSourceId] = useState<string | null>(null);
+  const [editProjectSourceName, setEditProjectSourceName] = useState("");
 
   // Global historical-locking switch (Sandra, 2026-08-14): "we're still
   // playing around with the system" -- while off, Utilization/Day Planner
@@ -212,9 +234,113 @@ export default function SiteSettings() {
     loadWorkTypes();
   }
 
+  async function loadProjectSources() {
+    setProjectSourcesLoading(true);
+    const { data } = await supabase.from("project_sources").select("id,name,sort_order,is_active").order("sort_order");
+    setProjectSources((data as ProjectSourceRow[]) ?? []);
+    setProjectSourcesLoading(false);
+  }
+
+  async function addProjectSource() {
+    const name = newProjectSourceName.trim();
+    if (!name) return;
+    setProjectSourceBusy(true);
+    const nextSortOrder = projectSources.length > 0 ? Math.max(...projectSources.map((s) => s.sort_order)) + 1 : 1;
+    const { error } = await supabase.from("project_sources").insert({ name, sort_order: nextSortOrder });
+    setProjectSourceBusy(false);
+    if (error) {
+      window.alert(`Couldn't add: ${error.message}`);
+      return;
+    }
+    setNewProjectSourceName("");
+    loadProjectSources();
+  }
+
+  function startEditProjectSource(s: ProjectSourceRow) {
+    setEditingProjectSourceId(s.id);
+    setEditProjectSourceName(s.name);
+  }
+
+  async function saveProjectSourceRename(id: string) {
+    const name = editProjectSourceName.trim();
+    if (!name) return;
+    setProjectSourceBusy(true);
+    const { error } = await supabase.from("project_sources").update({ name }).eq("id", id);
+    setProjectSourceBusy(false);
+    if (error) {
+      window.alert(`Couldn't rename: ${error.message}`);
+      return;
+    }
+    setEditingProjectSourceId(null);
+    loadProjectSources();
+  }
+
+  async function toggleProjectSourceActive(s: ProjectSourceRow) {
+    setProjectSourceBusy(true);
+    const { error } = await supabase.from("project_sources").update({ is_active: !s.is_active }).eq("id", s.id);
+    setProjectSourceBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadProjectSources();
+  }
+
+  async function moveProjectSource(s: ProjectSourceRow, direction: "up" | "down") {
+    const idx = projectSources.findIndex((x) => x.id === s.id);
+    const neighborIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (idx === -1 || neighborIdx < 0 || neighborIdx >= projectSources.length) return;
+    const neighbor = projectSources[neighborIdx];
+    setProjectSourceBusy(true);
+    const [{ error: e1 }, { error: e2 }] = await Promise.all([
+      supabase.from("project_sources").update({ sort_order: neighbor.sort_order }).eq("id", s.id),
+      supabase.from("project_sources").update({ sort_order: s.sort_order }).eq("id", neighbor.id),
+    ]);
+    setProjectSourceBusy(false);
+    if (e1 || e2) {
+      window.alert(`Couldn't reorder: ${(e1 ?? e2)?.message}`);
+      return;
+    }
+    loadProjectSources();
+  }
+
+  // Delete: only allowed when no project currently references this
+  // Source, same convention/reasoning as deleteWorkType above.
+  async function deleteProjectSource(s: ProjectSourceRow) {
+    setProjectSourceBusy(true);
+    const { count, error: countError } = await supabase
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("source_id", s.id);
+    if (countError) {
+      setProjectSourceBusy(false);
+      window.alert(`Couldn't check usage: ${countError.message}`);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setProjectSourceBusy(false);
+      window.alert(
+        `Can't delete -- ${count} project${count === 1 ? "" : "s"} still use this Source. Deactivate it instead, or reassign those projects first.`
+      );
+      return;
+    }
+    if (!window.confirm(`Delete "${s.name}"? This can't be undone.`)) {
+      setProjectSourceBusy(false);
+      return;
+    }
+    const { error } = await supabase.from("project_sources").delete().eq("id", s.id);
+    setProjectSourceBusy(false);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadProjectSources();
+  }
+
   useEffect(() => {
     if (me?.access_level === "full") {
       loadWorkTypes();
+      loadProjectSources();
       loadHistoricalLocking();
     }
   }, [me?.access_level]);
@@ -407,6 +533,173 @@ export default function SiteSettings() {
               border: "none",
               opacity: !newWorkTypeName.trim() ? 0.6 : 1,
               cursor: !newWorkTypeName.trim() ? "default" : "pointer",
+            }}
+          >
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>Project Sources</div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+              The list of Source options offered on every project (Projects &amp; the Portfolio Dashboard's Source
+              filter/breakdown). Tracks how/why a project originated -- separate from Category, which classifies the
+              training type. Reorder with the arrows, rename inline, deactivate a source you no longer want offered on
+              NEW projects, or delete one outright if no project uses it.
+            </div>
+          </div>
+        </div>
+        <table className="data-table" style={{ width: "100%", maxWidth: 420 }}>
+          <thead>
+            <tr>
+              <th style={{ width: 40 }} />
+              <th>Name</th>
+              <th style={{ width: 90 }}>Status</th>
+              <th style={{ width: 100 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {projectSourcesLoading && (
+              <tr>
+                <td colSpan={4} style={{ color: "var(--muted)" }}>Loading…</td>
+              </tr>
+            )}
+            {!projectSourcesLoading && projectSources.length === 0 && (
+              <tr>
+                <td colSpan={4} style={{ color: "var(--muted)" }}>None yet.</td>
+              </tr>
+            )}
+            {projectSources.map((s, idx) => {
+              const isEditing = editingProjectSourceId === s.id;
+              return (
+                <tr key={s.id}>
+                  <td>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <button
+                        onClick={() => moveProjectSource(s, "up")}
+                        disabled={projectSourceBusy || idx === 0}
+                        title="Move up"
+                        style={{ background: "none", border: "none", cursor: idx === 0 ? "default" : "pointer", opacity: idx === 0 ? 0.3 : 1, padding: 0 }}
+                      >
+                        <ArrowUp size={13} />
+                      </button>
+                      <button
+                        onClick={() => moveProjectSource(s, "down")}
+                        disabled={projectSourceBusy || idx === projectSources.length - 1}
+                        title="Move down"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: idx === projectSources.length - 1 ? "default" : "pointer",
+                          opacity: idx === projectSources.length - 1 ? 0.3 : 1,
+                          padding: 0,
+                        }}
+                      >
+                        <ArrowDown size={13} />
+                      </button>
+                    </div>
+                  </td>
+                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>
+                    {isEditing ? (
+                      <input
+                        value={editProjectSourceName}
+                        onChange={(e) => setEditProjectSourceName(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
+                      />
+                    ) : (
+                      s.name
+                    )}
+                  </td>
+                  <td>
+                    <span className={`status-pill ${s.is_active ? "success" : "neutral"}`}>{s.is_active ? "Active" : "Deactivated"}</span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {isEditing ? (
+                        <>
+                          <button
+                            onClick={() => saveProjectSourceRename(s.id)}
+                            disabled={projectSourceBusy}
+                            title="Save"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--success-text)" }}
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            onClick={() => setEditingProjectSourceId(null)}
+                            title="Cancel"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}
+                          >
+                            <X size={14} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => startEditProjectSource(s)}
+                            title="Rename"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--navy)" }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            onClick={() => toggleProjectSourceActive(s)}
+                            disabled={projectSourceBusy}
+                            title={s.is_active ? "Deactivate" : "Reactivate"}
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: s.is_active ? "var(--danger-text)" : "var(--success-text)" }}
+                          >
+                            {s.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                          </button>
+                          <button
+                            onClick={() => deleteProjectSource(s)}
+                            disabled={projectSourceBusy}
+                            title="Delete (only if unused)"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--danger-text)" }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 480 }}>
+          <input
+            value={newProjectSourceName}
+            onChange={(e) => setNewProjectSourceName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addProjectSource();
+            }}
+            placeholder="New source name"
+            spellCheck={false}
+            autoComplete="off"
+            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+          />
+          <button
+            onClick={addProjectSource}
+            disabled={projectSourceBusy || !newProjectSourceName.trim()}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#fff",
+              background: "var(--navy)",
+              border: "none",
+              opacity: !newProjectSourceName.trim() ? 0.6 : 1,
+              cursor: !newProjectSourceName.trim() ? "default" : "pointer",
             }}
           >
             <Plus size={14} />

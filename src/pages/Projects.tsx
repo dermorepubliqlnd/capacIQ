@@ -95,11 +95,24 @@ interface WorkTypeOption {
   sort_order: number;
 }
 
-interface ProjectRow {
+// Project Source (Phase 20, 2026-08-24) -- admin-configurable lookup for
+// "how/why a project originated" (Intake, L&D Initiative, ...), managed
+// on Site Settings same as Work Types. Separate dimension from Category
+// (which classifies training TYPE). Fetched unfiltered for the same
+// historical-label reason as WorkTypeOption above.
+interface ProjectSourceOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface ProjectRow {
   id: string;
   name: string;
   owner_id: string | null;
   category: string | null;
+  source_id: string | null;
   priority: "Low" | "Medium" | "High" | null;
   status: string | null;
   phase: string | null;
@@ -115,7 +128,7 @@ interface ProjectRow {
   wbs_status: WbsStatus;
 }
 
-interface TaskRow {
+export interface TaskRow {
   id: string;
   project_id: string;
   parent_task_id: string | null;
@@ -171,7 +184,7 @@ interface ExtensionRequestLite {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "effort_level", "start_date", "end_date", "wbs_status"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "source", "effort_level", "start_date", "end_date", "wbs_status"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
 // timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
@@ -236,7 +249,7 @@ function toDateKey(date: Date): string {
 
 // Inclusive count of working days between two dates (start and end both
 // count if they themselves are working days). Returns 0 if end < start.
-function countWorkingDays(start: Date, end: Date, holidayDates: Set<string>): number {
+export function countWorkingDays(start: Date, end: Date, holidayDates: Set<string>): number {
   if (end < start) return 0;
   let count = 0;
   const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
@@ -305,7 +318,7 @@ function loadDismissedDoneSuggestions(storageKey: string): Set<string> {
 //      excluding weekends and Holiday-calendar dates): within 10 points
 //      behind (or ahead) is On track (green), 11-20 points behind is At
 //      risk (yellow), more than 20 points behind is Off track (red).
-function healthOf(
+export function healthOf(
   p: ProjectRow,
   allTasks: TaskRow[],
   holidayDates: Set<string>
@@ -355,7 +368,7 @@ const TASK_COMPLETION_FACTOR: Record<string, number> = {
   Done: 1,
 };
 
-function actualProgress(projectId: string, allTasks: TaskRow[]): number | null {
+export function actualProgress(projectId: string, allTasks: TaskRow[]): number | null {
   const projectTasks = allTasks.filter((t) => t.project_id === projectId);
   if (projectTasks.length === 0) return null;
   let numerator = 0;
@@ -778,6 +791,7 @@ export default function Projects() {
   // still resolves to its historical label here; only the WBS Planning
   // picker itself narrows this down to is_active for new selections.
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
+  const [projectSources, setProjectSources] = useState<ProjectSourceOption[]>([]);
   // Manager-chain data for the new validation-authority check below
   // (2026-08-20) -- deliberately a SEPARATE, unfiltered fetch (includes
   // inactive people) from `people` above, which stays active-only for
@@ -884,7 +898,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }, { data: projectSourceData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -906,6 +920,7 @@ export default function Projects() {
       // Deletion archive (2026-08-14c) -- see DeletedSpentHourRow above.
       supabase.from("deleted_project_spent_hours_archive").select("project_id,person_id,hours"),
       supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("project_sources").select("id,name,is_active,sort_order").order("sort_order"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -918,6 +933,7 @@ export default function Projects() {
     setTimeEntries((timeEntryData as TimeEntryRow[]) ?? []);
     setDeletedSpentHours((delSpentData as DeletedSpentHourRow[]) ?? []);
     setWorkTypes((workTypeData as WorkTypeOption[]) ?? []);
+    setProjectSources((projectSourceData as ProjectSourceOption[]) ?? []);
     const nextNoteCounts: Record<string, number> = {};
     for (const row of (noteData as { project_id: string }[]) ?? []) {
       nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
@@ -1883,6 +1899,34 @@ export default function Projects() {
             onCommit={(v) => updateProject(p.id, { category: v || null })}
           />
         ),
+      },
+      {
+        // Phase 20 (2026-08-24): Source -- admin-configurable via Site
+        // Settings (projectSources), mirrors Category's own InlineSelect
+        // shape but keyed by source_id (a real FK) rather than a plain
+        // text value, since Source's option list is DB-backed and can
+        // change over time.
+        key: "source",
+        label: "Source",
+        defaultWidth: 160,
+        maxWidth: 220,
+        render: (p) => {
+          const activeSourceOptions = projectSources.filter((s) => s.is_active || s.id === p.source_id).map((s) => s.name);
+          const currentName = projectSources.find((s) => s.id === p.source_id)?.name ?? "";
+          return (
+            <InlineSelect
+              value={currentName}
+              editable={canEditProject(p)}
+              allowEmpty
+              options={activeSourceOptions}
+              renderReadOnly={() => (currentName ? <span className="status-pill neutral">{currentName}</span> : "—")}
+              onCommit={(v) => {
+                const match = projectSources.find((s) => s.name === v);
+                updateProject(p.id, { source_id: match?.id ?? null });
+              }}
+            />
+          );
+        },
       },
       {
         key: "effort_level",
