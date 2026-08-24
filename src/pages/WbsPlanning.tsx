@@ -1494,8 +1494,26 @@ export default function WbsPlanning() {
     // otherwise it defaults onto that same day, ready for real hours to
     // be typed in.
     if (entryFull) defaultStartFull = packedFullEffortNextStart(entryFull.end, 0, roots);
-    const entryStandard = lastResolvedEntry(roots, "standard");
-    if (entryStandard) defaultStartStandard = nextWorkingDayAfter(entryStandard.end, holidaySet);
+    // Phase 22 bugfix (2026-08-24, Sandra: "How come ... the 4th task
+    // [is placed] to start on Sept 2 when there is still available hours
+    // remaining on Sept 1 ... given the overlap in the 7.5 hours?"):
+    // Capacity-Based used to seed a brand-new task's start_date_standard
+    // floor via nextWorkingDayAfter(previous sibling's end) -- ALWAYS the
+    // next calendar day, with zero regard for whether that predecessor's
+    // own day still had free capacity left. Unlike Full Effort (which has
+    // no real per-person queue engine and needs the local
+    // packedFullEffortNextStart heuristic above), Capacity-Based already
+    // has a genuine one -- buildForwardSchedule -- which does correct
+    // real per-day free-capacity packing AND breaks ties by this
+    // project's own row order (sort_order) once effectiveStart floors
+    // tie. The fix is to stop artificially advancing this floor at all:
+    // every no-dependency sibling just anchors to the same starting
+    // point (this project's own anchor date), and the real scheduler
+    // (buildForwardSchedule, read via computeEntry's "standard" branch)
+    // does 100% of the actual packing/placement work from there. See
+    // [[project_capaciq_scheduler_tiebreak_fix]] for the same fix applied
+    // to the Refresh dates button, which had this exact bug independently
+    // duplicated in its own re-seeding logic.
     const defaultDue = project.end_date ?? today;
     const { error } = await supabase.from("tasks").insert({
       project_id: project.id,
@@ -1531,8 +1549,10 @@ export default function WbsPlanning() {
     // Same Phase 20 packing as addTopLevelTask above, scoped to this
     // parent's own children.
     if (siblingEntryFull) defaultStartFull = packedFullEffortNextStart(siblingEntryFull.end, 0, siblings);
-    const siblingEntryStandard = lastResolvedEntry(siblings, "standard");
-    if (siblingEntryStandard) defaultStartStandard = nextWorkingDayAfter(siblingEntryStandard.end, holidaySet);
+    // Phase 22 bugfix -- same fix as addTopLevelTask above, scoped to
+    // this parent's own children: no longer advances past a sibling's
+    // end for Capacity-Based, since the real scheduler already packs
+    // correctly once floors don't artificially skip ahead.
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
@@ -1767,8 +1787,26 @@ export default function WbsPlanning() {
           }
           if (latest) overrideStart = latest;
         } else if (!depIds.length && isAuto) {
-          if (chainPrev) overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
-          else if (anchorStart) overrideStart = anchorStart;
+          if (mode === "standard") {
+            // Phase 22 bugfix (see [[project_capaciq_scheduler_tiebreak_fix]]):
+            // Refresh dates independently duplicated the same
+            // day-after-predecessor advancement that addTopLevelTask/
+            // addSubtask used to have -- forcing every no-dependency
+            // sibling onto the NEXT calendar day regardless of same-day
+            // capacity left on the predecessor's own day. Capacity-Based
+            // already has a real packing-aware engine (buildForwardSchedule,
+            // via computeEntry/entryWithOverride's "standard" branch
+            // above), so every such sibling anchors to the SAME starting
+            // point instead (the chain's own anchor date, propagated
+            // forward via chainPrev.start rather than chainPrev.end) and
+            // lets that engine's own sort_order tiebreak decide real
+            // placement/order.
+            if (anchorStart) overrideStart = anchorStart;
+            else if (chainPrev) overrideStart = chainPrev.start;
+          } else {
+            if (chainPrev) overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
+            else if (anchorStart) overrideStart = anchorStart;
+          }
         }
         const entry = entryWithOverride(t, overrideStart);
         if (overrideStart && entry) (patchFor(t.id) as Record<string, unknown>)[startField] = overrideStart;
@@ -1884,7 +1922,23 @@ export default function WbsPlanning() {
   function softIssues(): string[] {
     const issues: string[] = [];
     const noName = orderedTasks.filter((t) => !t.name || !t.name.trim() || t.name === "Untitled task" || t.name === "Untitled sub-task");
-    const noEffort = orderedTasks.filter((t) => !t.effort && !(t.depth === 0 && hasChildren(t.id)));
+    // Phase 24 bugfix (2026-08-24, Sandra: "this should not be an error
+    // too since it should auto"): this used to check `!t.effort`, but
+    // `effort` is a DB-trigger-derived column (derive_effort_level, see
+    // phase12_migration.sql) that only gets recomputed when a task's
+    // estimated_hours patch actually round-trips to Postgres. Since
+    // saveTaskField only STAGES edits into pendingTaskPatches now (staged
+    // Save flow, see [[project_capaciq_phase6_baseline_approval]]) rather
+    // than writing instantly, the local `effort` field stays stale --
+    // often null on a brand-new task -- right up until Save's own
+    // flushPendingEdits() round-trip, even after hours have been typed.
+    // softIssues() runs BEFORE that flush, so it was flagging tasks that
+    // WILL derive a correct Effort the instant Save actually writes them.
+    // The real precondition is estimated_hours being set at all (NULL
+    // hours -> NULL effort; any other value, including 0, always derives
+    // to some level) -- so check that instead of the lagging derived
+    // column.
+    const noEffort = orderedTasks.filter((t) => t.estimated_hours == null && !(t.depth === 0 && hasChildren(t.id)));
     const conflicted = orderedTasks.filter((t) => dependencyConflict(t, "full_capacity") || dependencyConflict(t, "standard"));
     if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
     if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
