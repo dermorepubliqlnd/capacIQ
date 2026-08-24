@@ -1809,13 +1809,28 @@ export default function WbsPlanning() {
       const flushed = await flushPendingEdits();
       if (!flushed) return;
 
+      // Bugfix (2026-08-24, found in post-ship audit): every write in this
+      // loop used to be fire-and-forget -- if one task's date write failed
+      // partway through (RLS hiccup, network blip), the screen still
+      // showed the new dates via setTasks while the DB silently kept the
+      // old ones. This is the exact "silent bad save" failure mode the
+      // 2026-08-20 quality audit flagged as the single most dangerous
+      // pattern in the app (Day Planner's edit/clear-hours had the same
+      // bug and was fixed then) -- it just hadn't been checked here.
+      // Every write below now surfaces its error and stops the loop
+      // rather than continuing to optimistically update local state.
       const batchId = crypto.randomUUID();
       for (const t of orderedTasks) {
         const chosen = chosenChain.get(t.id);
         if (!chosen) continue;
 
         const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
-        await supabase.from("tasks").update(patch).eq("id", t.id);
+        const { error: taskDateError } = await supabase.from("tasks").update(patch).eq("id", t.id);
+        if (taskDateError) {
+          await alert(`Couldn't save "${t.name}"'s dates: ${taskDateError.message}. Stopping here -- reloading to show what actually saved.`);
+          await loadAll();
+          return;
+        }
         setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
 
         const snapshotRows = MODES.map((m) => ({ m, entry: chainByMode[m].get(t.id) }))
@@ -1832,9 +1847,22 @@ export default function WbsPlanning() {
             computed_due_date: entry.end,
             computed_by: me?.id ?? null,
           }));
-        if (snapshotRows.length) await supabase.from("task_planning_snapshots").insert(snapshotRows);
+        if (snapshotRows.length) {
+          const { error: snapshotError } = await supabase.from("task_planning_snapshots").insert(snapshotRows);
+          if (snapshotError) {
+            // Lower stakes than the date write above (this only feeds the
+            // Audit Trail's history, not live dates) -- warn but don't
+            // abort the rest of the Save.
+            console.error("Couldn't record planning snapshot for task", t.id, snapshotError);
+          }
+        }
       }
-      await supabase.from("projects").update({ scoping_effort_mode: activeMode }).eq("id", project.id);
+      const { error: scopingModeError } = await supabase.from("projects").update({ scoping_effort_mode: activeMode }).eq("id", project.id);
+      if (scopingModeError) {
+        await alert(`Timelines were saved, but the project's Scoping Effort setting couldn't be updated: ${scopingModeError.message}`);
+        await loadAll();
+        return;
+      }
 
       if (wasBaselineLocked) {
         const { error } = await supabase.rpc("record_wbs_edit", { p_project_id: project.id });

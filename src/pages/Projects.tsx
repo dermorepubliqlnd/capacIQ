@@ -1364,7 +1364,15 @@ export default function Projects() {
       alert(`Couldn't restore: ${error.message}`);
       return;
     }
-    await supabase.from("tasks").update({ is_archived: false, archived_at: null }).eq("project_id", id);
+    // Bugfix (2026-08-24, found in post-ship audit): this cascade to the
+    // project's own tasks was fire-and-forget -- if it failed, the
+    // project would show as restored/active while its tasks silently
+    // stayed archived (missing from Table/Board/WBS with no visible
+    // error). Now surfaces the failure instead of hiding it.
+    const { error: taskError } = await supabase.from("tasks").update({ is_archived: false, archived_at: null }).eq("project_id", id);
+    if (taskError) {
+      await alert(`Project restored, but its tasks couldn't be restored: ${taskError.message}. Try restoring again, or check the tasks directly.`);
+    }
     loadArchived();
     loadAll();
   }
@@ -1433,7 +1441,13 @@ export default function Projects() {
       alert(`Couldn't archive: ${error.message}`);
       return;
     }
-    await supabase.from("tasks").update({ is_archived: true, archived_at: now }).in("project_id", ids);
+    // Bugfix (2026-08-24, found in post-ship audit): same cascade gap as
+    // restoreProject above -- a failure here used to leave tasks quietly
+    // active under a project that now shows archived.
+    const { error: taskError } = await supabase.from("tasks").update({ is_archived: true, archived_at: now }).in("project_id", ids);
+    if (taskError) {
+      await alert(`Project${ids.length > 1 ? "s" : ""} archived, but the tasks in ${ids.length > 1 ? "them" : "it"} couldn't be archived: ${taskError.message}. Try again, or check the tasks directly.`);
+    }
     setSelectedProjectIds((prev) => prev.filter((id) => !ids.includes(id)));
     loadAll();
   }
