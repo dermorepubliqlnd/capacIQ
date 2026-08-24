@@ -18,6 +18,12 @@
   --available-bg: #f1f8ec;
   --available-text: #6a9f3f;
   --hover-bg: #eef2f5;
+  /* Added for the Dashboard's Needs Attention row + stat-card tone system
+     -- light tinted card fills matching --success-bg/--warning-bg/
+     --danger-bg's own pattern, for the two tones that didn't have one yet. */
+  --accent-bg: #eaf2fb;
+  --purple-bg: #f3ecfb;
+  --purple-text: #7b4fb0;
   --radius-sm: 3px;
   --radius-md: 8px;
   /* Round 1 of WBS UI redesign (2026-07-29): dedicated radius for
@@ -114,24 +120,26 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; }
 
 .metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
-/* Icon + label share one row (Sandra: "make the icons and card header in
-   one line") instead of the icon sitting on its own row above the label --
-   one fewer stacked line per card, and the trailing "sub" caption line
-   (e.g. "In current view") was dropped entirely as redundant, matching the
-   Portfolio Dashboard mockup Sandra shared. */
-.metric-card-header { display: flex; align-items: center; gap: 8px; }
+/* Icon + label/value text stack sit side by side in one row (Sandra:
+   "make the icons and card header in one line"; then, per her mockup
+   comment, "remove the circle background in the icons" and size the icon
+   to cover the label+value stack's own height) -- no circle badge, just a
+   bare flat colored SVG glyph the height of the two lines beside it. The
+   trailing "sub" caption line (e.g. "In current view") was dropped
+   entirely as redundant, matching the mockup. */
+.metric-card-row { display: flex; align-items: center; gap: 10px; }
 .metric-icon { width: 28px; height: 28px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; background: var(--hover-bg); color: var(--accent); }
 .metric-icon.teal { background: var(--success-bg); color: var(--success-text); }
 .metric-icon.warning { background: var(--warning-bg); color: var(--warning-text); }
 .metric-icon.danger { background: var(--danger-bg); color: var(--danger-text); }
-/* Round badge variant (mockup uses a filled circle, not a rounded square)
-   -- colored the same way as .metric-icon per tone, just circular. */
-.metric-icon-circle { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--hover-bg); color: var(--accent); }
-.metric-icon-circle.accent { background: var(--accent-bg, var(--hover-bg)); color: var(--accent); }
-.metric-icon-circle.teal { background: var(--success-bg); color: var(--success-text); }
-.metric-icon-circle.warning { background: var(--warning-bg); color: var(--warning-text); }
-.metric-icon-circle.danger { background: var(--danger-bg); color: var(--danger-text); }
-.metric-icon-circle.neutral { background: var(--hover-bg); color: var(--muted); }
+/* Flat/no-background icon variant, colored by tone, no circle -- matches
+   the Needs Attention row's own icon treatment below. */
+.metric-icon-flat { display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--accent); }
+.metric-icon-flat.accent { color: var(--accent); }
+.metric-icon-flat.teal { color: var(--success-text); }
+.metric-icon-flat.warning { color: var(--warning-text); }
+.metric-icon-flat.danger { color: var(--danger-text); }
+.metric-icon-flat.neutral { color: var(--muted); }
 .metric-label {
   font-family: var(--font);
   font-size: var(--font-caption);

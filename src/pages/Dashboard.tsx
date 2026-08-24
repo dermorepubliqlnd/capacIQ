@@ -288,11 +288,13 @@ function StatCard({
 }) {
   return (
     <div className="metric-card" style={placeholder ? { opacity: 0.7, borderStyle: "dashed" } : undefined}>
-      <div className="metric-card-header">
-        <span className={`metric-icon-circle ${tone}`}>{icon}</span>
-        <p className="metric-label">{label}</p>
+      <div className="metric-card-row">
+        <span className={`metric-icon-flat ${tone}`}>{icon}</span>
+        <div>
+          <p className="metric-label">{label}</p>
+          <p className={`metric-value metric-value-lg metric-value-${tone}`}>{value}</p>
+        </div>
       </div>
-      <p className={`metric-value metric-value-lg metric-value-${tone}`}>{value}</p>
     </div>
   );
 }
@@ -310,11 +312,23 @@ function AttentionChip({
   label: string;
   to: string;
 }) {
+  // Flat (no circle-background) icon, colored per tone, and the whole
+  // chip gets a light tinted card fill in that same tone -- per Sandra's
+  // mockup ("follow the light card fill color too") -- rather than every
+  // chip sharing one plain white surface with only the icon/count colored.
+  // Sizing bumped ~1.5x across the board ("increase all objects by .5
+  // more") from the original compact chip.
   const TONE_COLOR: Record<string, string> = {
     danger: "var(--danger-text)",
     warning: "var(--warning-text)",
     accent: "var(--accent)",
-    purple: "#7b4fb0",
+    purple: "var(--purple-text)",
+  };
+  const TONE_BG: Record<string, string> = {
+    danger: "var(--danger-bg)",
+    warning: "var(--warning-bg)",
+    accent: "var(--accent-bg)",
+    purple: "var(--purple-bg)",
   };
   return (
     <Link
@@ -322,20 +336,20 @@ function AttentionChip({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 8,
-        padding: "8px 12px",
-        border: "1px solid var(--border)",
+        gap: 12,
+        padding: "13px 18px",
+        border: "none",
         borderRadius: "var(--radius-md)",
-        background: "var(--surface)",
+        background: TONE_BG[tone],
         textDecoration: "none",
         flex: "1 1 180px",
         minWidth: 170,
       }}
     >
       <span style={{ color: TONE_COLOR[tone], display: "flex" }}>{icon}</span>
-      <span style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{count}</span>
-      <span style={{ fontSize: 11, color: "var(--text-secondary)", flex: 1 }}>{label}</span>
-      <ChevronRight size={13} color="var(--muted)" />
+      <span style={{ fontSize: 22, fontWeight: 700, color: TONE_COLOR[tone] }}>{count}</span>
+      <span style={{ fontSize: 16, color: "var(--text-secondary)", flex: 1 }}>{label}</span>
+      <ChevronRight size={19} color="var(--muted)" />
     </Link>
   );
 }
@@ -611,13 +625,13 @@ export default function Dashboard() {
 
       {/* Top stat strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
-        <StatCard icon={<Folder size={15} />} tone="accent" label="Total Projects" value={stats.total} />
-        <StatCard icon={<Activity size={15} />} tone="accent" label="Active" value={stats.active} />
-        <StatCard icon={<CheckCircle2 size={15} />} tone="teal" label="Completed" value={stats.completed} />
-        <StatCard icon={<PauseCircle size={15} />} tone="warning" label="On Hold" value={stats.onHold} />
-        <StatCard icon={<AlertTriangle size={15} />} tone="warning" label="At Risk" value={stats.atRisk} />
-        <StatCard icon={<Clock3 size={15} />} tone="danger" label="Overdue" value={stats.overdue} />
-        <StatCard icon={<Package size={15} />} tone="neutral" label="Materials Output" value="—" placeholder />
+        <StatCard icon={<Folder size={26} />} tone="accent" label="Total Projects" value={stats.total} />
+        <StatCard icon={<Activity size={26} />} tone="accent" label="Active" value={stats.active} />
+        <StatCard icon={<CheckCircle2 size={26} />} tone="teal" label="Completed" value={stats.completed} />
+        <StatCard icon={<PauseCircle size={26} />} tone="warning" label="On Hold" value={stats.onHold} />
+        <StatCard icon={<AlertTriangle size={26} />} tone="warning" label="At Risk" value={stats.atRisk} />
+        <StatCard icon={<Clock3 size={26} />} tone="danger" label="Overdue" value={stats.overdue} />
+        <StatCard icon={<Package size={26} />} tone="neutral" label="Materials Output" value="—" placeholder />
       </div>
 
       {/* Row 2: 3 donuts */}
@@ -662,11 +676,11 @@ export default function Dashboard() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Needs Attention</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-          <AttentionChip icon={<ShieldQuestion size={16} />} tone="purple" count={needsAttention.baselinePending} label="Baseline approvals pending" to="/projects" />
-          <AttentionChip icon={<Clock3 size={16} />} tone="accent" count={needsAttention.extPending} label="Extension requests pending" to="/extension-requests" />
-          <AttentionChip icon={<AlertTriangle size={16} />} tone="warning" count={needsAttention.atRisk} label="At risk" to="/projects" />
-          <AttentionChip icon={<Ban size={16} />} tone="danger" count={needsAttention.overdue} label="Overdue" to="/projects" />
-          <AttentionChip icon={<CalendarClock size={16} />} tone="accent" count={needsAttention.dueSoon} label="Due in next 7 days" to="/projects" />
+          <AttentionChip icon={<ShieldQuestion size={24} />} tone="purple" count={needsAttention.baselinePending} label="Baseline approvals pending" to="/projects" />
+          <AttentionChip icon={<Clock3 size={24} />} tone="accent" count={needsAttention.extPending} label="Extension requests pending" to="/extension-requests" />
+          <AttentionChip icon={<AlertTriangle size={24} />} tone="warning" count={needsAttention.atRisk} label="At risk" to="/projects" />
+          <AttentionChip icon={<Ban size={24} />} tone="danger" count={needsAttention.overdue} label="Overdue" to="/projects" />
+          <AttentionChip icon={<CalendarClock size={24} />} tone="accent" count={needsAttention.dueSoon} label="Due in next 7 days" to="/projects" />
         </div>
       </div>
 
