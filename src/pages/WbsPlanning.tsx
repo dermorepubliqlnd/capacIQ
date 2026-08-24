@@ -93,6 +93,12 @@ interface TaskRow {
   // that can actually set it -- the main Tasks page shows it read-only,
   // same governance split as every other structural field here.
   work_type_id: string | null;
+  // Phase 21 (2026-08-24): Materials Output. Sandra: track what kind of
+  // material a task produced (admin-configurable via output_types, same
+  // pattern as Work Type) and how many units, on every task -- feeds the
+  // Portfolio Dashboard's Materials Output card + breakdown chart.
+  output_type_id: string | null;
+  output_count: number | null;
   is_archived: boolean;
   sort_order: number | null;
 }
@@ -102,6 +108,12 @@ interface WorkTypeOption {
   is_active: boolean;
   sort_order: number;
   is_fixed_schedule: boolean;
+}
+interface OutputTypeOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
 }
 interface PersonRow {
   id: string;
@@ -399,6 +411,7 @@ export default function WbsPlanning() {
   // is_active for NEW picks, same convention as `people`/is_active vs.
   // whatever a task's own historical assignee_id already points to.
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
+  const [outputTypes, setOutputTypes] = useState<OutputTypeOption[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   // Cross-project data, fetched ONLY for the utilization heat-map -- a
@@ -514,12 +527,12 @@ export default function WbsPlanning() {
     // pass silent=true to skip that full-page loading flash entirely --
     // state still updates underneath, but the page never unmounts.
     if (!silent) setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }] = await Promise.all([
+    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }, { data: ots }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select(
-          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,manual_end_date,current_due_date,estimated_hours,effort,work_type_id,is_archived,sort_order"
+          "id,project_id,parent_task_id,name,assignee_id,status,start_date,start_date_full,start_date_standard,start_full_auto,start_standard_auto,manual_end_date,current_due_date,estimated_hours,effort,work_type_id,output_type_id,output_count,is_archived,sort_order"
         )
         .eq("project_id", projectId)
         .eq("is_archived", false)
@@ -530,6 +543,7 @@ export default function WbsPlanning() {
       supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order,work_type_id").eq("is_archived", false),
       supabase.from("projects").select("id,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
+      supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
     // Phase 21 (2026-08-24): activeMode is now a fixed constant
@@ -542,6 +556,7 @@ export default function WbsPlanning() {
     setAllTasks((allTks as UtilTaskRow[]) ?? []);
     setAllProjects((allProjs as UtilProjectRow[]) ?? []);
     setWorkTypes((wts as WorkTypeOption[]) ?? []);
+    setOutputTypes((ots as OutputTypeOption[]) ?? []);
 
     // Dependencies are same-project only (v1), so fetched as a follow-up
     // query scoped to this project's own task ids, once they're known --
@@ -3540,6 +3555,12 @@ export default function WbsPlanning() {
                   <th rowSpan={2} style={{ width: 90 }}>
                     Effort
                   </th>
+                  <th rowSpan={2} style={{ width: 140 }}>
+                    Output Type
+                  </th>
+                  <th rowSpan={2} style={{ width: 90 }}>
+                    Output Count
+                  </th>
                   <th rowSpan={2} style={{ width: 150 }}>
                     Assignee
                   </th>
@@ -3577,7 +3598,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={15} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={17} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -3734,6 +3755,32 @@ export default function WbsPlanning() {
                             )}
                           </span>
                         )}
+                      </td>
+                      <td>
+                        {(() => {
+                          const currentOt = outputTypes.find((o) => o.id === t.output_type_id);
+                          const pickableOt = outputTypes.filter((o) => o.is_active || o.id === t.output_type_id);
+                          return (
+                            <InlineSelect
+                              value={currentOt?.name ?? ""}
+                              editable={rowEditable}
+                              allowEmpty
+                              emptyLabel="Pick output type"
+                              options={pickableOt.map((o) => o.name)}
+                              onCommit={(v) => {
+                                const match = pickableOt.find((o) => o.name === v);
+                                saveTaskField(t.id, { output_type_id: match?.id ?? null });
+                              }}
+                            />
+                          );
+                        })()}
+                      </td>
+                      <td>
+                        <InlineNumber
+                          value={t.output_count}
+                          editable={rowEditable}
+                          onCommit={(v) => saveTaskField(t.id, { output_count: v })}
+                        />
                       </td>
                       <td>
                         {isParent ? (

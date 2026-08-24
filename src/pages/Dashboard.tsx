@@ -51,6 +51,12 @@ interface SourceRow {
   is_active: boolean;
   sort_order: number;
 }
+interface OutputTypeRow {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
 interface ExtReqLite {
   id: string;
   status: string;
@@ -359,6 +365,7 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const [extReqs, setExtReqs] = useState<ExtReqLite[]>([]);
   const [baselineReqs, setBaselineReqs] = useState<BaselineReqLite[]>([]);
@@ -377,6 +384,7 @@ export default function Dashboard() {
         { data: taskData },
         { data: peopleData },
         { data: sourceData },
+        { data: outputTypeData },
         { data: holidayData },
         { data: extReqData },
         { data: baselineReqData },
@@ -387,6 +395,7 @@ export default function Dashboard() {
         supabase.from("tasks").select("*").eq("is_archived", false),
         supabase.from("people").select("id,name,color").eq("is_active", true),
         supabase.from("project_sources").select("id,name,is_active,sort_order").order("sort_order"),
+        supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
         supabase.from("holidays").select("date"),
         supabase.from("extension_requests").select("id,status"),
         supabase.from("project_baseline_requests").select("id,status,project_id"),
@@ -397,6 +406,7 @@ export default function Dashboard() {
       setTasks((taskData as TaskRow[]) ?? []);
       setPeople((peopleData as PersonRow[]) ?? []);
       setSources((sourceData as SourceRow[]) ?? []);
+      setOutputTypes((outputTypeData as OutputTypeRow[]) ?? []);
       setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
       setExtReqs((extReqData as ExtReqLite[]) ?? []);
       setBaselineReqs((baselineReqData as BaselineReqLite[]) ?? []);
@@ -512,6 +522,41 @@ export default function Dashboard() {
     if (uncategorized) rows.push({ label: "Uncategorized", value: uncategorized, tone: "neutral" });
     return rows.sort((a, b) => b.value - a.value);
   }, [filteredProjects]);
+
+  // Category moved from its own row-3 bar list into a 4th row-2 donut
+  // (Sandra: "moving the category breakdown into the 2nd row as a donut
+  // too") -- same counts as categoryRows above, just re-shaped for Donut's
+  // {label,value,color} contract with hex colors instead of tone classes.
+  const categoryDonut = useMemo(
+    () => categoryRows.map((r, i) => ({ label: r.label, value: r.value, color: SOURCE_PALETTE[i % SOURCE_PALETTE.length] })),
+    [categoryRows]
+  );
+
+  // Materials Output (Phase 21, 2026-08-24): takes over By Category's old
+  // row-3 slot. Sums tasks.output_count grouped by Output Type, scoped to
+  // tasks belonging to a currently-filtered project (same period/owner/
+  // source filters as everything else on this page).
+  const materialsOutputRows = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let untyped = 0;
+    for (const t of tasks) {
+      if (!filteredProjectIds.has(t.project_id)) continue;
+      const n = t.output_count ?? 0;
+      if (n <= 0) continue;
+      if (!t.output_type_id) {
+        untyped += n;
+        continue;
+      }
+      counts[t.output_type_id] = (counts[t.output_type_id] ?? 0) + n;
+    }
+    const rows = outputTypes
+      .filter((o) => counts[o.id])
+      .map((o) => ({ label: o.name, value: counts[o.id], tone: "neutral" }));
+    if (untyped) rows.push({ label: "Untyped", value: untyped, tone: "neutral" });
+    return rows.sort((a, b) => b.value - a.value);
+  }, [tasks, filteredProjectIds, outputTypes]);
+
+  const materialsOutputTotal = useMemo(() => materialsOutputRows.reduce((sum, r) => sum + r.value, 0), [materialsOutputRows]);
 
   const portfolioMovement = useMemo(() => {
     const months = lastMonths(8);
@@ -631,11 +676,12 @@ export default function Dashboard() {
         <StatCard icon={<PauseCircle size={26} />} tone="warning" label="On Hold" value={stats.onHold} />
         <StatCard icon={<AlertTriangle size={26} />} tone="warning" label="At Risk" value={stats.atRisk} />
         <StatCard icon={<Clock3 size={26} />} tone="danger" label="Overdue" value={stats.overdue} />
-        <StatCard icon={<Package size={26} />} tone="neutral" label="Materials Output" value="—" placeholder />
+        <StatCard icon={<Package size={26} />} tone="neutral" label="Materials Output" value={materialsOutputTotal} />
       </div>
 
-      {/* Row 2: 3 donuts */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+      {/* Row 2: 4 donuts (Category moved in here, per Sandra: "moving the
+          category breakdown into the 2nd row as a donut too") */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10, marginBottom: 16 }}>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Project Status</div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -657,13 +703,25 @@ export default function Dashboard() {
             <DonutLegend segments={sourceDonut} total={stats.total} />
           </div>
         </div>
-      </div>
-
-      {/* Row 3: By Category + Portfolio Movement */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>By Category</div>
-          <CategoryBarList rows={categoryRows} total={filteredProjects.length} />
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={categoryDonut} centerLabel="Total" centerValue={filteredProjects.length} />
+            <DonutLegend segments={categoryDonut} total={filteredProjects.length} />
+          </div>
+        </div>
+      </div>
+
+      {/* Row 3: Materials Output (took over By Category's old bar-list
+          slot) + Portfolio Movement */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Materials Output</div>
+          {materialsOutputRows.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "var(--muted)" }}>No output logged yet -- set Output Type + Output Count on tasks in WBS Planning.</div>
+          ) : (
+            <CategoryBarList rows={materialsOutputRows} total={materialsOutputTotal} />
+          )}
         </div>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Portfolio Movement</div>

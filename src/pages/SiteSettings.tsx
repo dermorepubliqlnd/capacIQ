@@ -44,6 +44,19 @@ interface ProjectSourceRow {
   is_active: boolean;
 }
 
+// Output Type -- admin-configurable lookup (Phase 21, 2026-08-24) for
+// Materials Output tracking. Mirrors Project Sources' own table/RLS/UI
+// shape exactly, but keyed off tasks.output_type_id instead of
+// projects.source_id -- Sandra: Output Type + Output Count should appear
+// on every task, not just the project level. See
+// supabase/phase21_migration.sql for the table itself (output_types).
+interface OutputTypeRow {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
 export default function SiteSettings() {
   const { person: me, loading: sessionLoading } = useSession();
 
@@ -71,6 +84,15 @@ export default function SiteSettings() {
   const [projectSourceBusy, setProjectSourceBusy] = useState(false);
   const [editingProjectSourceId, setEditingProjectSourceId] = useState<string | null>(null);
   const [editProjectSourceName, setEditProjectSourceName] = useState("");
+
+  // Output Types (Phase 21, 2026-08-24) -- same list-management state
+  // shape as Work Types/Project Sources above, keyed off tasks.
+  const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
+  const [outputTypesLoading, setOutputTypesLoading] = useState(true);
+  const [newOutputTypeName, setNewOutputTypeName] = useState("");
+  const [outputTypeBusy, setOutputTypeBusy] = useState(false);
+  const [editingOutputTypeId, setEditingOutputTypeId] = useState<string | null>(null);
+  const [editOutputTypeName, setEditOutputTypeName] = useState("");
 
   // Global historical-locking switch (Sandra, 2026-08-14): "we're still
   // playing around with the system" -- while off, Utilization/Day Planner
@@ -337,10 +359,114 @@ export default function SiteSettings() {
     loadProjectSources();
   }
 
+  async function loadOutputTypes() {
+    setOutputTypesLoading(true);
+    const { data } = await supabase.from("output_types").select("id,name,sort_order,is_active").order("sort_order");
+    setOutputTypes((data as OutputTypeRow[]) ?? []);
+    setOutputTypesLoading(false);
+  }
+
+  async function addOutputType() {
+    const name = newOutputTypeName.trim();
+    if (!name) return;
+    setOutputTypeBusy(true);
+    const nextSortOrder = outputTypes.length > 0 ? Math.max(...outputTypes.map((o) => o.sort_order)) + 1 : 1;
+    const { error } = await supabase.from("output_types").insert({ name, sort_order: nextSortOrder });
+    setOutputTypeBusy(false);
+    if (error) {
+      window.alert(`Couldn't add: ${error.message}`);
+      return;
+    }
+    setNewOutputTypeName("");
+    loadOutputTypes();
+  }
+
+  function startEditOutputType(o: OutputTypeRow) {
+    setEditingOutputTypeId(o.id);
+    setEditOutputTypeName(o.name);
+  }
+
+  async function saveOutputTypeRename(id: string) {
+    const name = editOutputTypeName.trim();
+    if (!name) return;
+    setOutputTypeBusy(true);
+    const { error } = await supabase.from("output_types").update({ name }).eq("id", id);
+    setOutputTypeBusy(false);
+    if (error) {
+      window.alert(`Couldn't rename: ${error.message}`);
+      return;
+    }
+    setEditingOutputTypeId(null);
+    loadOutputTypes();
+  }
+
+  async function toggleOutputTypeActive(o: OutputTypeRow) {
+    setOutputTypeBusy(true);
+    const { error } = await supabase.from("output_types").update({ is_active: !o.is_active }).eq("id", o.id);
+    setOutputTypeBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadOutputTypes();
+  }
+
+  async function moveOutputType(o: OutputTypeRow, direction: "up" | "down") {
+    const idx = outputTypes.findIndex((x) => x.id === o.id);
+    const neighborIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (idx === -1 || neighborIdx < 0 || neighborIdx >= outputTypes.length) return;
+    const neighbor = outputTypes[neighborIdx];
+    setOutputTypeBusy(true);
+    const [{ error: e1 }, { error: e2 }] = await Promise.all([
+      supabase.from("output_types").update({ sort_order: neighbor.sort_order }).eq("id", o.id),
+      supabase.from("output_types").update({ sort_order: o.sort_order }).eq("id", neighbor.id),
+    ]);
+    setOutputTypeBusy(false);
+    if (e1 || e2) {
+      window.alert(`Couldn't reorder: ${(e1 ?? e2)?.message}`);
+      return;
+    }
+    loadOutputTypes();
+  }
+
+  // Delete: only allowed when no task currently references this Output
+  // Type, same convention/reasoning as deleteWorkType/deleteProjectSource.
+  async function deleteOutputType(o: OutputTypeRow) {
+    setOutputTypeBusy(true);
+    const { count, error: countError } = await supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("output_type_id", o.id);
+    if (countError) {
+      setOutputTypeBusy(false);
+      window.alert(`Couldn't check usage: ${countError.message}`);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setOutputTypeBusy(false);
+      window.alert(
+        `Can't delete -- ${count} task${count === 1 ? "" : "s"} still use this Output Type. Deactivate it instead, or reassign those tasks first.`
+      );
+      return;
+    }
+    if (!window.confirm(`Delete "${o.name}"? This can't be undone.`)) {
+      setOutputTypeBusy(false);
+      return;
+    }
+    const { error } = await supabase.from("output_types").delete().eq("id", o.id);
+    setOutputTypeBusy(false);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadOutputTypes();
+  }
+
   useEffect(() => {
     if (me?.access_level === "full") {
       loadWorkTypes();
       loadProjectSources();
+      loadOutputTypes();
       loadHistoricalLocking();
     }
   }, [me?.access_level]);
@@ -700,6 +826,173 @@ export default function SiteSettings() {
               border: "none",
               opacity: !newProjectSourceName.trim() ? 0.6 : 1,
               cursor: !newProjectSourceName.trim() ? "default" : "pointer",
+            }}
+          >
+            <Plus size={14} />
+            Add
+          </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>Output Types</div>
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+              The list of Output Type options offered on every task (WBS Planning's Output Type field and the
+              Portfolio Dashboard's Materials Output breakdown). Tracks what kind of material a task produced -- e.g.
+              an E-learning Module vs. a Job Aid. Reorder with the arrows, rename inline, deactivate a type you no
+              longer want offered on new tasks, or delete one outright if no task uses it.
+            </div>
+          </div>
+        </div>
+        <table className="data-table" style={{ width: "100%", maxWidth: 420 }}>
+          <thead>
+            <tr>
+              <th style={{ width: 40 }} />
+              <th>Name</th>
+              <th style={{ width: 90 }}>Status</th>
+              <th style={{ width: 100 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {outputTypesLoading && (
+              <tr>
+                <td colSpan={4} style={{ color: "var(--muted)" }}>Loading…</td>
+              </tr>
+            )}
+            {!outputTypesLoading && outputTypes.length === 0 && (
+              <tr>
+                <td colSpan={4} style={{ color: "var(--muted)" }}>None yet.</td>
+              </tr>
+            )}
+            {outputTypes.map((o, idx) => {
+              const isEditing = editingOutputTypeId === o.id;
+              return (
+                <tr key={o.id}>
+                  <td>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <button
+                        onClick={() => moveOutputType(o, "up")}
+                        disabled={outputTypeBusy || idx === 0}
+                        title="Move up"
+                        style={{ background: "none", border: "none", cursor: idx === 0 ? "default" : "pointer", opacity: idx === 0 ? 0.3 : 1, padding: 0 }}
+                      >
+                        <ArrowUp size={13} />
+                      </button>
+                      <button
+                        onClick={() => moveOutputType(o, "down")}
+                        disabled={outputTypeBusy || idx === outputTypes.length - 1}
+                        title="Move down"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: idx === outputTypes.length - 1 ? "default" : "pointer",
+                          opacity: idx === outputTypes.length - 1 ? 0.3 : 1,
+                          padding: 0,
+                        }}
+                      >
+                        <ArrowDown size={13} />
+                      </button>
+                    </div>
+                  </td>
+                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>
+                    {isEditing ? (
+                      <input
+                        value={editOutputTypeName}
+                        onChange={(e) => setEditOutputTypeName(e.target.value)}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
+                      />
+                    ) : (
+                      o.name
+                    )}
+                  </td>
+                  <td>
+                    <span className={`status-pill ${o.is_active ? "success" : "neutral"}`}>{o.is_active ? "Active" : "Deactivated"}</span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {isEditing ? (
+                        <>
+                          <button
+                            onClick={() => saveOutputTypeRename(o.id)}
+                            disabled={outputTypeBusy}
+                            title="Save"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--success-text)" }}
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            onClick={() => setEditingOutputTypeId(null)}
+                            title="Cancel"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}
+                          >
+                            <X size={14} />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => startEditOutputType(o)}
+                            title="Rename"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--navy)" }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            onClick={() => toggleOutputTypeActive(o)}
+                            disabled={outputTypeBusy}
+                            title={o.is_active ? "Deactivate" : "Reactivate"}
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: o.is_active ? "var(--danger-text)" : "var(--success-text)" }}
+                          >
+                            {o.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                          </button>
+                          <button
+                            onClick={() => deleteOutputType(o)}
+                            disabled={outputTypeBusy}
+                            title="Delete (only if unused)"
+                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--danger-text)" }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 480 }}>
+          <input
+            value={newOutputTypeName}
+            onChange={(e) => setNewOutputTypeName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addOutputType();
+            }}
+            placeholder="New output type name"
+            spellCheck={false}
+            autoComplete="off"
+            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+          />
+          <button
+            onClick={addOutputType}
+            disabled={outputTypeBusy || !newOutputTypeName.trim()}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#fff",
+              background: "var(--navy)",
+              border: "none",
+              opacity: !newOutputTypeName.trim() ? 0.6 : 1,
+              cursor: !newOutputTypeName.trim() ? "default" : "pointer",
             }}
           >
             <Plus size={14} />

@@ -161,6 +161,12 @@ export interface TaskRow {
   // work_types (see WorkTypeOption above) -- nullable, existing tasks
   // won't have one until someone sets it going forward.
   work_type_id: string | null;
+  // Phase 21 (2026-08-24): Materials Output -- what kind of material a
+  // task produced (admin-configurable via output_types, see WBS Planning's
+  // OutputTypeOption) and how many units. Feeds the Portfolio Dashboard's
+  // Materials Output card + breakdown chart.
+  output_type_id: string | null;
+  output_count: number | null;
   is_archived: boolean;
   archived_at: string | null;
   sort_order: number | null;
