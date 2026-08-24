@@ -236,12 +236,17 @@ export default function Utilization() {
   // overflow hours into future free days specifically so a person rarely
   // shows over 100%, which was quietly hiding real over-allocation and
   // costing her the evidence to argue for more headcount when the team is
-  // genuinely over-utilized. "Realistic" (the new default) shows the raw
+  // genuinely over-utilized. "Actual" (the new default, relabeled from
+  // "Realistic" 2026-08-24 to match the WBS Planning snapshot's own
+  // Actual/Full Effort/Capacity-Based/Manual vocabulary) shows the raw
   // planned/estimated hours against each day's actual window with no
   // capacity ceiling -- the same uncapped math already used for past
-  // dates -- for every date, past and future. "Capacity-Smoothed" keeps
-  // the original forward-scheduler view for anyone who wants to see the
-  // deferred/idealized plan instead.
+  // dates -- for every date, past and future. "Capacity-Based" (relabeled
+  // from "Capacity-Smoothed") keeps the original forward-scheduler view
+  // for anyone who wants to see the deferred/idealized plan instead --
+  // same underlying buildForwardSchedule engine WBS Planning's own
+  // Capacity-Based mode uses, so the name now actually matches what it
+  // computes.
   const [smoothed, setSmoothed] = useState(false);
 
   async function loadAll() {
@@ -625,8 +630,8 @@ export default function Utilization() {
           style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}
           title={
             smoothed
-              ? "Capacity-Smoothed: overflow hours are deferred into future free days -- rarely shows over 100%."
-              : "Realistic: raw planned hours against each day's actual window, no capacity ceiling -- shows true over-allocation."
+              ? "Capacity-Based: overflow hours are deferred into future free days -- rarely shows over 100%."
+              : "Actual: raw planned hours against each day's actual window, no capacity ceiling -- shows true over-allocation."
           }
         >
           {([false, true] as const).map((isSmoothed) => (
@@ -643,7 +648,7 @@ export default function Utilization() {
                 color: smoothed === isSmoothed ? "#fff" : "var(--muted)",
               }}
             >
-              {isSmoothed ? "Capacity-Smoothed" : "Realistic"}
+              {isSmoothed ? "Capacity-Based" : "Actual"}
             </button>
           ))}
         </div>
