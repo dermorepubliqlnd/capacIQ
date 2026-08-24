@@ -9,7 +9,7 @@ import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../component
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
-import { fullCapacityScenario, capacityBasedScenario } from "../lib/taskScheduling";
+import { fullCapacityScenario, capacityBasedScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
 import { buildForwardSchedule, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES } from "../lib/notionOptions";
 import {
@@ -680,12 +680,53 @@ export default function WbsPlanning() {
   // editable afterward. If the user later edits either into a conflict,
   // `dependencyConflict` (mode-parameterized, checked against that SAME
   // mode's own Start field) catches it.
-  function suggestedStartFor(depIds: string[], mode: Mode): string | null {
+  // Phase 20 (2026-08-24, Sandra: "in the full effort, can you make sure
+  // that math is done properly, always assume a full day of 7.5 hours --
+  // if there are 2 tasks that is set at 3 hours each, this can still be
+  // done in one day"): Full Effort previously always chained a task to
+  // the NEXT working day after whatever it follows, regardless of how
+  // much of that day's assumed 7.5h was actually left -- two 3-hour tasks
+  // got pushed onto two separate days instead of packing into one. These
+  // two helpers give Full Effort real same-day packing: sum up every
+  // OTHER same-level task (root siblings, or one parent's own children --
+  // whichever scope this task belongs to) that already lands entirely on
+  // a given date, and only roll to the next working day if the new
+  // task's own hours would not actually fit in what's left. Scoped to
+  // full_capacity only -- Capacity-Based already does real per-person
+  // capacity-aware queueing via buildForwardSchedule, and Manual's Start
+  // is either a live mirror of that or a frozen human override, neither
+  // of which this flat-rate assumption applies to.
+  function sameLevelScope(taskId: string): (TaskRow & { depth: number })[] {
+    const t = orderedTasks.find((x) => x.id === taskId);
+    if (!t) return [];
+    return t.depth === 0
+      ? orderedTasks.filter((x) => x.depth === 0)
+      : orderedTasks.filter((x) => x.depth === 1 && x.parent_task_id === t.parent_task_id);
+  }
+  function remainingFullEffortHours(dateStr: string, scope: TaskRow[], excludeTaskId?: string): number {
+    let used = 0;
+    for (const s of scope) {
+      if (s.id === excludeTaskId) continue;
+      const entry = chainByMode.full_capacity.get(s.id);
+      if (entry && entry.start === dateStr && entry.end === dateStr) used += s.estimated_hours ?? 0;
+    }
+    return Math.max(0, FULL_CAPACITY_DAILY_HOURS - used);
+  }
+  function packedFullEffortNextStart(predecessorEnd: string, newHours: number, scope: TaskRow[], excludeTaskId?: string): string {
+    const remaining = remainingFullEffortHours(predecessorEnd, scope, excludeTaskId);
+    if (newHours <= remaining) return predecessorEnd; // packs into the same day
+    return nextWorkingDayAfter(predecessorEnd, holidaySet);
+  }
+
+  function suggestedStartFor(depIds: string[], mode: Mode, forTaskId?: string): string | null {
     let latest: string | null = null;
     for (const depId of depIds) {
       const entry = chainByMode[mode].get(depId);
       if (!entry) continue;
-      const candidate = nextWorkingDayAfter(entry.end, holidaySet);
+      const candidate =
+        mode === "full_capacity" && forTaskId
+          ? packedFullEffortNextStart(entry.end, tasks.find((x) => x.id === forTaskId)?.estimated_hours ?? 0, sameLevelScope(forTaskId), forTaskId)
+          : nextWorkingDayAfter(entry.end, holidaySet);
       if (!latest || candidate > latest) latest = candidate;
     }
     return latest;
@@ -709,7 +750,7 @@ export default function WbsPlanning() {
     }
     const allDeps = [...dependsOnIdsFor(taskId), dependsOnId];
     const patch: Partial<TaskRow> = {};
-    const suggestedFull = suggestedStartFor(allDeps, "full_capacity");
+    const suggestedFull = suggestedStartFor(allDeps, "full_capacity", taskId);
     if (suggestedFull) {
       patch.start_date_full = suggestedFull;
       patch.start_full_auto = true; // fresh dependency -- start tracking it live again
@@ -910,7 +951,7 @@ export default function WbsPlanning() {
         const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
         const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
         if (t[autoField] === false) continue; // manually overridden -- leave it, warning icon covers this
-        const suggested = suggestedStartFor(depIds, mode);
+        const suggested = suggestedStartFor(depIds, mode, t.id);
         const current = t[startField] ? (t[startField] as string).slice(0, 10) : null;
         if (suggested && suggested !== current) {
           saveTaskField(t.id, { [startField]: suggested } as Partial<TaskRow>);
@@ -1374,7 +1415,12 @@ export default function WbsPlanning() {
     let defaultStartFull = anchor;
     let defaultStartStandard = anchor;
     const entryFull = lastResolvedEntry(roots, "full_capacity");
-    if (entryFull) defaultStartFull = nextWorkingDayAfter(entryFull.end, holidaySet);
+    // Packing-aware now (Phase 20) -- a brand-new task has no hours yet,
+    // so this only rolls to the next day if the predecessor's day is
+    // already fully (7.5h) accounted for by other same-day root tasks;
+    // otherwise it defaults onto that same day, ready for real hours to
+    // be typed in.
+    if (entryFull) defaultStartFull = packedFullEffortNextStart(entryFull.end, 0, roots);
     const entryStandard = lastResolvedEntry(roots, "standard");
     if (entryStandard) defaultStartStandard = nextWorkingDayAfter(entryStandard.end, holidaySet);
     const defaultDue = project.end_date ?? today;
@@ -1409,7 +1455,9 @@ export default function WbsPlanning() {
     let defaultStartFull = parent.start_date_full ? parent.start_date_full.slice(0, 10) : projectAnchor;
     let defaultStartStandard = parent.start_date_standard ? parent.start_date_standard.slice(0, 10) : projectAnchor;
     const siblingEntryFull = lastResolvedEntry(siblings, "full_capacity");
-    if (siblingEntryFull) defaultStartFull = nextWorkingDayAfter(siblingEntryFull.end, holidaySet);
+    // Same Phase 20 packing as addTopLevelTask above, scoped to this
+    // parent's own children.
+    if (siblingEntryFull) defaultStartFull = packedFullEffortNextStart(siblingEntryFull.end, 0, siblings);
     const siblingEntryStandard = lastResolvedEntry(siblings, "standard");
     if (siblingEntryStandard) defaultStartStandard = nextWorkingDayAfter(siblingEntryStandard.end, holidaySet);
     const { error } = await supabase.from("tasks").insert({
