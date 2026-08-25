@@ -14,8 +14,8 @@ const mainItems = [
 
 const resourcePlanningItems = [
   { to: "/utilization", label: "Utilization" },
-  { to: "/day-planner", label: "Work Schedule" },
   { to: "/hours-overview", label: "Scoped vs Logged" },
+  { to: "/time-off", label: "Time Off" },
 ];
 
 const adminItems = [

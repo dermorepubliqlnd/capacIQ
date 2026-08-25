@@ -62,12 +62,12 @@ export default function Login() {
       <form
         onSubmit={handleSubmit}
         className="card"
-        style={{ width: 320, display: "flex", flexDirection: "column", gap: 12 }}
+        style={{ width: 420, padding: "36px 40px", display: "flex", flexDirection: "column", gap: 16 }}
       >
         <div style={{ marginBottom: 4 }}>
           <div
             style={{
-              fontSize: "var(--font-caption)",
+              fontSize: 13,
               fontWeight: 700,
               letterSpacing: "0.06em",
               textTransform: "uppercase",
@@ -76,13 +76,13 @@ export default function Login() {
           >
             Dermorepubliq L&amp;D
           </div>
-          <div className="login-title" style={{ fontWeight: 700, color: "var(--navy)", fontSize: 22, display: "flex", alignItems: "center", gap: 8 }}>
-            <TempoMark size={24} />
+          <div className="login-title" style={{ fontWeight: 700, color: "var(--navy)", fontSize: 30, display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+            <TempoMark size={32} />
             Tempo
           </div>
         </div>
 
-        <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+        <label style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text-secondary)" }}>
           Email
           <input
             type="email"
@@ -92,16 +92,16 @@ export default function Login() {
             style={{
               display: "block",
               width: "100%",
-              marginTop: 4,
-              padding: "7px 9px",
-              fontSize: 12.5,
+              marginTop: 6,
+              padding: "11px 13px",
+              fontSize: 15,
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-sm)",
             }}
           />
         </label>
 
-        <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+        <label style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text-secondary)" }}>
           Password
           <input
             type="password"
@@ -111,9 +111,9 @@ export default function Login() {
             style={{
               display: "block",
               width: "100%",
-              marginTop: 4,
-              padding: "7px 9px",
-              fontSize: 12.5,
+              marginTop: 6,
+              padding: "11px 13px",
+              fontSize: 15,
               border: "1px solid var(--border)",
               borderRadius: "var(--radius-sm)",
             }}
@@ -129,7 +129,7 @@ export default function Login() {
             background: "none",
             border: "none",
             padding: 0,
-            fontSize: 11.5,
+            fontSize: 13,
             color: "var(--accent)",
             cursor: resetSending ? "default" : "pointer",
           }}
@@ -138,13 +138,13 @@ export default function Login() {
         </button>
 
         {resetSent && (
-          <div style={{ fontSize: 11.5, color: "var(--success-text)", background: "var(--success-bg)", padding: "6px 8px", borderRadius: "var(--radius-sm)" }}>
+          <div style={{ fontSize: 13, color: "var(--success-text)", background: "var(--success-bg)", padding: "9px 11px", borderRadius: "var(--radius-sm)" }}>
             If that email has an account, a reset link is on its way.
           </div>
         )}
 
         {error && (
-          <div style={{ fontSize: 11.5, color: "var(--danger-text)", background: "var(--danger-bg)", padding: "6px 8px", borderRadius: "var(--radius-sm)" }}>
+          <div style={{ fontSize: 13, color: "var(--danger-text)", background: "var(--danger-bg)", padding: "9px 11px", borderRadius: "var(--radius-sm)" }}>
             {error}
           </div>
         )}
@@ -153,13 +153,14 @@ export default function Login() {
           type="submit"
           disabled={loading}
           style={{
-            marginTop: 4,
-            padding: "8px 10px",
-            fontSize: 12.5,
+            marginTop: 6,
+            padding: "12px 14px",
+            fontSize: 15,
             fontWeight: 600,
             color: "#fff",
             background: "var(--navy)",
             border: "none",
+            borderRadius: "var(--radius-sm)",
             cursor: loading ? "default" : "pointer",
           }}
         >

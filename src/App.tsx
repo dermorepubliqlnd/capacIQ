@@ -9,8 +9,8 @@ import TimeTracking from "./pages/TimeTracking";
 import Utilization from "./pages/Utilization";
 import Admin from "./pages/Admin";
 import SiteSettings from "./pages/SiteSettings";
-import DayPlanner from "./pages/DayPlanner";
 import HoursOverview from "./pages/HoursOverview";
+import TimeOff from "./pages/TimeOff";
 import HolidayCalendar from "./pages/HolidayCalendar";
 import WbsPlanning from "./pages/WbsPlanning";
 import BaselineReport from "./pages/BaselineReport";
@@ -59,8 +59,8 @@ export default function App() {
           <Route path="/extension-requests" element={<ExtensionRequests />} />
           <Route path="/time-tracking" element={<TimeTracking />} />
           <Route path="/utilization" element={<Utilization />} />
-          <Route path="/day-planner" element={<DayPlanner />} />
           <Route path="/hours-overview" element={<HoursOverview />} />
+          <Route path="/time-off" element={<TimeOff />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/site-settings" element={<SiteSettings />} />
           <Route path="/admin/holidays" element={<HolidayCalendar />} />

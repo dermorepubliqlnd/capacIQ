@@ -1,16 +1,27 @@
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { scopedHoursOnDate } from "../lib/scopedHours";
 
-// Scoped vs Logged overview (2026-08-25). Sandra: "create an overview page
-// to show comparisons of Scoped vs Logged" -- a dedicated page (not a Work
-// Schedule tab) comparing each task's planned Scoped Hours against actual
-// logged hours from Time Tracking. Two views, toggled: a Day grid (same
-// person x day shape as Work Schedule, dual value per cell) and a flat
-// per-task comparison table -- Sandra asked for both rather than picking
-// one, after seeing a mockup of each.
+// Scoped vs Logged (2026-08-25, consolidated same day). Originally shipped
+// alongside a separate "Work Schedule" page (Logged tab + Scoped tab).
+// Sandra pointed out the overlap was worse than it looked: "Scoped" was
+// already a thinner copy of what Utilization.tsx computes (Utilization
+// adds PM overhead + ownership-history + archived-hours on top of the
+// same per-task spread math), and Work Schedule's two single-metric tabs
+// were just this page's Day view pulled apart. Utilization stays
+// untouched as the person-level capacity-% view. This page absorbed
+// Work Schedule entirely and became the two things nothing else covers:
+// a day-by-day Scoped-vs-Logged breakdown per task (this Day view, now
+// built like Utilization's expandable person->task rows instead of a flat
+// grid), and a whole-task planned-vs-actual comparison (Per task view).
+//
+// Key behavior Sandra called out explicitly: logged hours are bucketed by
+// the literal date they were logged on, independent of the task's scoped
+// window. A task scoped for 3 days that someone actually works on 2 days
+// later still shows "– / {logged}h" on that later date -- scoped and
+// logged are computed independently per day, then just displayed together.
 
 interface PersonRow {
   id: string;
@@ -61,11 +72,8 @@ function addDays(d: Date, n: number): Date {
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const RANGE_OPTIONS = [1, 2, 4] as const;
 const CELL_W = 74;
-const LABEL_W = 220;
+const LABEL_W = 240;
 
-// Same 3-tone semantics as Work Schedule/Utilization: how much of a day's
-// Scoped Hours actually got logged. Neutral when nothing was scoped at all
-// (no expectation to compare against).
 function coverageTone(scoped: number, logged: number): "neutral" | "success" | "warning" | "danger" {
   if (scoped <= 0) return logged > 0 ? "success" : "neutral";
   const ratio = logged / scoped;
@@ -88,6 +96,7 @@ export default function HoursOverview() {
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"grid" | "task">("grid");
+  const [expanded, setExpanded] = useState<string[]>([]);
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
@@ -144,23 +153,60 @@ export default function HoursOverview() {
   }, [holidays]);
 
   const parentTaskIds = useMemo(() => new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string)), [tasks]);
-  function openTasksFor(personId: string): TaskRow[] {
+
+  // Scoped side: only open (non-complete), non-parent tasks currently
+  // assigned to this person -- same rule Utilization.tsx's own
+  // openTasksFor uses, so this stays comparable to that page's numbers.
+  function scopedOpenTasksFor(personId: string): TaskRow[] {
     return tasks.filter((t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
   }
   function scopedPersonTotalFor(personId: string, dateStr: string): number {
-    return openTasksFor(personId).reduce((sum, t) => sum + scopedHoursOnDate(t, dateStr), 0);
+    return scopedOpenTasksFor(personId).reduce((sum, t) => sum + scopedHoursOnDate(t, dateStr), 0);
   }
+  // Logged side: every confirmed/approved entry this person has, bucketed
+  // by the literal date it was logged on -- deliberately NOT filtered to
+  // the task's scoped window or current assignment/status, so time logged
+  // outside a task's plan (or after reassignment/completion) still shows.
   function loggedPersonTotalFor(personId: string, dateStr: string): number {
     return timeEntries
       .filter((e) => e.person_id === personId && e.started_at.slice(0, 10) === dateStr)
       .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
   }
+  function loggedHoursFor(personId: string, taskId: string, dateStr: string): number {
+    return timeEntries
+      .filter((e) => e.person_id === personId && e.task_id === taskId && e.started_at.slice(0, 10) === dateStr)
+      .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
+  }
+  function scopedHoursFor(personId: string, taskId: string, dateStr: string): number {
+    const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
+    if (!t) return 0;
+    return scopedHoursOnDate(t, dateStr);
+  }
 
-  // Per-task rollup for the flat comparison table: Scoped is the task's own
-  // flat estimated_hours (not windowed to the visible date range -- this
-  // view compares a task's total plan against its total logged-to-date,
-  // same "whole task" framing as Projects.tsx's own Est/Spent columns).
-  // Logged sums every confirmed/approved entry against the task, any person.
+  // Combined per-task breakdown for a person's expand row: union of their
+  // open scoped-eligible tasks AND any task they've logged time against
+  // (even if reassigned, completed, or archived since) -- otherwise a
+  // logged entry on a task that no longer meets the "scoped" filter would
+  // just vanish from the breakdown instead of showing up as "– / Xh".
+  function combinedSubItemsFor(personId: string): { taskId: string; label: string; project?: string }[] {
+    const byId = new Map<string, { taskId: string; label: string; project?: string }>();
+    scopedOpenTasksFor(personId).forEach((t) => {
+      const proj = projects.find((p) => p.id === t.project_id);
+      byId.set(t.id, { taskId: t.id, label: t.name, project: proj?.name });
+    });
+    timeEntries
+      .filter((e) => e.person_id === personId)
+      .forEach((e) => {
+        if (byId.has(e.task_id)) return;
+        const t = tasks.find((x) => x.id === e.task_id);
+        const proj = t ? projects.find((p) => p.id === t.project_id) : undefined;
+        byId.set(e.task_id, { taskId: e.task_id, label: t?.name ?? "Deleted/archived task", project: proj?.name });
+      });
+    return Array.from(byId.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  // Per-task flat comparison (whole-task totals, not windowed to the
+  // visible date range) -- unchanged from the original Overview build.
   const taskRows = useMemo(() => {
     return tasks
       .filter((t) => !parentTaskIds.has(t.id))
@@ -194,6 +240,16 @@ export default function HoursOverview() {
       minWidth: CELL_W,
       textAlign: "center",
       padding: "9px 3px",
+      borderBottom: "1px solid var(--border)",
+      borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
+    };
+  }
+  function subCellStyle(i: number): CSSProperties {
+    return {
+      width: CELL_W,
+      minWidth: CELL_W,
+      padding: "5px 3px",
+      textAlign: "center",
       borderBottom: "1px solid var(--border)",
       borderLeft: i % 7 === 0 ? "1px solid var(--border)" : undefined,
     };
@@ -266,7 +322,7 @@ export default function HoursOverview() {
                 </option>
               ))}
             </select>
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours.</span>
+            <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours. Click a person to see the task breakdown.</span>
           </div>
 
           <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
@@ -344,42 +400,105 @@ export default function HoursOverview() {
                   </tr>
                 ) : (
                   <Fragment>
-                    {people.map((person) => (
-                      <tr key={person.id}>
-                        <td
-                          style={{
-                            position: "sticky",
-                            left: 0,
-                            zIndex: 1,
-                            background: "var(--surface)",
-                            padding: "8px 13px",
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: "var(--navy)",
-                            borderBottom: "1px solid var(--border)",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {person.name}
-                        </td>
-                        {days.map((d, i) => {
-                          const dateStr = toISO(d);
-                          const dow = d.getDay();
-                          const weekend = dow === 0 || dow === 6;
-                          const isHoliday = holidayByDate.has(dateStr);
-                          const scoped = scopedPersonTotalFor(person.id, dateStr);
-                          const logged = loggedPersonTotalFor(person.id, dateStr);
-                          const tone = coverageTone(scoped, logged);
-                          const colors = toneColors(tone);
-                          const bg = scoped === 0 && logged === 0 ? (weekend || isHoliday ? "var(--hover-bg)" : undefined) : colors.bg;
-                          return (
-                            <td key={i} style={{ ...rollupCellStyle(i), background: bg, color: colors.fg, fontSize: 11.5, fontWeight: 600 }}>
-                              {scoped > 0 || logged > 0 ? `${scoped.toFixed(1)} / ${logged.toFixed(1)}h` : "–"}
+                    {people.map((person) => {
+                      const isExpanded = expanded.includes(person.id);
+                      const items = combinedSubItemsFor(person.id);
+                      return (
+                        <Fragment key={person.id}>
+                          <tr style={{ background: "#fafbfc" }}>
+                            <td
+                              style={{
+                                position: "sticky",
+                                left: 0,
+                                zIndex: 1,
+                                background: "#fafbfc",
+                                padding: "8px 13px",
+                                fontSize: 12,
+                                fontWeight: 600,
+                                color: "var(--navy)",
+                                borderBottom: "1px solid var(--border)",
+                                cursor: "pointer",
+                                whiteSpace: "nowrap",
+                              }}
+                              onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
+                            >
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                {isExpanded ? <ChevronDown size={12} /> : <ChevronRightIcon size={12} />}
+                                {person.name}
+                              </span>
                             </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                            {days.map((d, i) => {
+                              const dateStr = toISO(d);
+                              const dow = d.getDay();
+                              const weekend = dow === 0 || dow === 6;
+                              const isHoliday = holidayByDate.has(dateStr);
+                              const scoped = scopedPersonTotalFor(person.id, dateStr);
+                              const logged = loggedPersonTotalFor(person.id, dateStr);
+                              const tone = coverageTone(scoped, logged);
+                              const colors = toneColors(tone);
+                              const bg = scoped === 0 && logged === 0 ? (weekend || isHoliday ? "var(--hover-bg)" : undefined) : colors.bg;
+                              return (
+                                <td key={i} style={{ ...rollupCellStyle(i), background: bg, color: colors.fg, fontSize: 11.5, fontWeight: 600 }}>
+                                  {scoped > 0 || logged > 0 ? `${scoped.toFixed(1)} / ${logged.toFixed(1)}h` : "–"}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                          {isExpanded &&
+                            (items.length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={1 + days.length}
+                                  style={{ padding: "5px 13px 5px 35px", fontSize: 11, color: "var(--muted)", fontStyle: "italic", borderBottom: "1px solid var(--border)" }}
+                                >
+                                  No scoped tasks or logged hours yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              items.map((item) => (
+                                <tr key={`${person.id}-${item.taskId}`}>
+                                  <td
+                                    title={item.project ? `${item.label} — ${item.project}` : item.label}
+                                    style={{
+                                      position: "sticky",
+                                      left: 0,
+                                      zIndex: 1,
+                                      background: "var(--surface)",
+                                      padding: "5px 13px 5px 35px",
+                                      fontSize: 11,
+                                      color: "var(--text-secondary)",
+                                      borderBottom: "1px solid var(--border)",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: LABEL_W,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {item.label}
+                                    {item.project && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>}
+                                  </td>
+                                  {days.map((d, i) => {
+                                    const dateStr = toISO(d);
+                                    const scoped = scopedHoursFor(person.id, item.taskId, dateStr);
+                                    const logged = loggedHoursFor(person.id, item.taskId, dateStr);
+                                    return (
+                                      <td key={i} style={subCellStyle(i)}>
+                                        {scoped > 0 || logged > 0 ? (
+                                          <span style={{ fontSize: 10.5, color: "var(--navy)" }}>
+                                            {scoped > 0 ? scoped.toFixed(1) : "–"}
+                                            <span style={{ color: "var(--muted)" }}> / </span>
+                                            {logged > 0 ? logged.toFixed(1) : "–"}
+                                          </span>
+                                        ) : null}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))
+                            ))}
+                        </Fragment>
+                      );
+                    })}
                     <tr>
                       <td
                         style={{
@@ -415,6 +534,7 @@ export default function HoursOverview() {
           </div>
           <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--muted)" }}>
             Green = logged covers at least 90% of scoped for that day. Amber = 50–89%. Red = under 50%. Gray "–" = nothing scoped or logged.
+            Logged hours always show on the day they were actually worked, even outside a task's scoped window.
           </div>
         </>
       ) : (
