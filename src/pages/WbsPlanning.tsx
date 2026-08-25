@@ -1547,6 +1547,34 @@ export default function WbsPlanning() {
   // chain when there's nothing earlier to chain from.
   const utilAnchorDate = fallbackStartDate;
 
+  // Scroll today's column into view whenever it's part of the currently
+  // shown window. Must run unconditionally on every render (React's Rules
+  // of Hooks) -- this component has an early `if (loading) return ...`
+  // further down, so this hook has to live BEFORE that gate, not next to
+  // the `utilDays` variable it conceptually belongs with further down
+  // (that placement caused a "Rendered more hooks than during the
+  // previous render" crash the first time this shipped: 0 hooks ran on
+  // the loading-gated first render, then 1 more once loading finished).
+  // Recomputes the day window inline rather than depending on the later
+  // `utilDays` variable, which isn't in scope yet at this point in the
+  // component.
+  useEffect(() => {
+    const el = utilSnapshotScrollRef.current;
+    if (!el) return;
+    const windowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
+    const days = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(windowStart, i));
+    const todayIso = toISO(new Date());
+    const idx = days.findIndex((d) => toISO(d) === todayIso);
+    if (idx === -1) return;
+    const PERSON_COL_W = 130;
+    const SCENARIO_COL_W = 150;
+    const DAY_COL_W = 40;
+    const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const desired = targetLeft - el.clientWidth / 2 + DAY_COL_W / 2;
+    el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
+  }, [utilAnchorDate, utilWindowOffset]);
+
   // Fixed 2026-07-24 (Sandra: "fix the glitch when adding task in WBS") --
   // the old default-Start logic for a new task only ever looked at the
   // LITERAL last task in the list, which is almost always the most
@@ -2731,28 +2759,6 @@ export default function WbsPlanning() {
 
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
-
-  // Scroll today's column into view whenever it's part of the currently
-  // shown window (only meaningful at utilWindowOffset 0, since that's the
-  // only offset that can ever include today -- other offsets are entirely
-  // past/future blocks where there's no "today" column to chase). Runs
-  // after the table has rendered (dep on utilDays) so scrollWidth is known.
-  useEffect(() => {
-    const el = utilSnapshotScrollRef.current;
-    if (!el) return;
-    const todayIso = toISO(new Date());
-    const idx = utilDays.findIndex((d) => toISO(d) === todayIso);
-    if (idx === -1) return;
-    const PERSON_COL_W = 130;
-    const SCENARIO_COL_W = 150;
-    const DAY_COL_W = 40;
-    const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
-    const maxScroll = el.scrollWidth - el.clientWidth;
-    // Center today's column rather than snapping it to the very edge, so
-    // a few days of context on either side stay visible too.
-    const desired = targetLeft - el.clientWidth / 2 + DAY_COL_W / 2;
-    el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
-  }, [utilDays]);
 
   function utilAvailability(personId: string, dateStr: string): AvailabilityRow | undefined {
     return availability.find((a) => a.person_id === personId && a.date === dateStr);
