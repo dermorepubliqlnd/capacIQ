@@ -246,7 +246,7 @@ const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days",
 // own Calendar view doesn't support grouping either -- confirmed with
 // Sandra, not building it).
 const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct", "work_type"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -2676,19 +2676,20 @@ export default function Projects() {
       {
         key: "current_due_date",
         label: "Due",
-        defaultWidth: 180,
-        minWidth: 150,
+        defaultWidth: 130,
+        minWidth: 120,
         render: (t) => {
           // Due dates aren't directly editable once a task exists (the DB
           // trigger enforces read-only post-lock, and pre-lock there's
           // nothing to extend yet) -- the whole cell is a single click
-          // target that opens the extension-history modal (same modal the
-          // old separate "Due Date Ext." column/button opened), with the
-          // extension status tag shown right next to the date instead of
-          // in its own column. See [[project_capaciq_extension_requests]].
+          // target that opens the extension-history modal, same as the
+          // dedicated "Extension" column right after it (2026-08-25: split
+          // back into its own column per Sandra -- this cell used to also
+          // carry the extension status pill inline, see
+          // [[project_capaciq_icons_gating_validation_split]] for that
+          // merge and [[project_capaciq_extension_requests]] for the modal).
           const isParent = t._depth === 0 && hasChildren(t.id);
           const computed = isParent ? taskDatesFromSubtasks(t.id) : null;
-          const status = dueDateExtStatus(t);
           return (
             <button
               onClick={() => setExtDetailTask(t)}
@@ -2706,6 +2707,23 @@ export default function Projects() {
               }}
             >
               <InlineDate value={t.current_due_date} editable={false} onCommit={() => {}} />
+            </button>
+          );
+        },
+      },
+      {
+        key: "due_date_ext",
+        label: "Extension",
+        defaultWidth: 130,
+        minWidth: 110,
+        render: (t) => {
+          const status = dueDateExtStatus(t);
+          return (
+            <button
+              onClick={() => setExtDetailTask(t)}
+              title="Click to see extension request details or request one"
+              style={{ background: "none", border: "none", cursor: "pointer", font: "inherit", padding: 0 }}
+            >
               <span className={`status-pill ${status.tone}`}>{status.label}</span>
             </button>
           );
