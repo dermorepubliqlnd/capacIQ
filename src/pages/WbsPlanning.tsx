@@ -1895,7 +1895,32 @@ export default function WbsPlanning() {
       // nothing earlier (first root, or first child of the first root
       // group) to chain from.
       const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
-      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string): ChainEntry | null {
+      // Bugfix (2026-08-25, Sandra: "Theoretical [full effort] task are
+      // not more than 7.5 hours but... say 4 working days?"): this
+      // branch used to always chain a no-dependency sibling to the NEXT
+      // working day after its predecessor, for BOTH Manual and
+      // Theoretical (full_capacity) modes -- ignoring the Phase 20
+      // same-day-packing fix that addTopLevelTask/addSubtask already
+      // apply when a task is first created. Refresh dates would then
+      // silently undo that packing the moment it ran, spreading tasks
+      // that easily fit in one 7.5h day across one-day-per-task instead.
+      // This mirrors remainingFullEffortHours/packedFullEffortNextStart
+      // above, but reads from THIS pass's own freshly-computed `entries`
+      // map (and the sibling ids scheduled so far) instead of the stale
+      // pre-refresh chainByMode, since Refresh recomputes everyone in one
+      // shot before anything is saved.
+      function remainingFullEffortHoursThisPass(dateStr: string, siblingIdsSoFar: string[]): number {
+        let used = 0;
+        for (const sid of siblingIdsSoFar) {
+          const e = entries.get(sid);
+          if (e && e.start === dateStr && e.end === dateStr) {
+            const st = orderedTasks.find((x) => x.id === sid);
+            used += st?.estimated_hours ?? 0;
+          }
+        }
+        return Math.max(0, FULL_CAPACITY_DAILY_HOURS - used);
+      }
+      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string, siblingIdsSoFar: string[] = []): ChainEntry | null {
         // Done tasks are historical -- Refresh dates should never push
         // their Start to follow a predecessor's new End, same reasoning
         // as the Done-lock in computeEntry above.
@@ -1912,6 +1937,14 @@ export default function WbsPlanning() {
             if (!latest || candidate > latest) latest = candidate;
           }
           if (latest) overrideStart = latest;
+        } else if (!depIds.length && isAuto && mode === "full_capacity") {
+          if (chainPrev) {
+            const newHours = t.estimated_hours ?? 0;
+            const remaining = remainingFullEffortHoursThisPass(chainPrev.end, siblingIdsSoFar);
+            overrideStart = newHours <= remaining ? chainPrev.end : nextWorkingDayAfter(chainPrev.end, holidaySet);
+          } else if (anchorStart) {
+            overrideStart = anchorStart;
+          }
         } else if (!depIds.length && isAuto) {
           if (mode === "standard") {
             // Phase 22 bugfix (see [[project_capaciq_scheduler_tiebreak_fix]]):
@@ -1939,19 +1972,22 @@ export default function WbsPlanning() {
         return entry;
       }
       let lastRootEntry: ChainEntry | null = null;
+      const rootIdsSoFar: string[] = [];
       for (const root of scheduleOrder) {
         const isFirstGroup = lastRootEntry === null;
         if (hasChildren(root.id)) {
           let lastSiblingEntry: ChainEntry | null = null;
           const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id);
           const childEntries: ChainEntry[] = [];
+          const childIdsSoFar: string[] = [];
           for (const child of children) {
             const isFirstChild = lastSiblingEntry === null;
-            const entry = scheduledEntry(child, lastSiblingEntry, isFirstGroup && isFirstChild ? projectAnchor : undefined);
+            const entry = scheduledEntry(child, lastSiblingEntry, isFirstGroup && isFirstChild ? projectAnchor : undefined, childIdsSoFar);
             if (entry) {
               entries.set(child.id, entry);
               lastSiblingEntry = entry;
               childEntries.push(entry);
+              childIdsSoFar.push(child.id);
             }
           }
           if (childEntries.length) {
@@ -1962,10 +1998,11 @@ export default function WbsPlanning() {
             lastRootEntry = groupEntry;
           }
         } else {
-          const entry = scheduledEntry(root, lastRootEntry, isFirstGroup ? projectAnchor : undefined);
+          const entry = scheduledEntry(root, lastRootEntry, isFirstGroup ? projectAnchor : undefined, rootIdsSoFar);
           if (entry) {
             entries.set(root.id, entry);
             lastRootEntry = entry;
+            rootIdsSoFar.push(root.id);
           }
         }
       }
