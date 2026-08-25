@@ -140,7 +140,7 @@ const WBS_TASK_COLUMN_DEFAULTS: Record<string, number> = {
   depends_on: 150,
   changes: 190,
 };
-const WBS_TASK_COLUMN_ORDER = ["task", "work_type", "effort_hours", "spent_hrs", "effort", "output_type", "output_count", "assignee", "depends_on", "changes"];
+const WBS_TASK_COLUMN_ORDER = ["task", "effort_hours", "spent_hrs", "effort", "assignee", "depends_on", "work_type", "output_type", "output_count", "changes"];
 const WBS_DATE_COLUMN_WIDTHS = [110, 100, 90, 110, 100, 90, 110, 100, 90]; // Start/End/Duration x3 modes, fixed
 const WBS_COL_WIDTHS_STORAGE_KEY = "capaciq_wbs_task_col_widths";
 const WBS_MIN_COL_WIDTH = 50;
