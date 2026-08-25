@@ -1872,7 +1872,7 @@ export default function Projects() {
       },
       {
         key: "estimated_hours",
-        label: "Planned Effort Hours",
+        label: "Scoped Hours",
         defaultWidth: 90,
         maxWidth: 120,
         render: (p) => {
@@ -2393,7 +2393,7 @@ export default function Projects() {
     { key: "end_date", label: "Due", getValue: (p) => (p.end_date ? new Date(p.end_date).getTime() : null) },
     { key: "health", label: "Health", getValue: (p) => healthRank(healthOf(p, tasks, holidayDates).label) },
     { key: "actual_progress", label: "Actual Progress", getValue: (p) => actualProgress(p.id, tasks) ?? -1 },
-    { key: "estimated_hours", label: "Planned Effort Hours", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
+    { key: "estimated_hours", label: "Scoped Hours", getValue: (p) => projectEstimatedHoursTotal(p.id, tasks) ?? -1 },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (p) => projectSpentHoursTotal(p.id, tasks, timeEntries, deletedSpentHours) },
     {
       key: "hours_variance",
@@ -2579,7 +2579,7 @@ export default function Projects() {
           const tone = t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral";
           const Icon = t.effort ? TASK_EFFORT_ICON[t.effort] : null;
           // Phase 12 (2026-08-20): Effort is now fully computed from
-          // Planned Effort Hours (see supabase/phase12_migration.sql's
+          // Scoped Hours (see supabase/phase12_migration.sql's
           // derive_effort_level trigger) -- this cell has been read-only
           // everywhere on this page since the 2026-07-29 Tasks-page
           // governance lockdown anyway, so no editable={} change is
@@ -2850,13 +2850,13 @@ export default function Projects() {
       },
       {
         key: "estimated_hours",
-        label: "Planned Effort Hours",
+        label: "Scoped Hours",
         defaultWidth: 90,
         maxWidth: 120,
         render: (t) => {
           const isParent = t._depth === 0 && hasChildren(t.id);
           return (
-            <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Planned Effort Hours)" : undefined}>
+            <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Scoped Hours)" : undefined}>
               <InlineNumber
                 value={t.estimated_hours}
                 editable={false}
@@ -3147,7 +3147,7 @@ export default function Projects() {
     },
     {
       key: "estimated_hours",
-      label: "Planned Effort Hours",
+      label: "Scoped Hours",
       getGroup: () => "",
       boardGroupable: false,
     },
@@ -3226,7 +3226,7 @@ export default function Projects() {
     { key: "start_date", label: "Start", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
     { key: "timing", label: "Timing", getValue: (t) => timingRank(timingOf(t).label) },
     { key: "current_due_date", label: "Due", getValue: (t) => (t.current_due_date ? new Date(t.current_due_date).getTime() : null) },
-    { key: "estimated_hours", label: "Planned Effort Hours", getValue: (t) => t.estimated_hours ?? null },
+    { key: "estimated_hours", label: "Scoped Hours", getValue: (t) => t.estimated_hours ?? null },
     { key: "time_spent_hours", label: "Spent hrs", getValue: (t) => spentHoursFor(t.id) },
     {
       key: "due_date_ext",

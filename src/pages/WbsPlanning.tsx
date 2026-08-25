@@ -118,7 +118,7 @@ interface OutputTypeOption {
 
 // Column resizing (2026-08-24, Sandra: "can we now allow resizing column
 // width in the WBS"). Scoped to the 10 single-column (rowSpan=2) headers
-// in the task table -- Task/Work Type/Planned Effort Hours/Spent hrs/
+// in the task table -- Task/Work Type/Scoped Hours/Spent hrs/
 // Effort/Output Type/Output Count/Assignee/Depends on/Changes vs Baseline.
 // The 9 date-mode sub-columns (Start/End/Duration x Forecasted/Capacity-
 // Based/Theoretical) stay at their fixed widths for now -- they're narrow
@@ -3681,7 +3681,7 @@ export default function WbsPlanning() {
                   <th rowSpan={2} className="row-gutter-cell" style={{ width: 22, minWidth: 22 }} />
                   <ResizableTh colKey="task">Task</ResizableTh>
                   <ResizableTh colKey="work_type">Work Type</ResizableTh>
-                  <ResizableTh colKey="effort_hours">Planned Effort Hours</ResizableTh>
+                  <ResizableTh colKey="effort_hours">Scoped Hours</ResizableTh>
                   <ResizableTh colKey="spent_hrs">Spent hrs</ResizableTh>
                   <ResizableTh colKey="effort">Effort</ResizableTh>
                   <ResizableTh colKey="output_type">Output Type</ResizableTh>
@@ -3840,7 +3840,7 @@ export default function WbsPlanning() {
                         )}
                       </td>
                       <td>
-                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Planned Effort Hours)" : undefined}>
+                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Scoped Hours)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
                             editable={rowEditable && !isParent}
@@ -3857,7 +3857,7 @@ export default function WbsPlanning() {
                         ) : (
                           // Phase 12 (2026-08-20): Effort is no longer
                           // independently pickable -- it's always computed
-                          // from Planned Effort Hours by the DB trigger
+                          // from Scoped Hours by the DB trigger
                           // (derive_task_effort, supabase/phase12_migration.sql),
                           // so this is now a plain read-only chip, same as
                           // the main Tasks page. A "Very Heavy" result gets

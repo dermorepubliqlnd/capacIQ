@@ -178,7 +178,7 @@ function subWeekCellStyle(wi: number): CSSProperties {
   };
 }
 
-// Every open task's Planned Effort Hours are spread evenly across its own
+// Every open task's Scoped Hours are spread evenly across its own
 // Mon-Fri working days between start and due date (fallback: the due date
 // itself, if that window is entirely a weekend) -- this is what makes the
 // grid date-aware instead of lumping a task's whole effort into every day.
@@ -548,7 +548,7 @@ export default function Utilization() {
     <div>
       <h1>Utilization</h1>
       <p className="subtitle">
-        Same grid as the Day Planner, but auto-computed: each task's Planned Effort Hours are spread across its own start-to-due window
+        Same grid as the Day Planner, but auto-computed: each task's Scoped Hours are spread across its own start-to-due window
         for past dates, and queue for real daily capacity (routing around a person's other work) from today forward, plus a small
         project-ownership allowance. Set effort hours and dates on tasks in Projects &amp; Tasks — this view updates automatically.
       </p>

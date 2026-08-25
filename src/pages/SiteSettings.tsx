@@ -108,9 +108,19 @@ export default function SiteSettings() {
   // editWorkTypeName/editOutputTypeName + editingWorkTypeId/
   // editingOutputTypeId state above as the panel's own name-draft field
   // (startEditWorkType/startEditOutputType already populate them).
-  const [openPanel, setOpenPanel] = useState<{ kind: "work_type" | "output_type"; id: string } | null>(null);
+  // Lists directory + Manage List drawer (2026-08-25 redesign, Sandra
+  // pasted a reference app screenshot: Settings > Lists shows a summary
+  // row per list -- name, item count, "Manage List" button -- instead of
+  // every item always expanded on the page). Only one drawer open at a
+  // time. Output Types has no directory row of its own -- Sandra's ask
+  // was for the Work Types drawer to embed the Task Type x Output Type
+  // matrix directly ("add by row or by column then just check"), so
+  // Output Type rename/activate/delete/add all happen from inside that
+  // matrix's column headers instead of a separate list.
+  const [manageDrawer, setManageDrawer] = useState<"sources" | "work_types" | null>(null);
   const [draggedWorkTypeId, setDraggedWorkTypeId] = useState<string | null>(null);
   const [draggedOutputTypeId, setDraggedOutputTypeId] = useState<string | null>(null);
+  const [draggedProjectSourceId, setDraggedProjectSourceId] = useState<string | null>(null);
 
   // Global historical-locking switch (Sandra, 2026-08-14): "we're still
   // playing around with the system" -- while off, Utilization/Day Planner
@@ -535,6 +545,29 @@ export default function SiteSettings() {
     loadOutputTypes();
   }
 
+  // Same drag-handle reorder as Work Types/Output Types above -- Project
+  // Sources moved into the same "Manage List" drawer treatment, so it
+  // gets the same reorder affordance instead of staying the odd one out.
+  async function reorderProjectSources(orderedIds: string[]) {
+    setProjectSourceBusy(true);
+    const results = await Promise.all(
+      orderedIds.map((id, idx) => supabase.from("project_sources").update({ sort_order: idx + 1 }).eq("id", id))
+    );
+    setProjectSourceBusy(false);
+    const err = results.find((r) => r.error)?.error;
+    if (err) {
+      window.alert(`Couldn't reorder: ${err.message}`);
+      return;
+    }
+    loadProjectSources();
+  }
+
+  function listSummary(items: { is_active: boolean }[]): string {
+    const active = items.filter((i) => i.is_active).length;
+    const inactive = items.length - active;
+    return inactive > 0 ? `${active} active \u00b7 ${inactive} inactive` : `${active} active`;
+  }
+
   useEffect(() => {
     if (me?.access_level === "full") {
       loadWorkTypes();
@@ -557,610 +590,425 @@ export default function SiteSettings() {
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Task Types</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Lists</div>
           <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-            The list of Task Type options offered on every task (Projects &amp; WBS Planning). Alphabetized by
-            default -- drag the grip handle to reorder. Click a row to rename, deactivate, mark it Fixed-Schedule, set
-            which Output Types it allows, or delete it.
+            Dropdown options used across Projects, Tasks, and WBS Planning.
           </div>
         </div>
-        {workTypesLoading && <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
-        {!workTypesLoading && workTypes.length === 0 && (
-          <div style={{ fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", maxWidth: 480 }}>
-          {workTypes.map((w) => {
-            const isDragging = draggedWorkTypeId === w.id;
-            const isSelected = openPanel?.kind === "work_type" && openPanel.id === w.id;
-            return (
-              <div
-                key={w.id}
-                onDragOver={(e) => {
-                  if (!draggedWorkTypeId || draggedWorkTypeId === w.id) return;
-                  e.preventDefault();
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (!draggedWorkTypeId) return;
-                  const ids = workTypes.map((x) => x.id);
-                  const without = ids.filter((id) => id !== draggedWorkTypeId);
-                  without.splice(without.indexOf(w.id), 0, draggedWorkTypeId);
-                  setDraggedWorkTypeId(null);
-                  reorderWorkTypes(without);
-                }}
-                onClick={() => {
-                  setOpenPanel({ kind: "work_type", id: w.id });
-                  startEditWorkType(w);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 8px",
-                  borderBottom: "1px solid var(--border)",
-                  opacity: isDragging ? 0.4 : w.is_active ? 1 : 0.55,
-                  cursor: "pointer",
-                  background: isSelected ? "var(--surface-hover, #f4f6fa)" : "transparent",
-                }}
-              >
-                {/* Grip handle: drag-to-reorder (Sandra, 2026-08-25: "let's
-                    use drag handles instead of the arrows for easier
-                    organization"), same affordance as ViewSettingsMenu's
-                    sort-priority list. Reorder persists a full 1..N
-                    re-sequence of sort_order, not just a neighbor swap. */}
-                <span
-                  draggable
-                  onDragStart={(e) => {
-                    e.stopPropagation();
-                    setDraggedWorkTypeId(w.id);
-                  }}
-                  onDragEnd={() => setDraggedWorkTypeId(null)}
-                  onClick={(e) => e.stopPropagation()}
-                  title="Drag to reorder"
-                  style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
-                >
-                  <GripVertical size={14} />
-                </span>
-                <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>{w.name}</span>
-                {w.is_fixed_schedule && (
-                  <span className="status-pill warning" style={{ fontSize: 10 }} title="Fixed-Schedule -- hours never defer">
-                    Fixed
-                  </span>
-                )}
-                <span className={`status-pill ${w.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
-                  {w.is_active ? "Active" : "Off"}
-                </span>
-                <ChevronRight size={13} color="var(--muted)" />
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 480 }}>
-          <input
-            value={newWorkTypeName}
-            onChange={(e) => setNewWorkTypeName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") addWorkType();
-            }}
-            placeholder="New task type name"
-            spellCheck={false}
-            autoComplete="off"
-            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-          />
-          <button
-            onClick={addWorkType}
-            disabled={workTypeBusy || !newWorkTypeName.trim()}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: "var(--navy)",
-              border: "none",
-              opacity: !newWorkTypeName.trim() ? 0.6 : 1,
-              cursor: !newWorkTypeName.trim() ? "default" : "pointer",
-            }}
-          >
-            <Plus size={14} />
-            Add
-          </button>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div>
-            <div style={{ fontSize: 12.5, fontWeight: 600 }}>Project Sources</div>
-            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-              The list of Source options offered on every project (Projects &amp; the Portfolio Dashboard's Source
-              filter/breakdown). Tracks how/why a project originated -- separate from Category, which classifies the
-              training type. Reorder with the arrows, rename inline, deactivate a source you no longer want offered on
-              NEW projects, or delete one outright if no project uses it.
-            </div>
-          </div>
-        </div>
-        <table className="data-table" style={{ width: "100%", maxWidth: 420 }}>
+        <table className="data-table" style={{ width: "100%" }}>
           <thead>
             <tr>
-              <th style={{ width: 40 }} />
-              <th>Name</th>
-              <th style={{ width: 90 }}>Status</th>
-              <th style={{ width: 100 }} />
+              <th>List</th>
+              <th style={{ width: 150 }}>Items</th>
+              <th style={{ width: 120 }} />
             </tr>
           </thead>
           <tbody>
-            {projectSourcesLoading && (
-              <tr>
-                <td colSpan={4} style={{ color: "var(--muted)" }}>Loading…</td>
-              </tr>
-            )}
-            {!projectSourcesLoading && projectSources.length === 0 && (
-              <tr>
-                <td colSpan={4} style={{ color: "var(--muted)" }}>None yet.</td>
-              </tr>
-            )}
-            {projectSources.map((s, idx) => {
-              const isEditing = editingProjectSourceId === s.id;
-              return (
-                <tr key={s.id}>
-                  <td>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <button
-                        onClick={() => moveProjectSource(s, "up")}
-                        disabled={projectSourceBusy || idx === 0}
-                        title="Move up"
-                        style={{ background: "none", border: "none", cursor: idx === 0 ? "default" : "pointer", opacity: idx === 0 ? 0.3 : 1, padding: 0 }}
-                      >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        onClick={() => moveProjectSource(s, "down")}
-                        disabled={projectSourceBusy || idx === projectSources.length - 1}
-                        title="Move down"
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: idx === projectSources.length - 1 ? "default" : "pointer",
-                          opacity: idx === projectSources.length - 1 ? 0.3 : 1,
-                          padding: 0,
-                        }}
-                      >
-                        <ArrowDown size={13} />
-                      </button>
-                    </div>
-                  </td>
-                  <td style={{ fontWeight: 600, color: "var(--navy)" }}>
-                    {isEditing ? (
-                      <input
-                        value={editProjectSourceName}
-                        onChange={(e) => setEditProjectSourceName(e.target.value)}
-                        spellCheck={false}
-                        autoComplete="off"
-                        style={{ ...inputStyle, marginTop: 0, fontWeight: 600 }}
-                      />
-                    ) : (
-                      s.name
-                    )}
-                  </td>
-                  <td>
-                    <span className={`status-pill ${s.is_active ? "success" : "neutral"}`}>{s.is_active ? "Active" : "Deactivated"}</span>
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {isEditing ? (
-                        <>
-                          <button
-                            onClick={() => saveProjectSourceRename(s.id)}
-                            disabled={projectSourceBusy}
-                            title="Save"
-                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--success-text)" }}
-                          >
-                            <Check size={14} />
-                          </button>
-                          <button
-                            onClick={() => setEditingProjectSourceId(null)}
-                            title="Cancel"
-                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}
-                          >
-                            <X size={14} />
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            onClick={() => startEditProjectSource(s)}
-                            title="Rename"
-                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--navy)" }}
-                          >
-                            <Pencil size={13} />
-                          </button>
-                          <button
-                            onClick={() => toggleProjectSourceActive(s)}
-                            disabled={projectSourceBusy}
-                            title={s.is_active ? "Deactivate" : "Reactivate"}
-                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: s.is_active ? "var(--danger-text)" : "var(--success-text)" }}
-                          >
-                            {s.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
-                          </button>
-                          <button
-                            onClick={() => deleteProjectSource(s)}
-                            disabled={projectSourceBusy}
-                            title="Delete (only if unused)"
-                            style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--danger-text)" }}
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            <tr>
+              <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Project Sources</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  How/why a project originated. Offered on every project and the Portfolio Dashboard's Source filter.
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{projectSourcesLoading ? "…" : listSummary(projectSources)}</td>
+              <td>
+                <button onClick={() => setManageDrawer("sources")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Task Types</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Offered on every task (Projects &amp; WBS Planning). Also sets which Output Types each Task Type allows.
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                {workTypesLoading ? "…" : listSummary(workTypes)}
+                {!outputTypesLoading && <span style={{ color: "var(--muted)" }}> · {listSummary(outputTypes)} output types</span>}
+              </td>
+              <td>
+                <button onClick={() => setManageDrawer("work_types")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
           </tbody>
         </table>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 480 }}>
-          <input
-            value={newProjectSourceName}
-            onChange={(e) => setNewProjectSourceName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") addProjectSource();
-            }}
-            placeholder="New source name"
-            spellCheck={false}
-            autoComplete="off"
-            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-          />
-          <button
-            onClick={addProjectSource}
-            disabled={projectSourceBusy || !newProjectSourceName.trim()}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: "var(--navy)",
-              border: "none",
-              opacity: !newProjectSourceName.trim() ? 0.6 : 1,
-              cursor: !newProjectSourceName.trim() ? "default" : "pointer",
-            }}
-          >
-            <Plus size={14} />
-            Add
-          </button>
-        </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Output Types</div>
-          <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-            The list of Output Type options offered on every task (WBS Planning's Output Type field and the
-            Portfolio Dashboard's Materials Output breakdown). Alphabetized by default -- drag the grip handle to
-            reorder. Which Output Types are pickable on a task depends on that task's Task Type -- set that mapping
-            from each Task Type's own panel above. Click a row here to rename, deactivate, or delete it.
-          </div>
-        </div>
-        {outputTypesLoading && <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
-        {!outputTypesLoading && outputTypes.length === 0 && (
-          <div style={{ fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", maxWidth: 480 }}>
-          {outputTypes.map((o) => {
-            const isDragging = draggedOutputTypeId === o.id;
-            const isSelected = openPanel?.kind === "output_type" && openPanel.id === o.id;
-            const usedByCount = mappings.filter((m) => m.output_type_id === o.id).length;
-            return (
-              <div
-                key={o.id}
-                onDragOver={(e) => {
-                  if (!draggedOutputTypeId || draggedOutputTypeId === o.id) return;
-                  e.preventDefault();
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (!draggedOutputTypeId) return;
-                  const ids = outputTypes.map((x) => x.id);
-                  const without = ids.filter((id) => id !== draggedOutputTypeId);
-                  without.splice(without.indexOf(o.id), 0, draggedOutputTypeId);
-                  setDraggedOutputTypeId(null);
-                  reorderOutputTypes(without);
-                }}
-                onClick={() => {
-                  setOpenPanel({ kind: "output_type", id: o.id });
-                  startEditOutputType(o);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 8px",
-                  borderBottom: "1px solid var(--border)",
-                  opacity: isDragging ? 0.4 : o.is_active ? 1 : 0.55,
-                  cursor: "pointer",
-                  background: isSelected ? "var(--surface-hover, #f4f6fa)" : "transparent",
-                }}
-              >
-                <span
-                  draggable
-                  onDragStart={(e) => {
-                    e.stopPropagation();
-                    setDraggedOutputTypeId(o.id);
-                  }}
-                  onDragEnd={() => setDraggedOutputTypeId(null)}
-                  onClick={(e) => e.stopPropagation()}
-                  title="Drag to reorder"
-                  style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
-                >
-                  <GripVertical size={14} />
-                </span>
-                <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>{o.name}</span>
-                <span style={{ fontSize: 10, color: "var(--muted)" }} title="Number of Task Types this Output Type is allowed on">
-                  {usedByCount} task type{usedByCount === 1 ? "" : "s"}
-                </span>
-                <span className={`status-pill ${o.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
-                  {o.is_active ? "Active" : "Off"}
-                </span>
-                <ChevronRight size={13} color="var(--muted)" />
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, maxWidth: 480 }}>
-          <input
-            value={newOutputTypeName}
-            onChange={(e) => setNewOutputTypeName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") addOutputType();
-            }}
-            placeholder="New output type name"
-            spellCheck={false}
-            autoComplete="off"
-            style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-          />
-          <button
-            onClick={addOutputType}
-            disabled={outputTypeBusy || !newOutputTypeName.trim()}
+      {manageDrawer && (
+        <>
+          <div onClick={() => setManageDrawer(null)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.35)", zIndex: 40 }} />
+          <div
             style={{
+              position: "fixed",
+              top: 0,
+              right: 0,
+              height: "100vh",
+              width: manageDrawer === "work_types" ? "min(1120px, 94vw)" : 480,
+              maxWidth: "94vw",
+              background: "var(--surface, #fff)",
+              boxShadow: "-8px 0 24px rgba(0,0,0,0.18)",
+              zIndex: 41,
               display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: "var(--navy)",
-              border: "none",
-              opacity: !newOutputTypeName.trim() ? 0.6 : 1,
-              cursor: !newOutputTypeName.trim() ? "default" : "pointer",
+              flexDirection: "column",
+              padding: 20,
+              overflowY: "auto",
             }}
           >
-            <Plus size={14} />
-            Add
-          </button>
-        </div>
-      </div>
-
-      {openPanel && (() => {
-        const w = openPanel.kind === "work_type" ? workTypes.find((x) => x.id === openPanel.id) ?? null : null;
-        const o = openPanel.kind === "output_type" ? outputTypes.find((x) => x.id === openPanel.id) ?? null : null;
-        return (
-          <>
-            {/* Side-peek panel (Phase 23 redesign, Sandra: "an edit panel
-                -- can be a side peep"). Backdrop closes it on click
-                outside; the panel itself is fixed so it doesn't scroll
-                away from a tall outline list. */}
-            <div onClick={() => setOpenPanel(null)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.35)", zIndex: 40 }} />
-            <div
-              style={{
-                position: "fixed",
-                top: 0,
-                right: 0,
-                height: "100vh",
-                width: 360,
-                maxWidth: "90vw",
-                background: "var(--surface, #fff)",
-                boxShadow: "-8px 0 24px rgba(0,0,0,0.18)",
-                zIndex: 41,
-                display: "flex",
-                flexDirection: "column",
-                padding: 18,
-                overflowY: "auto",
-              }}
-            >
-              {w && (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)" }}>Task Type</div>
-                    <button onClick={() => setOpenPanel(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
-                      <X size={16} />
-                    </button>
-                  </div>
-
-                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>Name</label>
-                  <div style={{ display: "flex", gap: 6, marginTop: 4, marginBottom: 14 }}>
-                    <input
-                      value={editWorkTypeName}
-                      onChange={(e) => setEditWorkTypeName(e.target.value)}
-                      spellCheck={false}
-                      autoComplete="off"
-                      style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-                    />
-                    <button
-                      onClick={() => saveWorkTypeRename(w.id)}
-                      disabled={workTypeBusy || !editWorkTypeName.trim()}
-                      title="Save name"
-                      style={{ display: "flex", alignItems: "center", background: "var(--navy)", border: "none", borderRadius: "var(--radius-sm)", color: "#fff", cursor: "pointer", padding: "0 10px" }}
-                    >
-                      <Check size={14} />
-                    </button>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                    <button
-                      onClick={() => toggleWorkTypeActive(w)}
-                      disabled={workTypeBusy}
-                      style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
-                        padding: "7px 10px",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-sm)",
-                        background: "var(--surface)",
-                        color: w.is_active ? "var(--danger-text)" : "var(--success-text)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {w.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
-                      {w.is_active ? "Deactivate" : "Reactivate"}
-                    </button>
-                    <button
-                      onClick={() => toggleWorkTypeFixedSchedule(w)}
-                      disabled={workTypeBusy}
-                      title={w.is_fixed_schedule ? "Hours never defer to another day" : "Hours can defer if the assignee is busy"}
-                      style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
-                        padding: "7px 10px",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        border: "1px solid var(--border)",
-                        borderRadius: "var(--radius-sm)",
-                        background: "var(--surface)",
-                        color: w.is_fixed_schedule ? "var(--warning-text)" : "var(--muted)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {w.is_fixed_schedule ? <CalendarClock size={13} /> : <CalendarDays size={13} />}
-                      {w.is_fixed_schedule ? "Fixed-Schedule" : "Flexible"}
-                    </button>
-                  </div>
-
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Allowed Output Types</div>
-                  <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 8 }}>
-                    Only checked Output Types will be pickable on a task set to this Task Type in WBS Planning.
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 18, maxHeight: 280, overflowY: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: 8 }}>
-                    {outputTypes.filter((o2) => o2.is_active).map((o2) => {
-                      const checked = mappings.some((m) => m.work_type_id === w.id && m.output_type_id === o2.id);
-                      return (
-                        <label key={o2.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                          <input type="checkbox" checked={checked} onChange={() => toggleMapping(w.id, o2.id)} disabled={mappingBusy} />
-                          {o2.name}
-                        </label>
-                      );
-                    })}
-                    {outputTypes.filter((o2) => o2.is_active).length === 0 && (
-                      <div style={{ fontSize: 11.5, color: "var(--muted)" }}>No active Output Types yet.</div>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={() => deleteWorkType(w)}
-                    disabled={workTypeBusy}
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", fontSize: 12, fontWeight: 600, border: "1px solid var(--danger-text)", borderRadius: "var(--radius-sm)", background: "none", color: "var(--danger-text)", cursor: "pointer" }}
-                  >
-                    <Trash2 size={13} />
-                    Delete (only if unused)
+            {manageDrawer === "sources" ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Project Sources</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
                   </button>
-                </>
-              )}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Drag the grip handle to reorder. Deactivating keeps a source's label on any project that already has it
+                  set -- it just disappears from the picker on new projects.
+                </div>
 
-              {o && (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)" }}>Output Type</div>
-                    <button onClick={() => setOpenPanel(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
-                      <X size={16} />
-                    </button>
-                  </div>
-
-                  <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)" }}>Name</label>
-                  <div style={{ display: "flex", gap: 6, marginTop: 4, marginBottom: 14 }}>
-                    <input
-                      value={editOutputTypeName}
-                      onChange={(e) => setEditOutputTypeName(e.target.value)}
-                      spellCheck={false}
-                      autoComplete="off"
-                      style={{ ...inputStyle, marginTop: 0, flex: 1 }}
-                    />
-                    <button
-                      onClick={() => saveOutputTypeRename(o.id)}
-                      disabled={outputTypeBusy || !editOutputTypeName.trim()}
-                      title="Save name"
-                      style={{ display: "flex", alignItems: "center", background: "var(--navy)", border: "none", borderRadius: "var(--radius-sm)", color: "#fff", cursor: "pointer", padding: "0 10px" }}
-                    >
-                      <Check size={14} />
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={() => toggleOutputTypeActive(o)}
-                    disabled={outputTypeBusy}
-                    style={{
-                      width: "100%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                      padding: "7px 10px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius-sm)",
-                      background: "var(--surface)",
-                      color: o.is_active ? "var(--danger-text)" : "var(--success-text)",
-                      cursor: "pointer",
-                      marginBottom: 16,
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <input
+                    value={newProjectSourceName}
+                    onChange={(e) => setNewProjectSourceName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addProjectSource();
                     }}
-                  >
-                    {o.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
-                    {o.is_active ? "Deactivate" : "Reactivate"}
+                    placeholder="New source name"
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+                  />
+                  <button onClick={addProjectSource} disabled={projectSourceBusy || !newProjectSourceName.trim()} style={addButtonStyle(!newProjectSourceName.trim())}>
+                    <Plus size={14} />
+                    Add
                   </button>
+                </div>
 
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Used by these Task Types</div>
-                  <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 8 }}>
-                    Edit this from each Task Type's own panel above -- open a Task Type, then check/uncheck Output Types there.
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 18 }}>
-                    {workTypes.filter((w2) => mappings.some((m) => m.output_type_id === o.id && m.work_type_id === w2.id)).map((w2) => (
-                      <span key={w2.id} className="status-pill neutral" style={{ fontSize: 10.5 }}>
-                        {w2.name}
-                      </span>
-                    ))}
-                    {!workTypes.some((w2) => mappings.some((m) => m.output_type_id === o.id && m.work_type_id === w2.id)) && (
-                      <div style={{ fontSize: 11.5, color: "var(--muted)" }}>Not mapped to any Task Type yet.</div>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={() => deleteOutputType(o)}
-                    disabled={outputTypeBusy}
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", fontSize: 12, fontWeight: 600, border: "1px solid var(--danger-text)", borderRadius: "var(--radius-sm)", background: "none", color: "var(--danger-text)", cursor: "pointer" }}
-                  >
-                    <Trash2 size={13} />
-                    Delete (only if unused)
+                <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  {projectSourcesLoading && <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
+                  {!projectSourcesLoading && projectSources.length === 0 && (
+                    <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
+                  )}
+                  {projectSources.map((s) => {
+                    const isEditing = editingProjectSourceId === s.id;
+                    const isDragging = draggedProjectSourceId === s.id;
+                    return (
+                      <div
+                        key={s.id}
+                        onDragOver={(e) => {
+                          if (!draggedProjectSourceId || draggedProjectSourceId === s.id) return;
+                          e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (!draggedProjectSourceId) return;
+                          const ids = projectSources.map((x) => x.id);
+                          const without = ids.filter((id) => id !== draggedProjectSourceId);
+                          without.splice(without.indexOf(s.id), 0, draggedProjectSourceId);
+                          setDraggedProjectSourceId(null);
+                          reorderProjectSources(without);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 10px",
+                          borderBottom: "1px solid var(--border)",
+                          opacity: isDragging ? 0.4 : s.is_active ? 1 : 0.55,
+                        }}
+                      >
+                        <span
+                          draggable
+                          onDragStart={() => setDraggedProjectSourceId(s.id)}
+                          onDragEnd={() => setDraggedProjectSourceId(null)}
+                          title="Drag to reorder"
+                          style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                        >
+                          <GripVertical size={14} />
+                        </span>
+                        {isEditing ? (
+                          <input
+                            value={editProjectSourceName}
+                            onChange={(e) => setEditProjectSourceName(e.target.value)}
+                            onBlur={() => saveProjectSourceRename(s.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveProjectSourceRename(s.id);
+                              if (e.key === "Escape") setEditingProjectSourceId(null);
+                            }}
+                            autoFocus
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={{ ...inputStyle, marginTop: 0, flex: 1, fontWeight: 600 }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditProjectSource(s)}
+                            title="Click to rename"
+                            style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)", cursor: "pointer" }}
+                          >
+                            {s.name}
+                          </span>
+                        )}
+                        <span className={`status-pill ${s.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
+                          {s.is_active ? "Active" : "Off"}
+                        </span>
+                        <button onClick={() => toggleProjectSourceActive(s)} disabled={projectSourceBusy} title={s.is_active ? "Deactivate" : "Reactivate"} style={iconBtnStyle(s.is_active ? "var(--danger-text)" : "var(--success-text)")}>
+                          {s.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                        </button>
+                        <button onClick={() => deleteProjectSource(s)} disabled={projectSourceBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Task Types</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
                   </button>
-                </>
-              )}
-            </div>
-          </>
-        );
-      })()}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Rows are Task Types, columns are Output Types. Check a box to allow that Output Type on tasks set to
+                  that Task Type -- this is exactly what WBS Planning's Output Type picker filters against. Click a
+                  name to rename it; drag a row's grip handle to reorder.
+                </div>
+
+                <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      value={newWorkTypeName}
+                      onChange={(e) => setNewWorkTypeName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addWorkType();
+                      }}
+                      placeholder="New task type"
+                      spellCheck={false}
+                      autoComplete="off"
+                      style={{ ...inputStyle, marginTop: 0, width: 170 }}
+                    />
+                    <button onClick={addWorkType} disabled={workTypeBusy || !newWorkTypeName.trim()} style={addButtonStyle(!newWorkTypeName.trim())}>
+                      <Plus size={13} />
+                      Add row
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      value={newOutputTypeName}
+                      onChange={(e) => setNewOutputTypeName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addOutputType();
+                      }}
+                      placeholder="New output type"
+                      spellCheck={false}
+                      autoComplete="off"
+                      style={{ ...inputStyle, marginTop: 0, width: 170 }}
+                    />
+                    <button onClick={addOutputType} disabled={outputTypeBusy || !newOutputTypeName.trim()} style={addButtonStyle(!newOutputTypeName.trim())}>
+                      <Plus size={13} />
+                      Add column
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  <table style={{ borderCollapse: "collapse", width: "max-content" }}>
+                    <thead>
+                      <tr>
+                        <th
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 2,
+                            background: "var(--surface)",
+                            minWidth: 230,
+                            borderBottom: "1px solid var(--border)",
+                            borderRight: "1px solid var(--border)",
+                            padding: "6px 10px",
+                            textAlign: "left",
+                            fontSize: 10.5,
+                            color: "var(--muted)",
+                          }}
+                        >
+                          Task Type \ Output Type
+                        </th>
+                        {outputTypes.map((o) => {
+                          const isEditingCol = editingOutputTypeId === o.id;
+                          return (
+                            <th
+                              key={o.id}
+                              style={{
+                                minWidth: 92,
+                                padding: "6px 5px",
+                                borderBottom: "1px solid var(--border)",
+                                borderLeft: "1px solid var(--border)",
+                                verticalAlign: "bottom",
+                                opacity: o.is_active ? 1 : 0.5,
+                              }}
+                            >
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                                {isEditingCol ? (
+                                  <input
+                                    value={editOutputTypeName}
+                                    onChange={(e) => setEditOutputTypeName(e.target.value)}
+                                    onBlur={() => saveOutputTypeRename(o.id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") saveOutputTypeRename(o.id);
+                                      if (e.key === "Escape") setEditingOutputTypeId(null);
+                                    }}
+                                    autoFocus
+                                    spellCheck={false}
+                                    autoComplete="off"
+                                    style={{ ...inputStyle, marginTop: 0, width: 84, fontSize: 10.5, textAlign: "center", padding: "3px 4px" }}
+                                  />
+                                ) : (
+                                  <span
+                                    onClick={() => startEditOutputType(o)}
+                                    title="Click to rename"
+                                    style={{ fontSize: 10.5, fontWeight: 600, color: "var(--navy)", cursor: "pointer", textAlign: "center" }}
+                                  >
+                                    {o.name}
+                                  </span>
+                                )}
+                                <div style={{ display: "flex", gap: 4 }}>
+                                  <button
+                                    onClick={() => toggleOutputTypeActive(o)}
+                                    disabled={outputTypeBusy}
+                                    title={o.is_active ? "Deactivate" : "Reactivate"}
+                                    style={iconBtnStyle(o.is_active ? "var(--muted)" : "var(--success-text)")}
+                                  >
+                                    {o.is_active ? <ShieldOff size={11} /> : <ShieldCheck size={11} />}
+                                  </button>
+                                  <button onClick={() => deleteOutputType(o)} disabled={outputTypeBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                                    <Trash2 size={11} />
+                                  </button>
+                                </div>
+                              </div>
+                            </th>
+                          );
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workTypesLoading && (
+                        <tr>
+                          <td style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>Loading…</td>
+                        </tr>
+                      )}
+                      {!workTypesLoading && workTypes.length === 0 && (
+                        <tr>
+                          <td style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>None yet.</td>
+                        </tr>
+                      )}
+                      {workTypes.map((w) => {
+                        const isDragging = draggedWorkTypeId === w.id;
+                        const isEditingRow = editingWorkTypeId === w.id;
+                        return (
+                          <tr
+                            key={w.id}
+                            onDragOver={(e) => {
+                              if (!draggedWorkTypeId || draggedWorkTypeId === w.id) return;
+                              e.preventDefault();
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (!draggedWorkTypeId) return;
+                              const ids = workTypes.map((x) => x.id);
+                              const without = ids.filter((id) => id !== draggedWorkTypeId);
+                              without.splice(without.indexOf(w.id), 0, draggedWorkTypeId);
+                              setDraggedWorkTypeId(null);
+                              reorderWorkTypes(without);
+                            }}
+                            style={{ opacity: isDragging ? 0.4 : w.is_active ? 1 : 0.55 }}
+                          >
+                            <td
+                              style={{
+                                position: "sticky",
+                                left: 0,
+                                zIndex: 1,
+                                background: "var(--surface)",
+                                borderRight: "1px solid var(--border)",
+                                borderBottom: "1px solid var(--border)",
+                                padding: "6px 8px",
+                              }}
+                            >
+                              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                <span
+                                  draggable
+                                  onDragStart={() => setDraggedWorkTypeId(w.id)}
+                                  onDragEnd={() => setDraggedWorkTypeId(null)}
+                                  title="Drag to reorder"
+                                  style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                                >
+                                  <GripVertical size={13} />
+                                </span>
+                                {isEditingRow ? (
+                                  <input
+                                    value={editWorkTypeName}
+                                    onChange={(e) => setEditWorkTypeName(e.target.value)}
+                                    onBlur={() => saveWorkTypeRename(w.id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") saveWorkTypeRename(w.id);
+                                      if (e.key === "Escape") setEditingWorkTypeId(null);
+                                    }}
+                                    autoFocus
+                                    spellCheck={false}
+                                    autoComplete="off"
+                                    style={{ ...inputStyle, marginTop: 0, flex: 1, fontSize: 12, fontWeight: 600, padding: "3px 5px" }}
+                                  />
+                                ) : (
+                                  <span
+                                    onClick={() => startEditWorkType(w)}
+                                    title="Click to rename"
+                                    style={{ flex: 1, fontSize: 12, fontWeight: 600, color: "var(--navy)", cursor: "pointer", whiteSpace: "nowrap" }}
+                                  >
+                                    {w.name}
+                                  </span>
+                                )}
+                                <button
+                                  onClick={() => toggleWorkTypeFixedSchedule(w)}
+                                  disabled={workTypeBusy}
+                                  title={w.is_fixed_schedule ? "Fixed-Schedule -- hours never defer" : "Flexible -- hours can defer if busy"}
+                                  style={iconBtnStyle(w.is_fixed_schedule ? "var(--warning-text)" : "var(--muted)")}
+                                >
+                                  {w.is_fixed_schedule ? <CalendarClock size={12} /> : <CalendarDays size={12} />}
+                                </button>
+                                <button onClick={() => toggleWorkTypeActive(w)} disabled={workTypeBusy} title={w.is_active ? "Deactivate" : "Reactivate"} style={iconBtnStyle(w.is_active ? "var(--danger-text)" : "var(--success-text)")}>
+                                  {w.is_active ? <ShieldOff size={12} /> : <ShieldCheck size={12} />}
+                                </button>
+                                <button onClick={() => deleteWorkType(w)} disabled={workTypeBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </td>
+                            {outputTypes.map((o) => {
+                              const checked = mappings.some((m) => m.work_type_id === w.id && m.output_type_id === o.id);
+                              return (
+                                <td key={o.id} style={{ textAlign: "center", borderLeft: "1px solid var(--border)", borderBottom: "1px solid var(--border)", padding: 6 }}>
+                                  <input type="checkbox" checked={checked} onChange={() => toggleMapping(w.id, o.id)} disabled={mappingBusy} />
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
 
       <div
         className="card"
@@ -1209,3 +1057,36 @@ const inputStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-sm)",
 };
+
+const manageButtonStyle: CSSProperties = {
+  padding: "6px 12px",
+  fontSize: 11.5,
+  fontWeight: 600,
+  color: "var(--navy)",
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  cursor: "pointer",
+};
+
+function addButtonStyle(disabled: boolean): CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "7px 12px",
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#fff",
+    background: "var(--navy)",
+    border: "none",
+    borderRadius: "var(--radius-sm)",
+    opacity: disabled ? 0.6 : 1,
+    cursor: disabled ? "default" : "pointer",
+    whiteSpace: "nowrap",
+  };
+}
+
+function iconBtnStyle(color: string): CSSProperties {
+  return { display: "flex", background: "none", border: "none", cursor: "pointer", color, padding: 2, flexShrink: 0 };
+}
