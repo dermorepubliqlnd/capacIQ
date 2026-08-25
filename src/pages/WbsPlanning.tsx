@@ -441,6 +441,13 @@ export default function WbsPlanning() {
   // whatever a task's own historical assignee_id already points to.
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeOption[]>([]);
+  // Task Type <-> Output Type conditional mapping (Phase 23, 2026-08-25) --
+  // Sandra: "I want the output be conditional based on task type." Filters
+  // the Output Type picker below to only what's allowed for the task's
+  // current Work Type; falls back to every active Output Type if the task
+  // has no Work Type set yet, or if that Work Type has no mapped rows at
+  // all, so nothing goes unpickable.
+  const [workTypeOutputTypes, setWorkTypeOutputTypes] = useState<{ work_type_id: string; output_type_id: string }[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const wbsColWidthsRef = useRef<Record<string, number>>(
     (() => {
@@ -568,7 +575,7 @@ export default function WbsPlanning() {
     // pass silent=true to skip that full-page loading flash entirely --
     // state still updates underneath, but the page never unmounts.
     if (!silent) setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }, { data: ots }] = await Promise.all([
+    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
       supabase
         .from("tasks")
@@ -585,6 +592,7 @@ export default function WbsPlanning() {
       supabase.from("projects").select("id,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
       supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("work_type_output_types").select("work_type_id,output_type_id"),
     ]);
     setProject((proj as ProjectRow) ?? null);
     // Phase 21 (2026-08-24): activeMode is now a fixed constant
@@ -598,6 +606,7 @@ export default function WbsPlanning() {
     setAllProjects((allProjs as UtilProjectRow[]) ?? []);
     setWorkTypes((wts as WorkTypeOption[]) ?? []);
     setOutputTypes((ots as OutputTypeOption[]) ?? []);
+    setWorkTypeOutputTypes((wtots as { work_type_id: string; output_type_id: string }[]) ?? []);
 
     // Dependencies are same-project only (v1), so fetched as a follow-up
     // query scoped to this project's own task ids, once they're known --
@@ -3871,7 +3880,22 @@ export default function WbsPlanning() {
                       <td>
                         {(() => {
                           const currentOt = outputTypes.find((o) => o.id === t.output_type_id);
-                          const pickableOt = outputTypes.filter((o) => o.is_active || o.id === t.output_type_id);
+                          // Phase 23 (2026-08-25): conditional Output Type --
+                          // Sandra: "I want the output be conditional based
+                          // on task type." Once a Work Type is mapped to at
+                          // least one Output Type, only those (plus the
+                          // active-or-already-set rule from before) are
+                          // pickable; with no Work Type set, or a Work Type
+                          // that has zero mapped rows, every active Output
+                          // Type is offered so nothing is ever unpickable.
+                          const mappedOutputTypeIds = t.work_type_id
+                            ? new Set(workTypeOutputTypes.filter((m) => m.work_type_id === t.work_type_id).map((m) => m.output_type_id))
+                            : null;
+                          const pickableOt = outputTypes.filter(
+                            (o) =>
+                              (o.is_active || o.id === t.output_type_id) &&
+                              (!mappedOutputTypeIds || mappedOutputTypeIds.size === 0 || mappedOutputTypeIds.has(o.id) || o.id === t.output_type_id)
+                          );
                           return (
                             <InlineSelect
                               value={currentOt?.name ?? ""}
