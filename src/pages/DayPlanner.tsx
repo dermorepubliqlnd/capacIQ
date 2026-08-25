@@ -3,6 +3,8 @@ import { ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { PROJECT_PM_DAILY_HOURS } from "../lib/capacityScheduler";
+import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
+import { scopedHoursOnDate } from "../lib/scopedHours";
 
 interface PersonRow {
   id: string;
@@ -21,10 +23,13 @@ interface ProjectRow {
 interface TaskRow {
   id: string;
   project_id: string;
+  parent_task_id: string | null;
   name: string;
   assignee_id: string | null;
+  status: string | null;
   start_date: string | null;
   current_due_date: string;
+  estimated_hours: number | null;
   is_archived: boolean;
 }
 interface AllocationRow {
@@ -203,7 +208,7 @@ export default function DayPlanner() {
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
   // "Planned" (default) is this page's original manual time_allocations
   // grid; "Logged" is the new read-only view sourced from time_entries.
-  const [mode, setMode] = useState<"planned" | "logged">("planned");
+  const [mode, setMode] = useState<"planned" | "logged" | "scoped">("planned");
   const [expanded, setExpanded] = useState<string[]>([]);
   const [offMenu, setOffMenu] = useState<{ personId: string; date: string; x: number; y: number } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -213,7 +218,7 @@ export default function DayPlanner() {
     const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }, { data: te }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,is_archived").eq("is_archived", false),
-      supabase.from("tasks").select("id,project_id,name,assignee_id,start_date,current_due_date,is_archived").eq("is_archived", false),
+      supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived").eq("is_archived", false),
       supabase.from("time_allocations").select("*"),
       supabase.from("person_availability").select("*"),
       supabase.from("holidays").select("*"),
@@ -394,6 +399,37 @@ export default function DayPlanner() {
       .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
   }
 
+  // Scoped Hours helpers (Work Schedule 3rd tab, 2026-08-25). Read-only,
+  // auto-computed -- sums each assigned task's Scoped Hours (estimated_hours)
+  // spread across its own start-to-due working-day window, via the shared
+  // engine in scopedHours.ts (ported from Utilization.tsx so the two pages
+  // never drift). Excludes completed tasks and parent tasks (parents are
+  // rollup/reference rows -- summing their own Scoped Hours on top of their
+  // sub-tasks' would double-count, the same reasoning Utilization.tsx's
+  // openTasksFor already applies).
+  const parentTaskIds = new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
+  function scopedOpenTasksFor(personId: string): TaskRow[] {
+    return tasks.filter(
+      (t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete"
+    );
+  }
+  function scopedSubItemsFor(personId: string): { taskId: string; label: string; project?: string }[] {
+    return scopedOpenTasksFor(personId)
+      .map((t) => {
+        const proj = projects.find((p) => p.id === t.project_id);
+        return { taskId: t.id, label: t.name, project: proj?.name };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  function scopedHoursFor(personId: string, taskId: string, dateStr: string): number {
+    const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
+    if (!t) return 0;
+    return scopedHoursOnDate(t, dateStr);
+  }
+  function scopedPersonTotalFor(personId: string, dateStr: string): number {
+    return scopedOpenTasksFor(personId).reduce((sum, t) => sum + scopedHoursOnDate(t, dateStr), 0);
+  }
+
   async function commitHours(personId: string, itemType: SubItem["type"], itemId: string | null, dateStr: string, raw: string) {
     const hours = parseFloat(raw);
     const existing = allocFor(personId, itemType, itemId, dateStr);
@@ -478,11 +514,13 @@ export default function DayPlanner() {
 
   return (
     <div>
-      <h1>Day Planner</h1>
+      <h1>Work Schedule</h1>
       <p className="subtitle">
         {mode === "planned"
-          ? "Plan daily time across projects, tasks, and ad hoc work — separate from a task's estimated/spent hours. Everyone can see the team's plan; you can only enter hours or mark days off on your own row."
-          : "Actual hours people have logged via Time Tracking (timer + manual entries), confirmed or approved only. Read-only here — edit or submit time from the Time Tracking page."}
+          ? "Plan daily time across projects, tasks, and ad hoc work — separate from a task's Scoped Hours. Everyone can see the team's plan; you can only enter hours or mark days off on your own row."
+          : mode === "logged"
+          ? "Actual hours people have logged via Time Tracking (timer + manual entries), confirmed or approved only. Read-only here — edit or submit time from the Time Tracking page."
+          : "Each open task's Scoped Hours, spread automatically across its start-to-due window. Read-only, auto-computed — edit a task's Scoped Hours from Projects & Tasks or the WBS."}
       </p>
 
       {/* Planned/Logged toggle (Phase 24, 2026-08-25) -- Sandra: "Time logs
@@ -503,7 +541,7 @@ export default function DayPlanner() {
             cursor: "pointer",
           }}
         >
-          Planned
+          Scheduled
         </button>
         <button
           onClick={() => setMode("logged")}
@@ -519,6 +557,21 @@ export default function DayPlanner() {
           }}
         >
           Logged
+        </button>
+        <button
+          onClick={() => setMode("scoped")}
+          style={{
+            padding: "6px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            background: mode === "scoped" ? "var(--navy)" : "var(--surface)",
+            color: mode === "scoped" ? "#fff" : "var(--text-secondary)",
+            cursor: "pointer",
+          }}
+        >
+          Scoped
         </button>
       </div>
 
@@ -877,7 +930,7 @@ export default function DayPlanner() {
                     </Fragment>
                   );
                 })
-              ) : (
+              ) : mode === "logged" ? (
                 // Logged Hours branch (Phase 24, 2026-08-25): read-only --
                 // no inputs, no Off/Half-day menu, no Adhoc/project PM-
                 // overhead bucket (time_entries only ever reference a
@@ -980,6 +1033,125 @@ export default function DayPlanner() {
                               {days.map((d, i) => {
                                 const dateStr = toISO(d);
                                 const value = loggedHoursFor(person.id, item.taskId, dateStr);
+                                return (
+                                  <td key={i} style={subCellStyle(i)}>
+                                    {value > 0 ? (
+                                      <span style={{ display: "block", textAlign: "center", fontSize: 11, padding: "5px 3px", color: "var(--navy)" }}>
+                                        {value.toFixed(1)}
+                                      </span>
+                                    ) : null}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))
+                        ))}
+                    </Fragment>
+                  );
+                })
+              ) : (
+                // Scoped Hours branch (Work Schedule 3rd tab, 2026-08-25):
+                // read-only, auto-computed -- no inputs, no Off/Half-day
+                // menu. Sub-items are whichever open (non-complete,
+                // non-parent) tasks this person is currently assigned to;
+                // each task's Scoped Hours are spread across its own
+                // start-to-due window via scopedHours.ts.
+                people.map((person) => {
+                  const isExpanded = expanded.includes(person.id);
+                  const items = scopedSubItemsFor(person.id);
+                  return (
+                    <Fragment key={person.id}>
+                      <tr style={{ background: "#fafbfc" }}>
+                        <td
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 1,
+                            background: "#fafbfc",
+                            padding: "8px 13px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--navy)",
+                            borderBottom: "1px solid var(--border)",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                          onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            {person.name}
+                          </span>
+                        </td>
+                        {days.map((d, i) => {
+                          const dateStr = toISO(d);
+                          const dow = d.getDay();
+                          const weekend = dow === 0 || dow === 6;
+                          const isHoliday = holidayByDate.has(dateStr);
+                          const total = scopedPersonTotalFor(person.id, dateStr);
+                          const capacity = person.daily_capacity_hours;
+                          const pct = capacity > 0 ? (total / capacity) * 100 : 0;
+                          const tone = utilTone(pct);
+                          const bg =
+                            total === 0
+                              ? weekend || isHoliday
+                                ? "var(--hover-bg)"
+                                : undefined
+                              : tone === "danger"
+                              ? "var(--danger-bg)"
+                              : tone === "warning"
+                              ? "var(--warning-bg)"
+                              : "var(--success-bg)";
+                          const fg = tone === "danger" ? "var(--danger-text)" : tone === "warning" ? "var(--warning-text)" : "var(--success-text)";
+                          return (
+                            <td key={i} style={{ ...rollupCellStyle(i), background: bg, color: total > 0 ? fg : "var(--muted)", fontSize: 12.5, fontWeight: 600 }}>
+                              {total > 0 ? `${total.toFixed(1)}h` : "–"}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      {isExpanded &&
+                        (items.length === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={1 + days.length}
+                              style={{
+                                padding: "5px 13px 5px 35px",
+                                fontSize: 11,
+                                color: "var(--muted)",
+                                fontStyle: "italic",
+                                borderBottom: "1px solid var(--border)",
+                              }}
+                            >
+                              No open tasks with Scoped Hours assigned.
+                            </td>
+                          </tr>
+                        ) : (
+                          items.map((item) => (
+                            <tr key={`${person.id}-${item.taskId}`}>
+                              <td
+                                title={item.project ? `${item.label} — ${item.project}` : item.label}
+                                style={{
+                                  position: "sticky",
+                                  left: 0,
+                                  zIndex: 1,
+                                  background: "var(--surface)",
+                                  padding: "5px 13px 5px 35px",
+                                  fontSize: 11,
+                                  color: "var(--text-secondary)",
+                                  borderBottom: "1px solid var(--border)",
+                                  whiteSpace: "nowrap",
+                                  maxWidth: LABEL_W,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {item.label}
+                                {item.project && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>}
+                              </td>
+                              {days.map((d, i) => {
+                                const dateStr = toISO(d);
+                                const value = scopedHoursFor(person.id, item.taskId, dateStr);
                                 return (
                                   <td key={i} style={subCellStyle(i)}>
                                     {value > 0 ? (

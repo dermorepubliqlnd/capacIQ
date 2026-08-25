@@ -13,7 +13,8 @@ const mainItems = [
 
 const resourcePlanningItems = [
   { to: "/utilization", label: "Utilization" },
-  { to: "/day-planner", label: "Day Planner" },
+  { to: "/day-planner", label: "Work Schedule" },
+  { to: "/hours-overview", label: "Scoped vs Logged" },
 ];
 
 const adminItems = [
