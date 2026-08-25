@@ -2187,49 +2187,72 @@ export default function Projects() {
       label: "Status",
       getGroup: (p) => p.status ?? "No status",
       getTone: (p) => PROJECT_STATUS_TONES[p.status ?? ""] ?? "neutral",
+      // Phase 23 follow-up (2026-08-25, Sandra: "that's ok to fix too to
+      // avoid confusion"): same treatment as taskGroupOptions above --
+      // every groupable field gets its own canonical section order
+      // instead of incidental row-encounter order. Deliberately-ordered
+      // scales (Status/Priority/Complexity/Phase/WBS Status) keep their
+      // workflow/severity order rather than being alphabetized.
+      allGroups: () => [...PROJECT_STATUS_OPTIONS, "No status"],
     },
     {
       key: "phase",
       label: "Phase",
       getGroup: (p) => p.phase ?? "No phase",
       getTone: (p) => PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral",
+      allGroups: () => [...PROJECT_PHASE_ALL, "No phase"],
     },
     {
       key: "priority",
       label: "Priority",
       getGroup: (p) => p.priority ?? "No priority",
       getTone: (p) => priorityTone(p.priority),
+      allGroups: () => [...PROJECT_PRIORITY_OPTIONS, "No priority"],
     },
-    { key: "owner", label: "Owner", getGroup: (p) => ownerName(p.owner_id) },
+    {
+      key: "owner",
+      label: "Owner",
+      getGroup: (p) => ownerName(p.owner_id),
+      allGroups: () => [...people.map((person) => person.name), "—"],
+    },
     {
       key: "category",
       label: "Category",
       getGroup: (p) => p.category ?? "Uncategorized",
       getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
+      // PROJECT_CATEGORY_OPTIONS is already alphabetized in notionOptions.ts.
+      allGroups: () => [...PROJECT_CATEGORY_OPTIONS, "Uncategorized"],
     },
     {
       key: "source",
       label: "Source",
       getGroup: (p) => projectSources.find((s) => s.id === p.source_id)?.name ?? "Not set",
       getTone: () => "neutral",
+      allGroups: () => [...projectSources.filter((s) => s.is_active).map((s) => s.name), "Not set"],
     },
     {
       key: "effort_level",
       label: "Complexity",
       getGroup: (p) => p.effort_level ?? "No complexity set",
       getTone: (p) => PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral",
+      allGroups: () => [...PROJECT_EFFORT_LEVEL_OPTIONS, "No complexity set"],
     },
     {
       key: "health",
       label: "Health",
       getGroup: (p) => healthOf(p, tasks, holidayDates).label,
       getTone: (p) => healthOf(p, tasks, holidayDates).tone,
+      // No allGroups here -- healthOf() returns many dynamic, open-ended
+      // labels (not a small fixed enum like the fields above), so there's
+      // no safe canonical list to enumerate without risking a missing
+      // bucket. Left on the previous row-encounter-order behavior.
     },
     {
       key: "wbs_status",
       label: "WBS Status",
       getGroup: (p) => WBS_STATUS_META[p.wbs_status]?.label ?? p.wbs_status,
       getTone: (p) => WBS_STATUS_TONES[p.wbs_status] ?? "neutral",
+      allGroups: () => (Object.keys(WBS_STATUS_META) as WbsStatus[]).map((s) => WBS_STATUS_META[s].label),
     },
   ];
 
@@ -3037,30 +3060,51 @@ export default function Projects() {
       label: "Status",
       getGroup: (t) => t.status ?? "No status",
       getTone: (t) => statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status)),
+      // Phase 23 follow-up (2026-08-25, Sandra: "that's ok to fix too to
+      // avoid confusion"): every groupable field here used to fall back to
+      // incidental row-encounter order for its section order (only
+      // "project" had a fixed allGroups list). Each field now gets its own
+      // canonical order -- the same fixed sequence already used for its
+      // Board columns/dropdown, not a blind alphabetical re-sort, so a
+      // deliberately-ordered scale (Status/Effort here) keeps its
+      // workflow/severity order instead of being scrambled A-Z.
+      allGroups: () => [...TASK_STATUS_OPTIONS, "No status"],
     },
-    { key: "assignee", label: "Assignee", getGroup: (t) => ownerName(t.assignee_id) },
+    {
+      key: "assignee",
+      label: "Assignee",
+      getGroup: (t) => ownerName(t.assignee_id),
+      allGroups: () => [...people.map((p) => p.name), "—"],
+    },
     {
       key: "effort",
       label: "Effort",
       getGroup: (t) => t.effort ?? "No effort set",
       getTone: (t) => (t.effort ? TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral" : "neutral"),
+      allGroups: () => [...TASK_EFFORT_OPTIONS, "No effort set"],
     },
     {
       key: "work_type",
       label: "Work Type",
       getGroup: (t) => workTypes.find((w) => w.id === t.work_type_id)?.name ?? "No work type set",
+      // workTypes is already alphabetized (Phase 23's one-time DB re-sort
+      // + everything reads .order("sort_order")), so this just carries
+      // that same order into the grouped Table view's section headers.
+      allGroups: () => [...workTypes.filter((w) => w.is_active).map((w) => w.name), "No work type set"],
     },
     {
       key: "timing",
       label: "Timing",
       getGroup: (t) => timingOf(t).label,
       getTone: (t) => timingOf(t).tone,
+      allGroups: () => TASK_TIMING_BOARD_COLUMNS.map((c) => c.value),
     },
     {
       key: "due_date_ext",
       label: "Due Date Ext.",
       getGroup: (t) => dueDateExtStatus(t).label,
       getTone: (t) => dueDateExtStatus(t).tone,
+      allGroups: () => ["No Extension", "Requested", "Rejected", "Extended"],
     },
   ];
 
