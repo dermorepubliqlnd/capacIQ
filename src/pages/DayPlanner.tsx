@@ -47,6 +47,20 @@ interface HolidayRow {
   name: string;
   category: "legal_ph" | "local" | "internal";
 }
+// Logged Hours (Phase 24, 2026-08-25) -- Sandra: "Time logs version will
+// actually capture worked hours logged via the time tracking system."
+// Read-only counterpart to time_allocations above: same person x day
+// grid, but sourced from actual confirmed/approved time_entries instead
+// of manually-planned hours. Only the fields this view needs -- the full
+// approval-workflow shape lives in TimeTracking.tsx.
+interface TimeEntryRow {
+  id: string;
+  task_id: string;
+  person_id: string;
+  started_at: string;
+  duration_minutes: number | null;
+  status: "running" | "pending_confirm" | "confirmed" | "pending_approval" | "approved" | "rejected";
+}
 // Ownership/assignment history (2026-08-14): a project-owner/task-assignee
 // transfer must freeze already-elapsed days under the ORIGINAL person, not
 // silently move them to the new one -- same fix as Utilization.tsx, and
@@ -182,17 +196,21 @@ export default function DayPlanner() {
   const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
   const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
   const [deletedHours, setDeletedHours] = useState<DeletedHourRow[]>([]);
+  const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
+  // "Planned" (default) is this page's original manual time_allocations
+  // grid; "Logged" is the new read-only view sourced from time_entries.
+  const [mode, setMode] = useState<"planned" | "logged">("planned");
   const [expanded, setExpanded] = useState<string[]>([]);
   const [offMenu, setOffMenu] = useState<{ personId: string; date: string; x: number; y: number } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
+    const [{ data: p }, { data: pr }, { data: tk }, { data: al }, { data: av }, { data: hol }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }, { data: te }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,is_archived").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,name,assignee_id,start_date,current_due_date,is_archived").eq("is_archived", false),
@@ -203,6 +221,11 @@ export default function DayPlanner() {
       supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
       supabase.from("deleted_person_day_hours").select("person_id,date,hours"),
       supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
+      // Logged Hours (Phase 24): only entries that have cleared review
+      // count toward "logged" totals, per Sandra -- running/pending
+      // entries can still change status, so they're excluded here rather
+      // than shown as if final.
+      supabase.from("time_entries").select("id,task_id,person_id,started_at,duration_minutes,status").in("status", ["confirmed", "approved"]),
     ]);
     setPeople((p as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
@@ -210,6 +233,7 @@ export default function DayPlanner() {
     setAllocations((al as AllocationRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
+    setTimeEntries((te as TimeEntryRow[]) ?? []);
     // Sandra, 2026-08-14: same global off switch as Utilization.tsx -- see
     // that file's loadAll for the full explanation.
     const historicalLockingEnabled = (settings as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false;
@@ -343,6 +367,33 @@ export default function DayPlanner() {
     return subtotal + deletedHoursFor(personId, dateStr);
   }
 
+  // Logged Hours helpers (Phase 24, 2026-08-25). Bucketed by the literal
+  // date portion of started_at (slice(0, 10)), same convention formatDate()
+  // already uses elsewhere in this app -- not a local-timezone Date
+  // conversion, so a person on the other side of midnight UTC from the
+  // server doesn't see an entry land on the "wrong" day relative to how
+  // it's displayed everywhere else.
+  function loggedSubItemsFor(personId: string): { taskId: string; label: string; project?: string }[] {
+    const taskIds = Array.from(new Set(timeEntries.filter((e) => e.person_id === personId).map((e) => e.task_id)));
+    return taskIds
+      .map((id) => {
+        const t = tasks.find((x) => x.id === id);
+        const proj = t ? projects.find((p) => p.id === t.project_id) : undefined;
+        return { taskId: id, label: t?.name ?? "Deleted/archived task", project: proj?.name };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  function loggedHoursFor(personId: string, taskId: string, dateStr: string): number {
+    return timeEntries
+      .filter((e) => e.person_id === personId && e.task_id === taskId && e.started_at.slice(0, 10) === dateStr)
+      .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
+  }
+  function loggedPersonTotalFor(personId: string, dateStr: string): number {
+    return timeEntries
+      .filter((e) => e.person_id === personId && e.started_at.slice(0, 10) === dateStr)
+      .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
+  }
+
   async function commitHours(personId: string, itemType: SubItem["type"], itemId: string | null, dateStr: string, raw: string) {
     const hours = parseFloat(raw);
     const existing = allocFor(personId, itemType, itemId, dateStr);
@@ -429,9 +480,47 @@ export default function DayPlanner() {
     <div>
       <h1>Day Planner</h1>
       <p className="subtitle">
-        Plan daily time across projects, tasks, and ad hoc work — separate from a task's estimated/spent hours. Everyone can see the team's plan; you can only
-        enter hours or mark days off on your own row.
+        {mode === "planned"
+          ? "Plan daily time across projects, tasks, and ad hoc work — separate from a task's estimated/spent hours. Everyone can see the team's plan; you can only enter hours or mark days off on your own row."
+          : "Actual hours people have logged via Time Tracking (timer + manual entries), confirmed or approved only. Read-only here — edit or submit time from the Time Tracking page."}
       </p>
+
+      {/* Planned/Logged toggle (Phase 24, 2026-08-25) -- Sandra: "Time logs
+          version will actually capture worked hours logged via the time
+          tracking system." Same grid below serves both; only the data
+          source and editability change. */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+        <button
+          onClick={() => setMode("planned")}
+          style={{
+            padding: "6px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            background: mode === "planned" ? "var(--navy)" : "var(--surface)",
+            color: mode === "planned" ? "#fff" : "var(--text-secondary)",
+            cursor: "pointer",
+          }}
+        >
+          Planned
+        </button>
+        <button
+          onClick={() => setMode("logged")}
+          style={{
+            padding: "6px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            background: mode === "logged" ? "var(--navy)" : "var(--surface)",
+            color: mode === "logged" ? "#fff" : "var(--text-secondary)",
+            cursor: "pointer",
+          }}
+        >
+          Logged
+        </button>
+      </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <button
@@ -573,7 +662,7 @@ export default function DayPlanner() {
                     No active people found.
                   </td>
                 </tr>
-              ) : (
+              ) : mode === "planned" ? (
                 people.map((person) => {
                   const isMe = me?.id === person.id;
                   const isExpanded = expanded.includes(person.id);
@@ -785,6 +874,125 @@ export default function DayPlanner() {
                           })}
                         </tr>
                       )}
+                    </Fragment>
+                  );
+                })
+              ) : (
+                // Logged Hours branch (Phase 24, 2026-08-25): read-only --
+                // no inputs, no Off/Half-day menu, no Adhoc/project PM-
+                // overhead bucket (time_entries only ever reference a
+                // task_id). Sub-items are whichever tasks this person has
+                // at least one confirmed/approved entry against, which can
+                // include tasks they're no longer assigned to.
+                people.map((person) => {
+                  const isExpanded = expanded.includes(person.id);
+                  const items = loggedSubItemsFor(person.id);
+                  return (
+                    <Fragment key={person.id}>
+                      <tr style={{ background: "#fafbfc" }}>
+                        <td
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 1,
+                            background: "#fafbfc",
+                            padding: "8px 13px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--navy)",
+                            borderBottom: "1px solid var(--border)",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap",
+                          }}
+                          onClick={() => setExpanded((prev) => (isExpanded ? prev.filter((id) => id !== person.id) : [...prev, person.id]))}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            {person.name}
+                          </span>
+                        </td>
+                        {days.map((d, i) => {
+                          const dateStr = toISO(d);
+                          const dow = d.getDay();
+                          const weekend = dow === 0 || dow === 6;
+                          const isHoliday = holidayByDate.has(dateStr);
+                          const total = loggedPersonTotalFor(person.id, dateStr);
+                          const capacity = person.daily_capacity_hours;
+                          const pct = capacity > 0 ? (total / capacity) * 100 : 0;
+                          const tone = utilTone(pct);
+                          const bg =
+                            total === 0
+                              ? weekend || isHoliday
+                                ? "var(--hover-bg)"
+                                : undefined
+                              : tone === "danger"
+                              ? "var(--danger-bg)"
+                              : tone === "warning"
+                              ? "var(--warning-bg)"
+                              : "var(--success-bg)";
+                          const fg = tone === "danger" ? "var(--danger-text)" : tone === "warning" ? "var(--warning-text)" : "var(--success-text)";
+                          return (
+                            <td key={i} style={{ ...rollupCellStyle(i), background: bg, color: total > 0 ? fg : "var(--muted)", fontSize: 12.5, fontWeight: 600 }}>
+                              {total > 0 ? `${total.toFixed(1)}h` : "–"}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      {isExpanded &&
+                        (items.length === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={1 + days.length}
+                              style={{
+                                padding: "5px 13px 5px 35px",
+                                fontSize: 11,
+                                color: "var(--muted)",
+                                fontStyle: "italic",
+                                borderBottom: "1px solid var(--border)",
+                              }}
+                            >
+                              No logged hours yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          items.map((item) => (
+                            <tr key={`${person.id}-${item.taskId}`}>
+                              <td
+                                title={item.project ? `${item.label} — ${item.project}` : item.label}
+                                style={{
+                                  position: "sticky",
+                                  left: 0,
+                                  zIndex: 1,
+                                  background: "var(--surface)",
+                                  padding: "5px 13px 5px 35px",
+                                  fontSize: 11,
+                                  color: "var(--text-secondary)",
+                                  borderBottom: "1px solid var(--border)",
+                                  whiteSpace: "nowrap",
+                                  maxWidth: LABEL_W,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {item.label}
+                                {item.project && <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>{item.project}</span>}
+                              </td>
+                              {days.map((d, i) => {
+                                const dateStr = toISO(d);
+                                const value = loggedHoursFor(person.id, item.taskId, dateStr);
+                                return (
+                                  <td key={i} style={subCellStyle(i)}>
+                                    {value > 0 ? (
+                                      <span style={{ display: "block", textAlign: "center", fontSize: 11, padding: "5px 3px", color: "var(--navy)" }}>
+                                        {value.toFixed(1)}
+                                      </span>
+                                    ) : null}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))
+                        ))}
                     </Fragment>
                   );
                 })
