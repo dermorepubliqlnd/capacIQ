@@ -852,9 +852,17 @@ input.inline-cell[type="date"] {
   min-width: 0;
   flex: 0 0 auto;
 }
+/* Bugfix (2026-08-25): a native date input has a fixed browser-enforced
+   minimum intrinsic width (~150px in Chrome) that the width:auto/flex
+   rules above can't shrink below -- in the WBS's narrow Forecasted
+   Start/End columns that minimum is wider than the cell itself, so the
+   calendar icon rendered past the input's right edge and visibly
+   overlapped the next column's border (Sandra, 2026-08-25 screenshot).
+   Hiding the icon removes the overflow at its root instead of chasing
+   the intrinsic width; the whole cell still opens the native date picker
+   on click via showPicker() (see InlineDate's onClick in InlineCell.tsx). */
 input.inline-cell[type="date"]::-webkit-calendar-picker-indicator {
-  margin-left: -6px;
-  padding: 0;
+  display: none;
 }
 
 /* Auto-assigned flat-color emoji badge for a project, based on its Category */

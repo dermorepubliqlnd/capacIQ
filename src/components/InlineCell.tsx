@@ -141,7 +141,25 @@ export function InlineDate({ value, onCommit, editable, emptyLabel = "—" }: In
       type="date"
       value={value ?? ""}
       onChange={(e) => onCommit(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        // Root-cause fix for the native calendar icon overlapping the cell
+        // border in narrow WBS date columns (Sandra, 2026-08-25): a native
+        // <input type="date"> has a fixed browser-enforced minimum
+        // intrinsic width (~150px in Chrome) that CSS width:auto can't
+        // shrink below, so in a narrow column the icon renders past the
+        // cell's edge. Rather than fight that, the icon itself is hidden
+        // via CSS (see .inline-cell[type="date"]::-webkit-calendar-picker-
+        // indicator) and clicking anywhere on the input opens the native
+        // picker directly instead, same pattern as InlineSelect's
+        // showPicker() progressive enhancement above.
+        e.stopPropagation();
+        const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
+        try {
+          el.showPicker?.();
+        } catch {
+          // ignore -- requires a user gesture in some browsers, focus is enough
+        }
+      }}
     />
   );
 }
