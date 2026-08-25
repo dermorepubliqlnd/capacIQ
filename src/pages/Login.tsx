@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabaseClient";
+import TempoMark from "../components/TempoMark";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -75,8 +76,9 @@ export default function Login() {
           >
             Dermorepubliq L&amp;D
           </div>
-          <div className="login-title" style={{ fontWeight: 700, color: "var(--navy)", fontSize: 22 }}>
-            CapacIQ
+          <div className="login-title" style={{ fontWeight: 700, color: "var(--navy)", fontSize: 22, display: "flex", alignItems: "center", gap: 8 }}>
+            <TempoMark size={24} />
+            Tempo
           </div>
         </div>
 

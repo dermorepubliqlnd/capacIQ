@@ -310,7 +310,7 @@ export default function Admin() {
 
     const verb = p.is_active ? "deactivate" : "reactivate";
     const warning = p.is_active
-      ? `Deactivate ${p.name}? They'll immediately lose access to CapacIQ. You can reactivate them any time.`
+      ? `Deactivate ${p.name}? They'll immediately lose access to Tempo. You can reactivate them any time.`
       : `Reactivate ${p.name}? They'll regain the access level shown (${p.access_level === "full" ? "Full" : "Limited"}).`;
 
     if (

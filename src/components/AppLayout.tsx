@@ -3,6 +3,7 @@ import { LogOut } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import TimeTrackerBar from "./TimeTrackerBar";
+import TempoMark from "./TempoMark";
 
 const mainItems = [
   { to: "/", label: "Dashboard", end: true },
@@ -89,8 +90,9 @@ export default function AppLayout() {
           >
             Dermorepubliq L&amp;D
           </div>
-          <div className="sidebar-appname" style={{ color: "#fff" }}>
-            CapacIQ
+          <div className="sidebar-appname" style={{ color: "#fff", display: "flex", alignItems: "center", gap: 7 }}>
+            <TempoMark size={20} />
+            Tempo
           </div>
         </div>
 
