@@ -17,7 +17,7 @@ interface TaskLite {
   name: string;
   assignee_id: string | null;
   project_id: string;
-  project: { id: string; name: string; owner_id: string | null } | null;
+  project: { id: string; name: string; owner_id: string | null; timelines_locked: boolean } | null;
 }
 
 interface EntryRow {
@@ -115,7 +115,7 @@ export default function TimeTracking() {
         )
         .order("started_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
-      supabase.from("tasks").select("id,name,assignee_id,project_id,project:projects(id,name,owner_id)").eq("is_archived", false),
+      supabase.from("tasks").select("id,name,assignee_id,project_id,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
     ]);
     setEntries(((entryData as unknown as EntryRow[]) ?? []));
     setPeople((peopleData as PersonLite[]) ?? []);
@@ -420,13 +420,20 @@ export default function TimeTracking() {
                 style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
               >
                 <option value="">Choose a task…</option>
-                {myTasks.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.project?.name ? `${t.project.name} -- ` : ""}
-                    {t.name}
-                  </option>
-                ))}
+                {myTasks
+                  .filter((t) => t.project?.timelines_locked)
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.project?.name ? `${t.project.name} -- ` : ""}
+                      {t.name}
+                    </option>
+                  ))}
               </select>
+              {myTasks.length > 0 && myTasks.every((t) => !t.project?.timelines_locked) && (
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                  None of your tasks are loggable yet -- their project's baseline hasn't been locked in WBS Planning.
+                </span>
+              )}
             </label>
             <div style={{ display: "flex", gap: 8 }}>
               <label style={{ display: "block", marginBottom: 8, flex: 1 }}>

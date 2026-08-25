@@ -63,9 +63,9 @@ export const PROJECT_PRIORITY_OPTIONS = ["Low", "Medium", "High"];
 // edit picker) -- Sandra: prefix Low/Medium/High with down/flat/up marks
 // so priority reads at a glance without needing to parse the word itself.
 export const PROJECT_PRIORITY_SYMBOLS: Record<string, string> = {
-  Low: "↓", // ↓
-  Medium: "—", // —
-  High: "↑", // ↑
+  Low: "↓", // ↓ green (see priorityTone in Projects.tsx)
+  Medium: "→", // → amber
+  High: "↑", // ↑ red
 };
 
 export function priorityLabel(priority: string | null): string {
@@ -198,9 +198,24 @@ export const PROJECT_CATEGORY_TONES: Record<string, string> = {
 
 export const PROJECT_EFFORT_LEVEL_TONES: Record<string, string> = {
   "Level 1": "success",
-  "Level 2": "accent",
-  "Level 3": "warning",
+  "Level 2": "warning",
+  "Level 3": "danger",
 };
+
+// Mountain-tier glyphs shown before the Complexity text, mirroring
+// PROJECT_PRIORITY_SYMBOLS' pattern -- Sandra: a rising-triangle "mountain"
+// motif (flat/small -> tall/sharp) colored green/amber/red per level.
+export const PROJECT_EFFORT_LEVEL_SYMBOLS: Record<string, string> = {
+  "Level 1": "△", // △ green
+  "Level 2": "◭", // ◭ amber
+  "Level 3": "▲", // ▲ red
+};
+
+export function effortLevelLabel(level: string | null): string {
+  if (!level) return "";
+  const symbol = PROJECT_EFFORT_LEVEL_SYMBOLS[level];
+  return symbol ? `${symbol} ${level}` : level;
+}
 
 export const TASK_PHASE_TONES: Record<string, string> = {
   Design: "warning",

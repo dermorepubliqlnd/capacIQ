@@ -524,7 +524,12 @@ export default function ViewSettingsMenu<T>({
           const searchText = (c: ColumnDef<T>) => (c.plainLabel ?? (typeof c.label === "string" ? c.label : "")).toLowerCase();
           const matched = ordered.map((k) => columns.find((c) => c.key === k)!).filter((c) => searchText(c).includes(query));
           const shown = matched.filter(isVisible);
-          const hidden = matched.filter((c) => !isVisible(c));
+          // Hidden section is alphabetized (Sandra) so a long unused-
+          // properties list is scannable; Shown keeps the user's own
+          // drag/arranged order untouched, matching the table itself.
+          const hidden = matched
+            .filter((c) => !isVisible(c))
+            .sort((a, b) => searchText(a).localeCompare(searchText(b)));
 
           function setColumnVisible(c: ColumnDef<T>, visible: boolean) {
             if (isLocked(c)) return;

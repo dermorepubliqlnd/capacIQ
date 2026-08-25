@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle, Handshake, ShieldCheck, Cpu, Crown, TrendingUp, Wrench, Sparkles, Folder } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -55,6 +55,7 @@ import {
   PROJECT_CATEGORY_TONES,
   PROJECT_EFFORT_LEVEL_OPTIONS,
   PROJECT_EFFORT_LEVEL_TONES,
+  effortLevelLabel,
   PROJECT_PRIORITY_OPTIONS,
   priorityLabel,
   PROJECT_STATUS_OPTIONS,
@@ -68,8 +69,6 @@ import {
   nextPhaseForStatus,
   TASK_STATUS_GROUPED,
   TASK_STATUS_OPTIONS,
-  PROJECT_CATEGORY_ICONS,
-  DEFAULT_PROJECT_ICON,
   TASK_EFFORT_OPTIONS,
   TASK_EFFORT_POINTS,
   TASK_EFFORT_DEFAULT_TONES,
@@ -190,6 +189,37 @@ interface ExtensionRequestLite {
 
 type TaskWithDepth = TaskRow & { _depth: number };
 
+// SVG icon per Category (replacing the old flat-color emoji badges) --
+// same icon reused for the Project-name badge and the Category cell/
+// Timeline chip itself, so both stay in sync automatically.
+const PROJECT_CATEGORY_ICON_COMPONENTS: Record<string, typeof Folder> = {
+  "Onboarding": Handshake,
+  "Compliance & Safety": ShieldCheck,
+  "Technical & Systems": Cpu,
+  "Leadership": Crown,
+  "Professional Development": TrendingUp,
+  "Operational Support": Wrench,
+  "L&D Improvments": Sparkles,
+};
+
+// Matches each status-pill tone's own text color (see .status-pill.* in
+// index.css) so an SVG icon dropped next to pill text always matches it.
+const TONE_ICON_COLOR: Record<string, string> = {
+  success: "var(--success-text)",
+  warning: "var(--warning-text)",
+  danger: "var(--danger-text)",
+  neutral: "var(--muted)",
+  accent: "var(--accent)",
+  purple: "#7b4fb0",
+  pink: "#c1447e",
+};
+
+function CategoryIcon({ category, size = 13 }: { category: string | null; size?: number }) {
+  const Icon = (category && PROJECT_CATEGORY_ICON_COMPONENTS[category]) || Folder;
+  const tone = (category && PROJECT_CATEGORY_TONES[category]) || "neutral";
+  return <Icon size={size} color={TONE_ICON_COLOR[tone] ?? TONE_ICON_COLOR.neutral} style={{ flexShrink: 0 }} />;
+}
+
 const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "source", "effort_level", "start_date", "end_date", "wbs_status"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
@@ -206,7 +236,7 @@ const PROJECT_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["category", "source", "effort_l
 // grouping is "by Project" -- worth re-showing if grouping changes).
 // All still available via Properties, just not cluttering a fresh
 // Timeline view by default.
-const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date", "actual_completion_date", "work_type"];
+const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "validated_completion_date", "validated_by", "actual_completion_date", "work_type"];
 // Task Calendar cards are much denser than a Timeline row -- Sandra asked
 // specifically for Project/Effort/Assignee to show by default ("main
 // focal point should be the task" -- Name is always the card's title
@@ -215,8 +245,8 @@ const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days",
 // has no swimlane/group-by-project header to make it redundant (Notion's
 // own Calendar view doesn't support grouping either -- confirmed with
 // Sandra, not building it).
-const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct", "work_type"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "actual_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct", "work_type"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -1649,7 +1679,7 @@ export default function Projects() {
         minWidth: 160,
         maxWidth: 420,
         render: (p) => {
-          const icon = p.category ? PROJECT_CATEGORY_ICONS[p.category] ?? DEFAULT_PROJECT_ICON : DEFAULT_PROJECT_ICON;
+          const tone = (p.category && PROJECT_CATEGORY_TONES[p.category]) || "neutral";
           // Round 21 (Sandra): the Project name/Owner should no longer be
           // editable from this list at all -- both now live exclusively in
           // the WBS page's own header (already editable there, see
@@ -1659,7 +1689,7 @@ export default function Projects() {
           // two separate, easy-to-confuse affordances.
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className={`project-icon-badge ${icon.tone}`}>{icon.emoji}</span>
+              <span className={`project-icon-badge ${tone}`}><CategoryIcon category={p.category} /></span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1900,7 +1930,12 @@ export default function Projects() {
             allowEmpty
             options={PROJECT_CATEGORY_OPTIONS}
             renderReadOnly={() =>
-              p.category ? <span className={`status-pill ${PROJECT_CATEGORY_TONES[p.category] ?? "neutral"}`}>{p.category}</span> : "—"
+              p.category ? (
+                <span className={`status-pill ${PROJECT_CATEGORY_TONES[p.category] ?? "neutral"}`} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <CategoryIcon category={p.category} size={12} />
+                  {p.category}
+                </span>
+              ) : "—"
             }
             onCommit={(v) => updateProject(p.id, { category: v || null })}
           />
@@ -1946,7 +1981,7 @@ export default function Projects() {
             allowEmpty
             options={PROJECT_EFFORT_LEVEL_OPTIONS}
             renderReadOnly={() =>
-              p.effort_level ? <span className={`status-pill ${PROJECT_EFFORT_LEVEL_TONES[p.effort_level] ?? "neutral"}`}>{p.effort_level}</span> : "—"
+              p.effort_level ? <span className={`status-pill ${PROJECT_EFFORT_LEVEL_TONES[p.effort_level] ?? "neutral"}`}>{effortLevelLabel(p.effort_level)}</span> : "—"
             }
             onCommit={(v) => updateProject(p.id, { effort_level: v || null })}
           />
@@ -2478,9 +2513,20 @@ export default function Projects() {
         render: (t) => (
           <InlineSelect
             value={t.status ?? ""}
-            editable={canEditTask(t) && !isTaskLocked(t)}
+            // Sandra, 2026-08-24: status changes, time logging, and
+            // extension requests are all locked until the project's
+            // baseline is locked (isProjectLocked reads timelines_locked,
+            // which flips true in lockstep with wbs_status leaving
+            // "draft" -- see [[project_capaciq...baseline_lock_gating]]).
+            // Planning freely pre-baseline shouldn't look like real
+            // progress tracking.
+            editable={canEditTask(t) && !isTaskLocked(t) && isProjectLocked(t.project_id)}
             allowEmpty
-            options={TASK_STATUS_GROUPED}
+            // Flat list, not TASK_STATUS_GROUPED -- the grouped <optgroup>
+            // headers ("To-do"/"In Progress"/"Complete") each wrapped
+            // exactly one identical-named option, so the dropdown showed
+            // redundant parent labels. Sandra: just the 3 plain options.
+            options={TASK_STATUS_OPTIONS}
             renderReadOnly={() =>
               t.status ? <span className={`status-pill ${statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}`}>{t.status}</span> : "—"
             }
@@ -2607,51 +2653,44 @@ export default function Projects() {
       {
         key: "current_due_date",
         label: "Due",
-        defaultWidth: 130,
-        minWidth: 110,
+        defaultWidth: 180,
+        minWidth: 150,
         render: (t) => {
-          const locked = isProjectLocked(t.project_id);
-          // While the project is still in scoping mode (unlocked), the due
-          // date is a normal editable field -- no extension ceremony needed.
-          // Once locked, the DB trigger enforces read-only; the extension
-          // status/history/request action all live in the Due Date Ext.
-          // column now instead of being split across two places.
-          // See [[project_capaciq_extension_requests]].
+          // Due dates aren't directly editable once a task exists (the DB
+          // trigger enforces read-only post-lock, and pre-lock there's
+          // nothing to extend yet) -- the whole cell is a single click
+          // target that opens the extension-history modal (same modal the
+          // old separate "Due Date Ext." column/button opened), with the
+          // extension status tag shown right next to the date instead of
+          // in its own column. See [[project_capaciq_extension_requests]].
           const isParent = t._depth === 0 && hasChildren(t.id);
           const computed = isParent ? taskDatesFromSubtasks(t.id) : null;
-          return (
-            <span title={computed ? "Computed from this task's own sub-tasks (latest sub-task due date)" : undefined}>
-              <InlineDate
-                value={t.current_due_date}
-                editable={false}
-                onCommit={(v) => v && updateTask(t.id, { current_due_date: v, original_due_date: v })}
-              />
-            </span>
-          );
-        },
-      },
-      {
-        key: "due_date_ext",
-        label: "Due Date Ext.",
-        defaultWidth: 140,
-        minWidth: 120,
-        render: (t) => {
           const status = dueDateExtStatus(t);
           return (
             <button
               onClick={() => setExtDetailTask(t)}
-              className={`status-pill ${status.tone}`}
-              style={{ border: "none", cursor: "pointer", fontFamily: "inherit" }}
-              title="Click to see extension request details"
+              title={computed ? "Computed from this task's own sub-tasks (latest sub-task due date) -- click to see extension request details" : "Click to see extension request details or request one"}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                font: "inherit",
+                padding: 0,
+                color: "inherit",
+              }}
             >
-              {status.label}
+              <InlineDate value={t.current_due_date} editable={false} onCommit={() => {}} />
+              <span className={`status-pill ${status.tone}`}>{status.label}</span>
             </button>
           );
         },
       },
       {
         key: "validated_completion_date",
-        label: "Validated",
+        label: "Validated Date",
         defaultWidth: 160,
         minWidth: 140,
         // Independent completion check, distinct from the assignee's own
@@ -2664,6 +2703,9 @@ export default function Projects() {
         // a plain client-side-gated update, since a manager who isn't the
         // project owner has no direct row-level access to this task at
         // all.
+        // Split 2026-08-25 (Sandra) into two columns -- this one just the
+        // date (+ the Validate/Reopen buttons); "Validated By" (below,
+        // same validated_by column) is now its own separate cell.
         render: (t) => {
           const canValidate = canValidateTask(t);
           if (t.status !== "Done") {
@@ -2693,14 +2735,19 @@ export default function Projects() {
                 editable={canValidate}
                 onCommit={async (v) => {
                   if (!v) return;
+                  // Sandra, 2026-08-25: validation date can't be earlier
+                  // than the actual completion date -- you can't sign off
+                  // on completion before the work was actually done.
+                  const completionRef = t.actual_completion_date ?? t.submitted_on;
+                  if (completionRef && v < completionRef.slice(0, 10)) {
+                    alert(`Validation date can't be earlier than the actual completion date (${formatDate(completionRef)}).`);
+                    return;
+                  }
                   const { error } = await supabase.rpc("validate_task_completion", { p_task_id: t.id, p_validated_date: new Date(v).toISOString() });
                   if (error) alert(`Couldn't save: ${error.message}`);
                   else loadAll();
                 }}
               />
-              <span style={{ fontSize: 10, color: "var(--muted)" }} title="Validated by">
-                {ownerName(t.validated_by)}
-              </span>
               {/* Reopening clears the validation and reverts Status to
                   In Progress, unlocking Assignee/Status/Effort/Est. Hrs/
                   Start/Due (and now Actual Completion) again (see
@@ -2731,6 +2778,23 @@ export default function Projects() {
               )}
             </div>
           );
+        },
+      },
+      {
+        key: "validated_by",
+        label: "Validated By",
+        defaultWidth: 140,
+        minWidth: 120,
+        // Companion to validated_completion_date, split out 2026-08-25
+        // (Sandra) so who validated and when can each be shown/hidden/
+        // sorted independently instead of being crammed into one cell.
+        // Read-only here -- validated_by is stamped server-side by
+        // validate_task_completion, never edited directly.
+        render: (t) => {
+          if (t.status !== "Done" || !t.validated_completion_date) {
+            return <span style={{ color: "var(--muted)", fontSize: 11.5 }}>—</span>;
+          }
+          return <span style={{ fontSize: 11.5 }}>{ownerName(t.validated_by)}</span>;
         },
       },
       {
@@ -2820,7 +2884,11 @@ export default function Projects() {
           // running if the status happened to flip to Done while it was
           // already going.
           const doneBlocksStart = t.status === "Done" && !isRunningHere;
-          const disabled = timerBusy || (Boolean(running) && !isRunningHere) || doneBlocksStart;
+          // Sandra, 2026-08-24: can't log/track hours against a task
+          // whose project baseline isn't locked yet -- same gate as
+          // Status and Extension Requests.
+          const baselineBlocksStart = !isProjectLocked(t.project_id) && !isRunningHere;
+          const disabled = timerBusy || (Boolean(running) && !isRunningHere) || doneBlocksStart || baselineBlocksStart;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {/* Fixed width (not sized to the text) so the button after it
@@ -2869,6 +2937,8 @@ export default function Projects() {
                       ? "Stop timer"
                       : doneBlocksStart
                       ? "Task is Done -- timer disabled"
+                      : baselineBlocksStart
+                      ? "Baseline isn't locked yet -- lock it in WBS Planning before tracking hours"
                       : running
                       ? `Stop the timer running on "${running.task_name}" first`
                       : "Start timer"

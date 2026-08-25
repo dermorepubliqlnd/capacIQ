@@ -235,6 +235,11 @@ export default function TimelineView<T>({
   // the header label + every row wins, so no value gets clipped.
   const timelineRootRef = useRef<HTMLDivElement>(null);
   const [chipColWidths, setChipColWidths] = useState<Record<string, number>>({});
+  // Manual drag overrides (Sandra: "allow resizing of column headers of
+  // properties shown") win over the auto-measured width above -- a ref
+  // (not state) so the auto-measure effect below can read the latest
+  // overrides without re-running every time a drag updates them.
+  const manualChipWidthsRef = useRef<Record<string, number>>({});
   useLayoutEffect(() => {
     const root = timelineRootRef.current;
     if (!root || !propertyColumns || propertyColumns.length === 0) {
@@ -243,6 +248,10 @@ export default function TimelineView<T>({
     }
     const next: Record<string, number> = {};
     for (const c of propertyColumns) {
+      if (manualChipWidthsRef.current[c.key] != null) {
+        next[c.key] = manualChipWidthsRef.current[c.key];
+        continue;
+      }
       let max = 0;
       root.querySelectorAll<HTMLElement>(`[data-chip-key="${c.key}"]`).forEach((el) => {
         max = Math.max(max, el.scrollWidth);
@@ -254,6 +263,29 @@ export default function TimelineView<T>({
       return changed ? next : prev;
     });
   });
+
+  const CHIP_W_MIN = 60;
+  const chipResizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+  function startChipResize(key: string, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWidth = chipColWidths[key] ?? 90;
+    chipResizeState.current = { key, startX: e.clientX, startWidth };
+    function onMove(ev: MouseEvent) {
+      if (!chipResizeState.current) return;
+      const delta = ev.clientX - chipResizeState.current.startX;
+      const next = Math.max(CHIP_W_MIN, chipResizeState.current.startWidth + delta);
+      manualChipWidthsRef.current = { ...manualChipWidthsRef.current, [chipResizeState.current.key]: next };
+      setChipColWidths((prev) => ({ ...prev, [chipResizeState.current!.key]: next }));
+    }
+    function onUp() {
+      chipResizeState.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
 
   function startLabelResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -501,9 +533,16 @@ export default function TimelineView<T>({
                       key={c.key}
                       className="timeline-header-chip-label"
                       data-chip-key={c.key}
-                      style={chipColWidths[c.key] ? { width: chipColWidths[c.key] } : undefined}
+                      style={{ position: "relative", ...(chipColWidths[c.key] ? { width: chipColWidths[c.key] } : undefined) }}
                     >
                       {c.label}
+                      <span
+                        className="timeline-chip-resize-handle"
+                        onMouseDown={(e) => startChipResize(c.key, e)}
+                        draggable={false}
+                        onDragStart={(e) => e.preventDefault()}
+                        title="Drag to resize"
+                      />
                     </span>
                   ))}
                 </div>
