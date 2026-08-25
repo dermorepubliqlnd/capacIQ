@@ -499,6 +499,17 @@ export default function WbsPlanning() {
   // render simultaneously as rows now, see effectiveForMode below.
   const [saving, setSaving] = useState(false);
   const [utilWindowOffset, setUtilWindowOffset] = useState(0); // in units of UTIL_WINDOW_DAYS blocks
+  // Auto-scroll-to-today (2026-08-25): Sandra reported losing sight of a
+  // date column in this panel between two browser zoom levels. The date
+  // range itself is pure math (anchor + offset), unaffected by zoom -- but
+  // the panel's horizontal scroll container previously always opened at
+  // scrollLeft 0 (the window's leftmost date), so at a narrower effective
+  // width today's column (or any column past the fold) could sit out of
+  // view with no indication anything was scrollable. This ref+effect
+  // scrolls today into view whenever it's in the currently-displayed
+  // window, regardless of viewport width/zoom -- a global fix rather than
+  // a zoom-specific one, since zoom can't reliably be detected or tested.
+  const utilSnapshotScrollRef = useRef<HTMLDivElement>(null);
 
   // Phase 11 (2026-08-21): Sandra's snapshot display controls -- reuse
   // the exact same computed points/capacity/tier everywhere below, these
@@ -2721,6 +2732,28 @@ export default function WbsPlanning() {
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
 
+  // Scroll today's column into view whenever it's part of the currently
+  // shown window (only meaningful at utilWindowOffset 0, since that's the
+  // only offset that can ever include today -- other offsets are entirely
+  // past/future blocks where there's no "today" column to chase). Runs
+  // after the table has rendered (dep on utilDays) so scrollWidth is known.
+  useEffect(() => {
+    const el = utilSnapshotScrollRef.current;
+    if (!el) return;
+    const todayIso = toISO(new Date());
+    const idx = utilDays.findIndex((d) => toISO(d) === todayIso);
+    if (idx === -1) return;
+    const PERSON_COL_W = 130;
+    const SCENARIO_COL_W = 150;
+    const DAY_COL_W = 40;
+    const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    // Center today's column rather than snapping it to the very edge, so
+    // a few days of context on either side stay visible too.
+    const desired = targetLeft - el.clientWidth / 2 + DAY_COL_W / 2;
+    el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
+  }, [utilDays]);
+
   function utilAvailability(personId: string, dateStr: string): AvailabilityRow | undefined {
     return availability.find((a) => a.person_id === personId && a.date === dateStr);
   }
@@ -3445,7 +3478,7 @@ export default function WbsPlanning() {
                 onChange={setUtilPersonFilter}
               />
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div ref={utilSnapshotScrollRef} style={{ overflowX: "auto" }}>
               <table className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>

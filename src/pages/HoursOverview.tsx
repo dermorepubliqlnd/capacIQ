@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
@@ -145,6 +145,24 @@ export default function HoursOverview() {
   }, [weekOffset, rangeWeeks, todayRaw]);
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
+
+  // Auto-scroll-to-today (2026-08-25, same fix as WbsPlanning.tsx's
+  // Utilization snapshot panel and Utilization.tsx's main grid). Today is
+  // the first column in this grid by design (weekOffset 0 anchors to
+  // today), so it's the one most likely to sit out of view at a narrower
+  // viewport/zoom with no visible cue that there's more to scroll to.
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const todayIso = toISO(todayRaw);
+    const idx = days.findIndex((d) => toISO(d) === todayIso);
+    if (idx === -1) return;
+    const targetLeft = LABEL_W + idx * CELL_W;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const desired = targetLeft - el.clientWidth / 2 + CELL_W / 2;
+    el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
+  }, [days]);
 
   const holidayByDate = useMemo(() => {
     const m = new Map<string, HolidayRow>();
@@ -325,7 +343,7 @@ export default function HoursOverview() {
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours. Click a person to see the task breakdown.</span>
           </div>
 
-          <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
+          <div ref={gridScrollRef} style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
             <table style={{ borderCollapse: "collapse", width: "max-content" }}>
               <thead>
                 <tr>

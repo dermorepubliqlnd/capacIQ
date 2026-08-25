@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, TrendingUp, Gauge, AlertTriangle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
@@ -322,6 +322,34 @@ export default function Utilization() {
   }
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
+
+  // Auto-scroll-to-today (2026-08-25, same fix as WbsPlanning.tsx's
+  // Utilization snapshot panel -- see that file's comment for the full
+  // rationale). Today sits at the very START of this grid by design (the
+  // Phase 8 windowing fix anchors weekOffset 0 to today, not a Monday-
+  // snapped week), so at a narrower viewport/zoom it's the first thing
+  // that can end up scrolled past with no visible cue. Scrolls today's
+  // column (daily) or week (weekly) into view whenever it's part of the
+  // currently-shown window.
+  const utilScrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = utilScrollRef.current;
+    if (!el) return;
+    const todayIso = toISO(todayRaw);
+    let targetLeft: number | null = null;
+    if (viewMode === "daily") {
+      const idx = days.findIndex((d) => toISO(d) === todayIso);
+      if (idx !== -1) targetLeft = LABEL_W + idx * CELL_W;
+    } else {
+      const weekIdx = weeks.findIndex((week) => week.some((d) => toISO(d) === todayIso));
+      if (weekIdx !== -1) targetLeft = LABEL_W + weekIdx * WEEK_CELL_W;
+    }
+    if (targetLeft === null) return;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const colW = viewMode === "daily" ? CELL_W : WEEK_CELL_W;
+    const desired = targetLeft - el.clientWidth / 2 + colW / 2;
+    el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
+  }, [days, weeks, viewMode, todayRaw]);
 
   const holidayByDate = useMemo(() => {
     const m = new Map<string, HolidayRow>();
@@ -659,7 +687,7 @@ export default function Utilization() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
+      <div ref={utilScrollRef} className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
         {loading ? (
           <div style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>Loading…</div>
         ) : (
