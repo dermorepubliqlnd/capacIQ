@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { Plus, MoreHorizontal, Pencil, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
 import type { GroupOption, TableView, ViewType } from "../lib/tableTypes";
 
@@ -99,17 +100,52 @@ export default function ViewTabs<T>({
   const [addSearch, setAddSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // These three dropdowns (per-tab "..." menu, "N more" overflow, and
+  // Add-view) all used to render in-place with `position:absolute` inside
+  // the trigger's own wrapper. That broke whenever a view-tabs bar sat
+  // inside Projects.tsx's `.sticky-toolbar-cluster` (position:sticky +
+  // z-index:20) -- the sticky ancestor forms its own stacking context, so
+  // a locally-scoped z-index (even 30) only wins against siblings *inside*
+  // that context, and loses to a later, unrelated sticky sibling elsewhere
+  // on the page (e.g. the Tasks section's own toolbar) that ties at the
+  // same z-index and wins the DOM-order tiebreak (Sandra, 2026-08-26:
+  // "the view options part goes behind the tasks toolbar"). Fixed the same
+  // way ViewSettingsMenu.tsx's IconPopoverButton already fixed this exact
+  // bug for the Filter/Sort/Group/Properties popovers: portal to
+  // document.body with `position:fixed`, positioned from the trigger's own
+  // getBoundingClientRect() at click time (no scroll/resize tracking while
+  // open, same tradeoff IconPopoverButton makes -- these are short-lived).
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [overflowPos, setOverflowPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [addPos, setAddPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const menuDropdownRef = useRef<HTMLDivElement>(null);
+  const overflowDropdownRef = useRef<HTMLDivElement>(null);
+  const addPopoverRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setMenuOpenId(null);
-        setOverflowOpen(false);
-        setAddOpen(false);
-      }
+      const target = e.target as Node;
+      // The dropdowns are portaled outside containerRef's DOM subtree now,
+      // so they each need their own "did this click land inside me" check.
+      if (containerRef.current?.contains(target)) return;
+      if (menuDropdownRef.current?.contains(target)) return;
+      if (overflowDropdownRef.current?.contains(target)) return;
+      if (addPopoverRef.current?.contains(target)) return;
+      setMenuOpenId(null);
+      setOverflowOpen(false);
+      setAddOpen(false);
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
+
+  function openPositionedMenu(e: ReactMouseEvent<HTMLElement>, setPos: (p: { top: number; left: number }) => void, width: number) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    let left = rect.left;
+    if (left + width > viewportWidth - 4) left = Math.max(4, viewportWidth - width - 4);
+    setPos({ top: rect.bottom + 4, left });
+  }
 
   function startRename(v: TableView) {
     setMenuOpenId(null);
@@ -177,14 +213,25 @@ export default function ViewTabs<T>({
               className={`view-tab-menu-btn${menuOpenId === v.id ? " menu-open" : ""}`}
               onClick={(e) => {
                 e.stopPropagation();
-                setMenuOpenId(menuOpenId === v.id ? null : v.id);
+                if (menuOpenId === v.id) {
+                  setMenuOpenId(null);
+                } else {
+                  openPositionedMenu(e, setMenuPos, 130);
+                  setMenuOpenId(v.id);
+                }
               }}
               title="View options"
             >
               <MoreHorizontal size={13} />
             </button>
-            {menuOpenId === v.id && (
-              <div className="view-tab-dropdown" onClick={(e) => e.stopPropagation()}>
+            {menuOpenId === v.id &&
+              createPortal(
+              <div
+                ref={menuDropdownRef}
+                className="view-tab-dropdown"
+                style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+                onClick={(e) => e.stopPropagation()}
+              >
                 <button onClick={() => startRename(v)}>
                   <Pencil size={12} />
                   Rename
@@ -236,8 +283,9 @@ export default function ViewTabs<T>({
                     Delete view
                   </button>
                 )}
-              </div>
-            )}
+              </div>,
+              document.body
+              )}
           </>
         )}
       </div>
@@ -248,10 +296,27 @@ export default function ViewTabs<T>({
     <div ref={containerRef} className="view-tabs">
       {visible.map(renderTab)}
       {overflow.length > 0 && (
-        <div className="view-tab" style={{ position: "relative" }} onClick={() => setOverflowOpen((v) => !v)}>
+        <div
+          className="view-tab"
+          style={{ position: "relative" }}
+          onClick={(e) => {
+            if (overflowOpen) {
+              setOverflowOpen(false);
+            } else {
+              openPositionedMenu(e, setOverflowPos, 160);
+              setOverflowOpen(true);
+            }
+          }}
+        >
           {overflow.length} more
-          {overflowOpen && (
-            <div className="view-tab-dropdown" style={{ width: 160 }} onClick={(e) => e.stopPropagation()}>
+          {overflowOpen &&
+            createPortal(
+            <div
+              ref={overflowDropdownRef}
+              className="view-tab-dropdown"
+              style={{ position: "fixed", top: overflowPos.top, left: overflowPos.left, width: 160 }}
+              onClick={(e) => e.stopPropagation()}
+            >
               {overflow.map((v) => {
                 const Icon = VIEW_TYPE_ICONS[v.viewType] ?? Table2;
                 return (
@@ -267,15 +332,33 @@ export default function ViewTabs<T>({
                   </button>
                 );
               })}
-            </div>
-          )}
+            </div>,
+            document.body
+            )}
         </div>
       )}
-      <div className="view-tab" style={{ position: "relative" }} onClick={() => setAddOpen((v) => !v)}>
+      <div
+        className="view-tab"
+        style={{ position: "relative" }}
+        onClick={(e) => {
+          if (addOpen) {
+            setAddOpen(false);
+          } else {
+            openPositionedMenu(e, setAddPos, 220);
+            setAddOpen(true);
+          }
+        }}
+      >
         <Plus size={12} style={{ color: "var(--muted)" }} />
         <span style={{ color: "var(--muted)" }}>Add view</span>
-        {addOpen && (
-          <div className="add-view-popover" onClick={(e) => e.stopPropagation()}>
+        {addOpen &&
+          createPortal(
+          <div
+            ref={addPopoverRef}
+            className="add-view-popover"
+            style={{ position: "fixed", top: addPos.top, left: addPos.left }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="add-view-search">
               <Search size={13} />
               <input
@@ -327,8 +410,9 @@ export default function ViewTabs<T>({
                 );
               })}
             </div>
-          </div>
-        )}
+          </div>,
+          document.body
+          )}
       </div>
     </div>
   );

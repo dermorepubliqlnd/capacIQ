@@ -18,6 +18,7 @@ interface TaskLite {
   assignee_id: string | null;
   project_id: string;
   current_due_date: string | null;
+  status: string | null;
   project: { id: string; name: string; owner_id: string | null; timelines_locked: boolean } | null;
 }
 
@@ -115,7 +116,7 @@ export default function TimeTracking() {
         )
         .order("started_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
-      supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
+      supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,status,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
     ]);
     setEntries(((entryData as unknown as EntryRow[]) ?? []));
     setPeople((peopleData as PersonLite[]) ?? []);
@@ -434,7 +435,12 @@ export default function TimeTracking() {
               >
                 <option value="">Choose a task…</option>
                 {myTasks
-                  .filter((t) => t.project?.timelines_locked)
+                  // Sandra, 2026-08-26: a Done task shouldn't accept more
+                  // logged time -- it's already gated the other direction
+                  // too (marking Done requires logged hours, see
+                  // [[project_capaciq_wbs_batch_2026_08_26_part2]]), so once
+                  // it's Done, time tracking against it is finished.
+                  .filter((t) => t.project?.timelines_locked && t.status !== "Done")
                   .map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.project?.name ? `${t.project.name} -- ` : ""}
@@ -442,9 +448,9 @@ export default function TimeTracking() {
                     </option>
                   ))}
               </select>
-              {myTasks.length > 0 && myTasks.every((t) => !t.project?.timelines_locked) && (
+              {myTasks.length > 0 && myTasks.every((t) => !t.project?.timelines_locked || t.status === "Done") && (
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                  None of your tasks are loggable yet -- their project's baseline hasn't been locked in WBS Planning.
+                  None of your tasks are loggable right now -- either their project's baseline hasn't been locked in WBS Planning, or they're already marked Done.
                 </span>
               )}
             </label>
@@ -485,9 +491,15 @@ export default function TimeTracking() {
                   </div>
                 );
               })()}
+            {/* Sandra, 2026-08-26: "Start date" read as if it defaulted
+                to today rather than the day the work actually happened --
+                relabeled to "Log date" (the date being logged for) and
+                collapsed Date/Start time/End time into one row so it
+                reads as one work session rather than a start-day/end-day
+                pair. */}
             <div style={{ display: "flex", gap: 8 }}>
-              <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
-                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start date</span>
+              <label style={{ display: "block", marginBottom: 4, flex: 1.3 }}>
+                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Log date</span>
                 <input
                   type="date"
                   value={logStartDate}
@@ -495,7 +507,7 @@ export default function TimeTracking() {
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
-              <label style={{ display: "block", marginBottom: 8, width: 100 }}>
+              <label style={{ display: "block", marginBottom: 4, flex: 1 }}>
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start time</span>
                 <input
                   type="time"
@@ -504,9 +516,7 @@ export default function TimeTracking() {
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <label style={{ display: "block", marginBottom: 8, width: 100 }}>
+              <label style={{ display: "block", marginBottom: 4, flex: 1 }}>
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End time</span>
                 <input
                   type="time"
@@ -515,10 +525,8 @@ export default function TimeTracking() {
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
-              <span style={{ display: "block", marginBottom: 8, flex: 1, fontSize: 11, color: "var(--muted)", alignSelf: "flex-end", paddingBottom: 7 }}>
-                Same day as Start date. Ends past midnight? It'll be clamped to 11:59 PM.
-              </span>
             </div>
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 8 }}>Ends past midnight? It'll be clamped to 11:59 PM the same day.</div>
             <label style={{ display: "block", marginBottom: 8 }}>
               <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Reason</span>
               <select
