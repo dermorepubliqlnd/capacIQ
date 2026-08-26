@@ -2787,29 +2787,43 @@ export default function WbsPlanning() {
   function taskBaselineDiff(t: TaskRow & { depth: number }, isParent: boolean): { isNew: boolean; kinds: (keyof typeof CHANGE_DOT_COLOR)[]; notes: string[] } {
     const baseline = baselineTasksById[t.id];
     if (!baseline) {
-      // Sandra, 2026-07-29: don't just say "New task" forever -- check
-      // whether anything has actually changed on this task SINCE it was
-      // added (e.g. added at V4, hours bumped at V10). If so, show that
-      // latest real change instead; "New task" only for a task that's
-      // genuinely untouched since its own addition.
+      // Bugfix (2026-08-26, Sandra: "when I try to add hours, it's no
+      // longer capturing it in the changes vs baseline -- I don't also
+      // see added hours in a New Task after baseline. Yes it captures it
+      // in the variance but not in the Change vs Baseline"): the
+      // ownChanges check below (this task's own history in
+      // project_revision_changes) only ever gets populated when a
+      // RE-BASELINE is actually approved (see decide_baseline_request in
+      // phase15/phase24_migration.sql) -- between baseline events it's
+      // always empty, so this branch always fell back to a bare "New
+      // task" with hours nowhere to be seen, exactly the gap Sandra
+      // hit. Fixed to always show the task's current hours directly --
+      // live, not dependent on the revision log -- alongside "New task":
+      // there's no baseline row for a brand-new task, so its full
+      // current hours ARE the "new" amount by definition, no diffing
+      // needed. ownChanges is kept below (now excluding hours, which the
+      // line above already covers) so anything the revision log DOES
+      // capture once re-baselining is actually used again -- an
+      // assignee/date/dependency change on a still-new task -- still
+      // shows, instead of dropping that case entirely.
+      const kinds: (keyof typeof CHANGE_DOT_COLOR)[] = ["task_added"];
+      const notes: string[] = ["New task"];
+      if (!isParent && (t.estimated_hours ?? 0) > 0) {
+        kinds.push("hours_increased");
+        notes.push(`+${t.estimated_hours}h`);
+      }
       const ownChanges = (changesByTaskId[t.id] ?? [])
-        .filter((c) => c.change_type !== "task_added")
+        .filter((c) => c.change_type !== "task_added" && c.change_type !== "hours_changed")
         .sort((a, b) => (b.changed_at ?? "").localeCompare(a.changed_at ?? ""));
       if (ownChanges.length > 0) {
         const latest = ownChanges[0];
         const kind = taskChangeKind(latest);
         if (kind) {
-          let note = CHANGE_TYPE_SHORT_LABEL[kind] ?? kind.replace(/_/g, " ");
-          if (latest.change_type === "hours_changed") {
-            const prev = Number(latest.previous_value ?? 0);
-            const next = Number(latest.new_value ?? 0);
-            const delta = Math.round((next - prev) * 100) / 100;
-            note = `${delta > 0 ? "+" : ""}${delta}h`;
-          }
-          return { isNew: false, kinds: [kind], notes: [note] };
+          kinds.push(kind);
+          notes.push(CHANGE_TYPE_SHORT_LABEL[kind] ?? kind.replace(/_/g, " "));
         }
       }
-      return { isNew: true, kinds: ["task_added"], notes: ["New task"] };
+      return { isNew: true, kinds, notes };
     }
     const kinds: (keyof typeof CHANGE_DOT_COLOR)[] = [];
     const notes: string[] = [];
