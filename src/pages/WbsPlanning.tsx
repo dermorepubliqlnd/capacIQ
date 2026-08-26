@@ -511,6 +511,13 @@ export default function WbsPlanning() {
       return 130;
     }
   });
+  // Read by the auto-scroll effect above WITHOUT being one of its
+  // dependencies (see that effect's own comment) -- keeps the effect
+  // from re-running, and yanking scrollLeft, on every drag frame.
+  const utilPersonColWRef = useRef(utilPersonColW);
+  useEffect(() => {
+    utilPersonColWRef.current = utilPersonColW;
+  }, [utilPersonColW]);
   const utilPersonResizeState = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
   function startUtilPersonColResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -1836,7 +1843,23 @@ export default function WbsPlanning() {
     const todayIso = toISO(new Date());
     const idx = days.findIndex((d) => toISO(d) === todayIso);
     if (idx === -1) return;
-    const PERSON_COL_W = utilPersonColW;
+    // Bugfix (2026-08-26, Sandra: "when adjusting the person name [column
+    // width] the scenario header moves too"): this effect used to also
+    // re-run on every utilPersonColW change -- which fires on every
+    // single mousemove while dragging the Person column's resize handle.
+    // Each re-run redid the "is today's column still visible" check with
+    // the mid-drag width and, whenever that check failed even for one
+    // frame, forcibly reset el.scrollLeft -- yanking the whole date grid
+    // horizontally as a side effect of resizing, which is what actually
+    // looked like the Scenario column "moving." Reading the current
+    // width from utilPersonColWRef (kept in sync below, but NOT a
+    // dependency here) means this auto-scroll logic still uses an
+    // up-to-date width whenever it legitimately runs (window navigation,
+    // mount), without re-running mid-drag. Scenario visually sliding
+    // along with Person's new width during the drag itself is correct,
+    // intentional behavior (see the `left: utilPersonColW` styles below)
+    // -- only the scroll-jumping was the bug.
+    const PERSON_COL_W = utilPersonColWRef.current;
     const SCENARIO_COL_W = 150;
     const DAY_COL_W = 40;
     const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
@@ -1875,7 +1898,7 @@ export default function WbsPlanning() {
     // (clientWidth - STICKY_OFFSET) instead keeps it clear of them.
     const desired = targetLeft - el.clientWidth / 2 - STICKY_OFFSET / 2 + DAY_COL_W / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
-  }, [utilAnchorDate, utilWindowOffset, utilPersonColW]);
+  }, [utilAnchorDate, utilWindowOffset]);
 
   // Fixed 2026-07-24 (Sandra: "fix the glitch when adding task in WBS") --
   // the old default-Start logic for a new task only ever looked at the
@@ -3364,19 +3387,11 @@ export default function WbsPlanning() {
                 Request Baseline Approval
               </button>
             )}
-          {canManageWbs &&
-            (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
-            !pendingClosure && (
-              // Renamed from "Request Closure" (Sandra, 2026-07-29, design
-              // spec item 1: "remove 'Capture Final' wording -- primary
-              // Close Project button"). Same handler (handleRequestClosure)
-              // -- for a non-approver this still opens the approval-pending
-              // state below; canDecideClosure users see Approve & Close
-              // there. Only the label/prominence changed, not the workflow.
-              <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestClosure}>
-                Close Project
-              </button>
-            )}
+          {/* Duplicate Close Project button removed here (2026-08-26,
+              Sandra: "Remove the Close Project action at the top of the
+              page. Just retain the one at the bottom.") -- the bottom
+              status-banner button (same handleRequestClosure handler,
+              same visibility condition) is the only one now. */}
         </div>
       </div>
 
@@ -4592,7 +4607,22 @@ export default function WbsPlanning() {
                       <td>
                         <InlineNumber
                           value={t.output_count}
-                          editable={rowEditable}
+                          // Sandra, 2026-08-26: "I can't edit output count.
+                          // I think it's locked because all tasks are
+                          // done." Correct diagnosis -- the DB's own
+                          // enforce_done_task_lock trigger only locks
+                          // scoping fields (name/hours/effort/work
+                          // type/assignee/start date), NOT output_count,
+                          // so this was purely a frontend over-lock: every
+                          // WBS cell used the same blanket `rowEditable`
+                          // (canEditWbs && status!=='Done'). Output Count
+                          // is deliberately the CLOSURE-time gate (see
+                          // handleRequestClosure's missingOutputCount
+                          // check) -- it's supposed to stay fillable right
+                          // up through Done, only Project Closed
+                          // (!canEditWbs) or a parent row should disable
+                          // it.
+                          editable={canEditWbs && !isParent}
                           onCommit={(v) => saveTaskField(t.id, { output_count: v })}
                         />
                       </td>

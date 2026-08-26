@@ -896,7 +896,34 @@ export default function Projects() {
   // See loadAll() below -- only gates the *first* load's placeholder.
   const hasLoadedOnce = useRef(false);
 
-  const [collapsedParents, setCollapsedParents] = useState<string[]>([]);
+  // Persisted (2026-08-26, Sandra: "the task list defaults to expanded
+  // view every time there's a refresh, can the system remember the last
+  // setting or view selected by the user?") -- same localStorage
+  // convention as DataTable's own collapsedGroups (see that component's
+  // doc comment): per-browser/per-user, not part of any shared/saved
+  // view, since which sub-task groups are collapsed is a personal
+  // reading preference, not team-shared config.
+  const COLLAPSED_PARENTS_STORAGE_KEY = "capaciq_tasks_collapsed_parents";
+  const [collapsedParents, setCollapsedParentsState] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_PARENTS_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  function setCollapsedParents(updater: string[] | ((prev: string[]) => string[])) {
+    setCollapsedParentsState((prev) => {
+      const next = typeof updater === "function" ? (updater as (prev: string[]) => string[])(prev) : updater;
+      try {
+        localStorage.setItem(COLLAPSED_PARENTS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore -- private browsing / storage full, still works for the
+        // rest of this session, it just won't persist across refreshes
+      }
+      return next;
+    });
+  }
   const { confirm, alert, dialog: confirmDialog } = useConfirm();
 
   const [extensionTask, setExtensionTask] = useState<TaskWithDepth | null>(null);
@@ -2553,7 +2580,7 @@ export default function Projects() {
             renderReadOnly={() =>
               t.status ? <span className={`status-pill ${statusTone(statusGroupOf(TASK_STATUS_GROUPED, t.status))}`}>{t.status}</span> : "—"
             }
-            onCommit={(v) => {
+            onCommit={async (v) => {
               // Flipping to Done stamps the assignee's own self-reported
               // completion moment -- separate from validated_completion_date,
               // which is the project owner/manager's independent check (see
@@ -2561,6 +2588,15 @@ export default function Projects() {
               // stamp so a task that's reopened doesn't keep a stale
               // "submitted" record.
               if (v === "Done") {
+                // Sandra, 2026-08-26: don't allow tagging a task Done
+                // without any logged time behind it -- gated on the same
+                // Confirmed/Approved hours that already feed Spent Hrs
+                // (ownHoursFor, not the parent rollup -- this is about
+                // THIS task's own work, not its sub-tasks').
+                if (ownHoursFor(timeEntries, t.id) <= 0) {
+                  await alert("This task can't be marked Done yet -- it has no logged hours (Confirmed or Approved) on it. Log time first, then mark it Done.");
+                  return;
+                }
                 updateTask(t.id, { status: v, submitted_on: new Date().toISOString(), submitted_by: me?.id ?? null });
               } else {
                 updateTask(t.id, { status: v || null, submitted_on: null, submitted_by: null });
@@ -2861,7 +2897,17 @@ export default function Projects() {
             <InlineDate
               value={t.actual_completion_date}
               editable={editable}
-              onCommit={(v) => updateTask(t.id, { actual_completion_date: v || null })}
+              onCommit={async (v) => {
+                // Same logged-hours gate as marking Status Done (Sandra,
+                // 2026-08-26) -- an Actual Completion Date without any
+                // Confirmed/Approved time behind it is just as misleading
+                // as a bare Done status with no hours.
+                if (v && ownHoursFor(timeEntries, t.id) <= 0) {
+                  await alert("Can't set an Actual Completion Date yet -- this task has no logged hours (Confirmed or Approved) on it. Log time first.");
+                  return;
+                }
+                updateTask(t.id, { actual_completion_date: v || null });
+              }}
             />
           );
         },

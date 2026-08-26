@@ -76,7 +76,34 @@ export default function DataTable<T>({
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
   const [dragOverRowKey, setDragOverRowKey] = useState<string | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  // Persisted per-user, per-view (2026-08-26, Sandra: "the task list
+  // defaults to expanded view every time there's a refresh, can the
+  // system remember the last setting or view selected by the user?") --
+  // deliberately localStorage, NOT part of the shared `view` record: a
+  // TableView is saved to Supabase and shared across the whole team (see
+  // TableView's own doc comment on filterAssignedToMe/etc.), so writing
+  // collapse state there would leak one person's expand/collapse choice
+  // to everyone else looking at the same view. Keyed by view.id so
+  // different saved views (and different grouped tables using this same
+  // component) each remember their own state independently.
+  const collapsedGroupsStorageKey = `capaciq_datatable_collapsed_groups_${view.id}`;
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(collapsedGroupsStorageKey);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  function persistCollapsedGroups(next: string[]) {
+    setCollapsedGroups(next);
+    try {
+      localStorage.setItem(collapsedGroupsStorageKey, JSON.stringify(next));
+    } catch {
+      // ignore -- private browsing / storage full, still works for the
+      // rest of this session, it just won't persist across refreshes
+    }
+  }
   const resizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const isResizingRef = useRef(false);
   const [, forceRerender] = useState(0);
@@ -194,7 +221,7 @@ export default function DataTable<T>({
   }
 
   function toggleGroup(name: string) {
-    setCollapsedGroups((prev) => (prev.includes(name) ? prev.filter((g) => g !== name) : [...prev, name]));
+    persistCollapsedGroups(collapsedGroups.includes(name) ? collapsedGroups.filter((g) => g !== name) : [...collapsedGroups, name]);
   }
 
   const activeGroupOption = groupOptions?.find((g) => g.key === view.groupBy);
@@ -225,8 +252,10 @@ export default function DataTable<T>({
   const allGroupsCollapsed = visibleGroupNames.length > 0 && visibleGroupNames.every((n) => collapsedGroups.includes(n));
 
   function toggleAllGroups() {
-    setCollapsedGroups((prev) =>
-      allGroupsCollapsed ? prev.filter((g) => !visibleGroupNames.includes(g)) : Array.from(new Set([...prev, ...visibleGroupNames]))
+    persistCollapsedGroups(
+      allGroupsCollapsed
+        ? collapsedGroups.filter((g) => !visibleGroupNames.includes(g))
+        : Array.from(new Set([...collapsedGroups, ...visibleGroupNames]))
     );
   }
 

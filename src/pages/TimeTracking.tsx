@@ -17,6 +17,7 @@ interface TaskLite {
   name: string;
   assignee_id: string | null;
   project_id: string;
+  current_due_date: string | null;
   project: { id: string; name: string; owner_id: string | null; timelines_locked: boolean } | null;
 }
 
@@ -95,7 +96,6 @@ export default function TimeTracking() {
   const [logTaskId, setLogTaskId] = useState("");
   const [logStartDate, setLogStartDate] = useState(toDateInputValue());
   const [logStartTime, setLogStartTime] = useState(toTimeInputValue());
-  const [logEndDate, setLogEndDate] = useState(toDateInputValue());
   const [logEndTime, setLogEndTime] = useState(toTimeInputValue());
   const [logReasonCategory, setLogReasonCategory] = useState(TIME_ENTRY_REASON_OPTIONS[0]);
   const [logNotes, setLogNotes] = useState("");
@@ -115,7 +115,7 @@ export default function TimeTracking() {
         )
         .order("started_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
-      supabase.from("tasks").select("id,name,assignee_id,project_id,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
+      supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
     ]);
     setEntries(((entryData as unknown as EntryRow[]) ?? []));
     setPeople((peopleData as PersonLite[]) ?? []);
@@ -193,10 +193,19 @@ export default function TimeTracking() {
       return;
     }
     const start = new Date(`${logStartDate}T${logStartTime}`);
-    const end = new Date(`${logEndDate}T${logEndTime}`);
+    let end = new Date(`${logStartDate}T${logEndTime}`);
+    // Manual entries are assumed same-day (Sandra, 2026-08-26: "the
+    // assumption is that it's been worked in the same day, just date and
+    // start and end time") -- there's no separate End date field anymore.
+    // If the end time reads as before/equal to the start time, that means
+    // the session ran past midnight; per Sandra's confirmed choice
+    // ("Clamp/split at midnight"), clamp the logged entry to end of the
+    // start day rather than reject the entry outright or silently wrap
+    // it to the next day.
+    let clampedAtMidnight = false;
     if (end <= start) {
-      setLogError("End time must be after start time.");
-      return;
+      end = new Date(`${logStartDate}T23:59:59`);
+      clampedAtMidnight = true;
     }
     setLogSaving(true);
     const res = await submitManualTimeEntry(logTaskId, start.toISOString(), end.toISOString(), logReasonCategory, logNotes.trim() || logReasonCategory);
@@ -209,7 +218,11 @@ export default function TimeTracking() {
     setLogTaskId("");
     setLogNotes("");
     setLogReasonCategory(TIME_ENTRY_REASON_OPTIONS[0]);
-    await alert("Time entry submitted -- it goes to your project owner (or their manager, if you own the project) for approval.");
+    await alert(
+      clampedAtMidnight
+        ? "Time entry submitted -- your end time was before the start time, so it was clamped to 11:59 PM the same day. It goes to your project owner (or their manager, if you own the project) for approval."
+        : "Time entry submitted -- it goes to your project owner (or their manager, if you own the project) for approval."
+    );
     loadAll();
   }
 
@@ -435,6 +448,43 @@ export default function TimeTracking() {
                 </span>
               )}
             </label>
+            {/* Sandra, 2026-08-26: "add in the time tracker a view for the
+                user to see logged hours for the task selected, and due
+                date" -- context while filling out the form, so someone
+                logging time can see at a glance how much is already on
+                the task and when it's due, without leaving this page.
+                Logged hours only counts Confirmed/Approved entries (same
+                rule Spent Hrs uses elsewhere -- see ownHoursFor). */}
+            {logTaskId &&
+              (() => {
+                const selectedTask = myTasks.find((t) => t.id === logTaskId);
+                const loggedMinutes = entries
+                  .filter((e) => e.task_id === logTaskId && (e.status === "confirmed" || e.status === "approved"))
+                  .reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0);
+                const loggedHours = Math.round((loggedMinutes / 60) * 100) / 100;
+                return (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 16,
+                      fontSize: 11.5,
+                      color: "var(--navy)",
+                      background: "var(--surface-2, #f5f6f8)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "7px 10px",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <span>
+                      <strong>Logged so far:</strong> {loggedHours}h
+                    </span>
+                    <span>
+                      <strong>Due:</strong> {selectedTask?.current_due_date ? formatDate(selectedTask.current_due_date) : "—"}
+                    </span>
+                  </div>
+                );
+              })()}
             <div style={{ display: "flex", gap: 8 }}>
               <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Start date</span>
@@ -456,15 +506,6 @@ export default function TimeTracking() {
               </label>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <label style={{ display: "block", marginBottom: 8, flex: 1 }}>
-                <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End date</span>
-                <input
-                  type="date"
-                  value={logEndDate}
-                  onChange={(e) => setLogEndDate(e.target.value)}
-                  style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
-                />
-              </label>
               <label style={{ display: "block", marginBottom: 8, width: 100 }}>
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>End time</span>
                 <input
@@ -474,6 +515,9 @@ export default function TimeTracking() {
                   style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxSizing: "border-box" }}
                 />
               </label>
+              <span style={{ display: "block", marginBottom: 8, flex: 1, fontSize: 11, color: "var(--muted)", alignSelf: "flex-end", paddingBottom: 7 }}>
+                Same day as Start date. Ends past midnight? It'll be clamped to 11:59 PM.
+              </span>
             </div>
             <label style={{ display: "block", marginBottom: 8 }}>
               <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Reason</span>
