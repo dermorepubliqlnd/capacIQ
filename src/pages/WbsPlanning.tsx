@@ -492,6 +492,52 @@ export default function WbsPlanning() {
   // Task column's sticky offset must track that live, not a constant.
   const wbsFrozenGutterW = 22;
   const wbsResizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+  // Utilization-snapshot Person column: resizable + always-frozen/sticky
+  // (2026-08-26, Sandra: "can we have the ability to resize the person
+  // name columns and freeze it too so we can scroll through the dates in
+  // case we have a longer timeline") -- long person names get cramped in
+  // a fixed 130px column; this lets Sandra widen it per her own
+  // preference, persisted like the WBS table's own column widths. The
+  // Scenario column and every date column's sticky-offset math below
+  // read this live value instead of a hardcoded 130.
+  const UTIL_PERSON_COL_STORAGE_KEY = "capaciq_util_person_col_w";
+  const [utilPersonColW, setUtilPersonColW] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(UTIL_PERSON_COL_STORAGE_KEY);
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n >= 90 ? n : 130;
+    } catch {
+      return 130;
+    }
+  });
+  const utilPersonResizeState = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
+  function startUtilPersonColResize(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    utilPersonResizeState.current = { startX: e.clientX, startWidth: utilPersonColW, latest: utilPersonColW };
+    function onMove(ev: MouseEvent) {
+      if (!utilPersonResizeState.current) return;
+      const delta = ev.clientX - utilPersonResizeState.current.startX;
+      const newWidth = Math.max(90, utilPersonResizeState.current.startWidth + delta);
+      utilPersonResizeState.current.latest = newWidth;
+      setUtilPersonColW(newWidth);
+    }
+    function onUp() {
+      if (utilPersonResizeState.current) {
+        try {
+          localStorage.setItem(UTIL_PERSON_COL_STORAGE_KEY, String(utilPersonResizeState.current.latest));
+        } catch {
+          // ignore -- private browsing / storage full, resizing still
+          // works for the rest of this session, it just won't persist
+        }
+      }
+      utilPersonResizeState.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   // Cross-project data, fetched ONLY for the utilization heat-map -- a
   // person's real workload includes every task/project they're on, not
@@ -1732,7 +1778,7 @@ export default function WbsPlanning() {
     const todayIso = toISO(new Date());
     const idx = days.findIndex((d) => toISO(d) === todayIso);
     if (idx === -1) return;
-    const PERSON_COL_W = 130;
+    const PERSON_COL_W = utilPersonColW;
     const SCENARIO_COL_W = 150;
     const DAY_COL_W = 40;
     const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
@@ -1771,7 +1817,7 @@ export default function WbsPlanning() {
     // (clientWidth - STICKY_OFFSET) instead keeps it clear of them.
     const desired = targetLeft - el.clientWidth / 2 - STICKY_OFFSET / 2 + DAY_COL_W / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
-  }, [utilAnchorDate, utilWindowOffset]);
+  }, [utilAnchorDate, utilWindowOffset, utilPersonColW]);
 
   // Fixed 2026-07-24 (Sandra: "fix the glitch when adding task in WBS") --
   // the old default-Start logic for a new task only ever looked at the
@@ -2440,7 +2486,7 @@ export default function WbsPlanning() {
       }
 
       await loadAll();
-      await alert(`Saved using ${verb}.`);
+      await alert("Timelines have been saved. To lock this schedule, request Baseline.");
     } finally {
       setSaving(false);
     }
@@ -3775,8 +3821,43 @@ export default function WbsPlanning() {
               <table className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    <th style={{ width: 130, position: "sticky", left: 0, background: "var(--surface)", zIndex: 1 }}>Person</th>
-                    <th style={{ width: 150, position: "sticky", left: 130, background: "var(--surface)", zIndex: 1 }}>Scenario</th>
+                    <th
+                      style={{
+                        width: utilPersonColW,
+                        maxWidth: utilPersonColW,
+                        position: "sticky",
+                        left: 0,
+                        background: "var(--surface)",
+                        zIndex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Person
+                      {/* Resizable + always-frozen (2026-08-26, Sandra: "resize the
+                          person name columns and freeze it too") -- drag handle on
+                          the right edge, same pattern as the WBS table's ResizableTh. */}
+                      <span
+                        onMouseDown={startUtilPersonColResize}
+                        title="Drag to resize"
+                        style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 2 }}
+                      />
+                    </th>
+                    <th
+                      style={{
+                        width: 150,
+                        position: "sticky",
+                        left: utilPersonColW,
+                        background: "var(--surface)",
+                        zIndex: 1,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Scenario
+                    </th>
                     {utilDays.map((d) => {
                       const iso = toISO(d);
                       const weekend = d.getDay() === 0 || d.getDay() === 6;
@@ -3826,9 +3907,29 @@ export default function WbsPlanning() {
                       // in the second column rather than owning the icon.
                       return (
                         <tr key={p.id} style={{ borderTop: "2px solid var(--border)", cursor: "pointer" }} onClick={toggleExpanded}>
-                          <td style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)" }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                              <ChevronRight size={12} />
+                          <td
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              position: "sticky",
+                              left: 0,
+                              width: utilPersonColW,
+                              maxWidth: utilPersonColW,
+                              background: "var(--surface)",
+                              overflow: "hidden",
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              <ChevronRight size={12} style={{ flexShrink: 0 }} />
                               {p.name}
                             </span>
                           </td>
@@ -3847,12 +3948,30 @@ export default function WbsPlanning() {
                               {mi === 0 && (
                                 <td
                                   rowSpan={visibleModes.length}
-                                  style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)", verticalAlign: "top", paddingTop: 8, cursor: "pointer" }}
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    position: "sticky",
+                                    left: 0,
+                                    width: utilPersonColW,
+                                    maxWidth: utilPersonColW,
+                                    background: "var(--surface)",
+                                    verticalAlign: "top",
+                                    paddingTop: 8,
+                                    cursor: "pointer",
+                                    overflow: "hidden",
+                                  }}
                                   onClick={toggleExpanded}
                                 >
-                                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                    <ChevronDown size={12} />
-                                    {p.name}
+                                  <span
+                                    style={{
+                                      display: "inline-flex",
+                                      alignItems: "flex-start",
+                                      gap: 4,
+                                    }}
+                                  >
+                                    <ChevronDown size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
                                   </span>
                                 </td>
                               )}
@@ -3860,11 +3979,15 @@ export default function WbsPlanning() {
                                 style={{
                                   fontSize: 10.5,
                                   position: "sticky",
-                                  left: 130,
+                                  left: utilPersonColW,
+                                  width: 150,
+                                  maxWidth: 150,
                                   background: "var(--surface)",
                                   color: UTIL_PREVIEW_COLOR[mode],
                                   fontWeight: 600,
                                   whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
                                 }}
                               >
                                 <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
