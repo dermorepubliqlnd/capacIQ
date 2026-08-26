@@ -15,6 +15,12 @@ interface PersonLite {
 interface ExtensionRequestRow {
   id: string;
   requested_new_due_date: string;
+  // Generic request type (2026-08-26) -- this table now also carries
+  // Start Date change requests (see enforce_start_date_lock in Postgres),
+  // not just Due Date extensions. Old rows have no value here; treat
+  // missing/null as 'due_date' everywhere, same as the DB column default.
+  request_type: "due_date" | "start_date" | null;
+  requested_new_start_date: string | null;
   reason_category: string;
   reason_notes: string;
   status: "Pending" | "Approved" | "Rejected";
@@ -28,6 +34,7 @@ interface ExtensionRequestRow {
     assignee_id: string | null;
     original_due_date: string;
     current_due_date: string;
+    start_date_standard: string | null;
     project_id: string;
     project: { id: string; name: string; owner_id: string | null } | null;
   } | null;
@@ -67,8 +74,8 @@ export default function ExtensionRequests() {
       supabase
         .from("extension_requests")
         .select(
-          `id, requested_new_due_date, reason_category, reason_notes, status, decided_at, decision_notes, is_manager_initiated, created_at,
-           task:tasks!extension_requests_task_id_fkey ( id, name, assignee_id, original_due_date, current_due_date, project_id, project:projects ( id, name, owner_id ) ),
+          `id, requested_new_due_date, request_type, requested_new_start_date, reason_category, reason_notes, status, decided_at, decision_notes, is_manager_initiated, created_at,
+           task:tasks!extension_requests_task_id_fkey ( id, name, assignee_id, original_due_date, current_due_date, start_date_standard, project_id, project:projects ( id, name, owner_id ) ),
            project:projects!extension_requests_project_id_fkey ( id, name, owner_id, end_date, original_due_date ),
            requester:people!extension_requests_requested_by_fkey ( id, name ),
            decider:people!extension_requests_decided_by_fkey ( id, name )`
@@ -156,7 +163,7 @@ export default function ExtensionRequests() {
             <th>Assignee</th>
             <th>Project</th>
             <th>Requested by</th>
-            <th>Current due</th>
+            <th>Current</th>
             <th>Requested</th>
             <th>Reason</th>
             <th>Status</th>
@@ -177,6 +184,10 @@ export default function ExtensionRequests() {
                       <span className="status-pill accent" style={{ fontSize: 9.5, marginRight: 6 }}>
                         Project timeline
                       </span>
+                    ) : row.request_type === "start_date" ? (
+                      <span className="status-pill neutral" style={{ fontSize: 9.5, marginRight: 6 }}>
+                        Start Date
+                      </span>
                     ) : null}
                     {row.project ? row.project.name : row.task?.name ?? "Untitled task"}
                     {row.is_manager_initiated && (
@@ -193,8 +204,14 @@ export default function ExtensionRequests() {
                       </span>
                     )}
                   </td>
-                  <td>{formatDate(row.project ? row.project.end_date : row.task?.current_due_date)}</td>
-                  <td style={{ fontWeight: 600 }}>{formatDate(row.requested_new_due_date)}</td>
+                  <td>
+                    {row.request_type === "start_date"
+                      ? formatDate(row.task?.start_date_standard)
+                      : formatDate(row.project ? row.project.end_date : row.task?.current_due_date)}
+                  </td>
+                  <td style={{ fontWeight: 600 }}>
+                    {formatDate(row.request_type === "start_date" ? row.requested_new_start_date : row.requested_new_due_date)}
+                  </td>
                   <td>
                     <span className="status-pill neutral" style={{ fontSize: 10 }}>
                       {row.reason_category}
@@ -271,9 +288,15 @@ export default function ExtensionRequests() {
   // that intermediate state, and cumulative drift is the more actionable
   // number anyway).
   function ReportTab() {
-    const decided = requests.filter((r) => r.status !== "Pending");
-    const approved = requests.filter((r) => r.status === "Approved");
-    const rejected = requests.filter((r) => r.status === "Rejected");
+    // Scoped to Due Date extensions only (2026-08-26) -- Start Date
+    // change requests_ now also live in this same table, but "days
+    // extended" and the rest of this report's drift math are specifically
+    // about due-date slippage. Mixing the two would make the numbers
+    // meaningless (a Start Date moving earlier isn't a "slip").
+    const requests_ = requests.filter((r) => (r.request_type ?? "due_date") === "due_date");
+    const decided = requests_.filter((r) => r.status !== "Pending");
+    const approved = requests_.filter((r) => r.status === "Approved");
+    const rejected = requests_.filter((r) => r.status === "Rejected");
     const approvalRate = decided.length > 0 ? Math.round((approved.length / decided.length) * 100) : null;
 
     const daysExtendedList = approved
@@ -283,11 +306,11 @@ export default function ExtensionRequests() {
 
     const categoryCounts = useMemo(() => {
       const counts: Record<string, number> = {};
-      requests.forEach((r) => {
+      requests_.forEach((r) => {
         counts[r.reason_category] = (counts[r.reason_category] ?? 0) + 1;
       });
       return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    }, [requests]);
+    }, [requests_]);
     const topCategory = categoryCounts[0]?.[0] ?? "—";
 
     // "On behalf of" = requester isn't the task's assignee -- almost
@@ -295,8 +318,8 @@ export default function ExtensionRequests() {
     // Sandra to distinguish self-service extension requests from ones
     // filed on an assignee's behalf, since those are different behavior
     // patterns worth tracking separately (2026-07-17).
-    const onBehalfCount = requests.filter((r) => r.task && r.task.assignee_id !== r.requester?.id).length;
-    const onBehalfRate = requests.length > 0 ? Math.round((onBehalfCount / requests.length) * 100) : null;
+    const onBehalfCount = requests_.filter((r) => r.task && r.task.assignee_id !== r.requester?.id).length;
+    const onBehalfRate = requests_.length > 0 ? Math.round((onBehalfCount / requests_.length) * 100) : null;
 
     // Per requester: count, approval rate, avg days extended, how many
     // needed manager escalation (a proxy for "requesting extensions on
@@ -304,7 +327,7 @@ export default function ExtensionRequests() {
     // and how many were filed on behalf of a different assignee.
     const byRequester = useMemo(() => {
       const map: Record<string, { name: string; total: number; approved: number; rejected: number; pending: number; escalated: number; onBehalf: number; daysList: number[] }> = {};
-      requests.forEach((r) => {
+      requests_.forEach((r) => {
         const id = r.requester?.id ?? "unknown";
         if (!map[id]) map[id] = { name: r.requester?.name ?? "—", total: 0, approved: 0, rejected: 0, pending: 0, escalated: 0, onBehalf: 0, daysList: [] };
         map[id].total += 1;
@@ -318,7 +341,7 @@ export default function ExtensionRequests() {
         if (r.task && r.task.assignee_id !== r.requester?.id) map[id].onBehalf += 1;
       });
       return Object.values(map).sort((a, b) => b.total - a.total);
-    }, [requests]);
+    }, [requests_]);
 
     // Per assignee: same shape as byRequester above, but grouped by who
     // the *task* belongs to rather than who filed the request -- these
@@ -328,7 +351,7 @@ export default function ExtensionRequests() {
     // Requested by Sandra (2026-07-17) alongside the requester breakdown.
     const byAssignee = useMemo(() => {
       const map: Record<string, { name: string; total: number; approved: number; rejected: number; selfRequested: number; daysList: number[] }> = {};
-      requests.forEach((r) => {
+      requests_.forEach((r) => {
         if (!r.task) return;
         const id = r.task.assignee_id ?? "unassigned";
         if (!map[id]) map[id] = { name: assigneeName(r.task.assignee_id), total: 0, approved: 0, rejected: 0, selfRequested: 0, daysList: [] };
@@ -341,13 +364,13 @@ export default function ExtensionRequests() {
         if (r.requester?.id === r.task.assignee_id) map[id].selfRequested += 1;
       });
       return Object.values(map).sort((a, b) => b.total - a.total);
-    }, [requests]);
+    }, [requests_]);
 
     // Per task: request count + net days drifted (current vs original due
     // date on the task itself -- exact, no reconstruction needed).
     const byTask = useMemo(() => {
       const map: Record<string, { name: string; project: string; count: number; drift: number }> = {};
-      requests.forEach((r) => {
+      requests_.forEach((r) => {
         if (!r.task) return;
         const id = r.task.id;
         if (!map[id]) {
@@ -361,31 +384,31 @@ export default function ExtensionRequests() {
         map[id].count += 1;
       });
       return Object.values(map).sort((a, b) => b.count - a.count);
-    }, [requests]);
+    }, [requests_]);
 
     // Requests per month, oldest to newest -- simple trend read.
     const byMonth = useMemo(() => {
       const map: Record<string, number> = {};
-      requests.forEach((r) => {
+      requests_.forEach((r) => {
         const month = r.created_at.slice(0, 7); // YYYY-MM
         map[month] = (map[month] ?? 0) + 1;
       });
       return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]));
-    }, [requests]);
+    }, [requests_]);
     const maxMonthCount = Math.max(1, ...byMonth.map(([, c]) => c));
 
-    if (requests.length === 0) {
+    if (requests_.length === 0) {
       return <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 16 }}>No extension requests yet -- the report will fill in as requests come through.</p>;
     }
 
     return (
       <div style={{ marginTop: 16 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 24 }}>
-          <SummaryCard label="Total requests" value={String(requests.length)} />
+          <SummaryCard label="Total requests" value={String(requests_.length)} />
           <SummaryCard label="Approval rate" value={approvalRate === null ? "—" : `${approvalRate}%`} sub={`${approved.length} approved / ${rejected.length} rejected`} />
           <SummaryCard label="Avg. days extended" value={avgDaysExtended === null ? "—" : `${avgDaysExtended}d`} sub="beyond original due date, approved only" />
           <SummaryCard label="Top reason" value={topCategory} />
-          <SummaryCard label="Requested on behalf" value={onBehalfRate === null ? "—" : `${onBehalfRate}%`} sub={`${onBehalfCount} of ${requests.length} -- not the assignee`} />
+          <SummaryCard label="Requested on behalf" value={onBehalfRate === null ? "—" : `${onBehalfRate}%`} sub={`${onBehalfCount} of ${requests_.length} -- not the assignee`} />
         </div>
 
         <h2 style={{ fontSize: 13, margin: "0 0 8px" }}>Who's requesting</h2>
@@ -479,7 +502,7 @@ export default function ExtensionRequests() {
               <div key={cat} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <span style={{ width: 140, fontSize: 11.5, flexShrink: 0 }}>{cat}</span>
                 <div style={{ flex: 1, background: "var(--hover-bg)", borderRadius: 3, height: 10, overflow: "hidden" }}>
-                  <div style={{ width: `${(count / requests.length) * 100}%`, background: "var(--accent)", height: "100%" }} />
+                  <div style={{ width: `${(count / requests_.length) * 100}%`, background: "var(--accent)", height: "100%" }} />
                 </div>
                 <span style={{ fontSize: 11, color: "var(--muted)", width: 20, textAlign: "right" }}>{count}</span>
               </div>
