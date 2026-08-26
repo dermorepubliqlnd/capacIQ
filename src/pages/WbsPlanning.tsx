@@ -3911,33 +3911,22 @@ export default function WbsPlanning() {
               />
             </div>
             <div ref={utilSnapshotScrollRef} style={{ overflowX: "auto" }}>
-              {/* table-layout:fixed (2026-08-26) -- without it, a <th>'s
-                  `width` style is only a hint: a wide body cell (a long
-                  person name, or the "Committed (Existing)" scenario
-                  label) can still stretch that whole column past its
-                  declared width, which is exactly what silently broke
-                  the sticky Person/Scenario `left` offsets below (they're
-                  computed FROM utilPersonColW/150, so once the real
-                  rendered column grew wider than that, the Scenario
-                  header started drawing on top of the first date
-                  column -- confirmed live via getBoundingClientRect,
-                  Person measured 170px wide vs the 130px it was styled
-                  for). A <colgroup> here makes every column's width
-                  authoritative, so overflow:hidden/textOverflow:ellipsis
-                  on the cells actually clips instead of the column
-                  silently growing around them -- this is also the real,
-                  root-cause fix for the zoom-clipping bug reported
-                  earlier (STICKY_OFFSET alone couldn't fix a column
-                  whose true width didn't match what the offset math
-                  assumed). */}
-              <table className="data-table" style={{ borderCollapse: "collapse", tableLayout: "fixed" }}>
-                <colgroup>
-                  <col style={{ width: utilPersonColW }} />
-                  <col style={{ width: 150 }} />
-                  {utilDays.map((d) => (
-                    <col key={toISO(d)} style={{ width: 40 }} />
-                  ))}
-                </colgroup>
+              {/* NOTE (2026-08-26): table-layout:fixed + a <colgroup> was
+                  tried here to make Person/Scenario's sticky `left`
+                  offsets match their real rendered width, but it
+                  interacted badly with `position:sticky` on this
+                  particular table -- Chrome computed the Scenario
+                  column's width as roughly half its declared 150px even
+                  though both the <col> and the <th> agreed on 150px
+                  (confirmed live via getComputedStyle; root cause not
+                  fully isolated, not worth more time chasing a browser
+                  quirk). Reverted to plain auto table layout -- every
+                  Person/Scenario header AND body cell already carries its
+                  own explicit width + maxWidth + overflow:hidden (see
+                  below), which is what actually keeps them from growing
+                  past their declared size under auto layout regardless of
+                  a long person name or the "Committed (Existing)" label. */}
+              <table className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th
