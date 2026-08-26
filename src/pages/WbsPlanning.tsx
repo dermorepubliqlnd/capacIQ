@@ -1747,11 +1747,29 @@ export default function WbsPlanning() {
     // ISN'T already fully visible at the current position -- keeps the
     // range's start in view whenever today already fits alongside it,
     // and still guarantees today is reachable when it genuinely doesn't.
-    const viewStart = el.scrollLeft;
-    const viewEnd = viewStart + el.clientWidth;
+    //
+    // Round 2 bugfix (2026-08-26, Sandra: "at 90% [zoom]... when zooming
+    // in it's being cut" -- a date column's own header text was visibly
+    // clipped, not just scrolled out of view): PERSON_COL_W + SCENARIO_
+    // COL_W (280px) is a STICKY overlay that always occupies the first
+    // 280px of the VIEWPORT, regardless of scroll position -- a date
+    // column can satisfy the numeric "targetLeft is within [scrollLeft,
+    // scrollLeft+clientWidth)" check while actually rendering PARTLY (or
+    // fully) underneath that sticky region, since sticky content draws
+    // on top of whatever scrolls to those same viewport pixels. The
+    // check must require the column to start AT OR AFTER the sticky
+    // region's own width, not just at or after scrollLeft.
+    const STICKY_OFFSET = PERSON_COL_W + SCENARIO_COL_W;
+    const viewStart = el.scrollLeft + STICKY_OFFSET;
+    const viewEnd = el.scrollLeft + el.clientWidth;
     if (targetLeft >= viewStart && targetLeft + DAY_COL_W <= viewEnd) return;
     const maxScroll = el.scrollWidth - el.clientWidth;
-    const desired = targetLeft - el.clientWidth / 2 + DAY_COL_W / 2;
+    // Same sticky-offset accounting as the visibility check above --
+    // centering within the FULL clientWidth (old math) could land the
+    // target column's viewport position back underneath the sticky
+    // Person/Scenario columns; centering within the USABLE width
+    // (clientWidth - STICKY_OFFSET) instead keeps it clear of them.
+    const desired = targetLeft - el.clientWidth / 2 - STICKY_OFFSET / 2 + DAY_COL_W / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
   }, [utilAnchorDate, utilWindowOffset]);
 

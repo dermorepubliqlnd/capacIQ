@@ -352,11 +352,20 @@ export default function Utilization() {
     // current position, instead of unconditionally re-centering every
     // time (which would hide this grid's own leftmost column whenever
     // today isn't already visible there, e.g. after paging weekOffset).
-    const viewStart = el.scrollLeft;
-    const viewEnd = viewStart + el.clientWidth;
+    //
+    // Round 2 (2026-08-26, Sandra: a date column's own header text was
+    // visibly clipped at 90% zoom, not just scrolled out of view): LABEL_W
+    // is a STICKY overlay that always occupies the viewport's first
+    // LABEL_W pixels regardless of scroll position -- a column can pass
+    // the numeric "within [scrollLeft, scrollLeft+clientWidth)" check
+    // while still rendering partly underneath that sticky region. Both
+    // the visibility check and the centering math below now account for
+    // it (same fix as WbsPlanning.tsx's STICKY_OFFSET).
+    const viewStart = el.scrollLeft + LABEL_W;
+    const viewEnd = el.scrollLeft + el.clientWidth;
     if (targetLeft >= viewStart && targetLeft + colW <= viewEnd) return;
     const maxScroll = el.scrollWidth - el.clientWidth;
-    const desired = targetLeft - el.clientWidth / 2 + colW / 2;
+    const desired = targetLeft - el.clientWidth / 2 - LABEL_W / 2 + colW / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
   }, [days, weeks, viewMode, todayRaw]);
 
