@@ -1695,6 +1695,20 @@ export default function WbsPlanning() {
     const SCENARIO_COL_W = 150;
     const DAY_COL_W = 40;
     const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
+    // Bugfix (2026-08-26, Sandra: "Aug 3 can't be seen in the snapshot"):
+    // this used to unconditionally re-center today's column every time,
+    // which on THIS panel (anchored to the project's own start date, not
+    // to today -- unlike Utilization.tsx/HoursOverview.tsx's grids,
+    // which anchor to today itself) pushed the window's own leftmost
+    // dates off-screen to the left whenever today sat deep into the
+    // range, even though they were already comfortably visible at the
+    // default scrollLeft of 0. Only scroll at all if today's column
+    // ISN'T already fully visible at the current position -- keeps the
+    // range's start in view whenever today already fits alongside it,
+    // and still guarantees today is reachable when it genuinely doesn't.
+    const viewStart = el.scrollLeft;
+    const viewEnd = viewStart + el.clientWidth;
+    if (targetLeft >= viewStart && targetLeft + DAY_COL_W <= viewEnd) return;
     const maxScroll = el.scrollWidth - el.clientWidth;
     const desired = targetLeft - el.clientWidth / 2 + DAY_COL_W / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));

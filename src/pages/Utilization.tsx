@@ -345,8 +345,17 @@ export default function Utilization() {
       if (weekIdx !== -1) targetLeft = LABEL_W + weekIdx * WEEK_CELL_W;
     }
     if (targetLeft === null) return;
-    const maxScroll = el.scrollWidth - el.clientWidth;
     const colW = viewMode === "daily" ? CELL_W : WEEK_CELL_W;
+    // Bugfix (2026-08-26, same class of issue as WbsPlanning.tsx's
+    // Utilization snapshot panel -- see that file's comment): only
+    // scroll if today's column isn't already fully visible at the
+    // current position, instead of unconditionally re-centering every
+    // time (which would hide this grid's own leftmost column whenever
+    // today isn't already visible there, e.g. after paging weekOffset).
+    const viewStart = el.scrollLeft;
+    const viewEnd = viewStart + el.clientWidth;
+    if (targetLeft >= viewStart && targetLeft + colW <= viewEnd) return;
+    const maxScroll = el.scrollWidth - el.clientWidth;
     const desired = targetLeft - el.clientWidth / 2 + colW / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
   }, [days, weeks, viewMode, todayRaw]);
