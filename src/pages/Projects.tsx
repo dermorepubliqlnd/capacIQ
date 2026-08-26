@@ -3097,7 +3097,12 @@ export default function Projects() {
                     border: "none",
                     cursor: disabled ? "default" : "pointer",
                     borderRadius: "var(--radius-sm)",
-                    opacity: Boolean(running) && !isRunningHere ? 0.35 : doneBlocksStart ? 0.35 : 1,
+                    // 2026-08-26 (Sandra: "grey out the blue start button
+                    // when baseline is not set yet") -- disabled was
+                    // already correctly gating baselineBlocksStart, but
+                    // opacity never accounted for it, so the button stayed
+                    // full-color/blue while functionally unclickable.
+                    opacity: Boolean(running) && !isRunningHere ? 0.35 : doneBlocksStart || baselineBlocksStart ? 0.35 : 1,
                     color: isRunningHere ? "var(--danger-text)" : "var(--accent)",
                   }}
                 >

@@ -446,7 +446,17 @@ export default function DataTable<T>({
           .filter(([groupName]) => !hiddenGroups.includes(groupName))
           .map(([groupName, groupRows]) => {
           const collapsed = collapsedGroups.includes(groupName);
-          const groupTone = activeGroupOption?.getTone?.(groupRows[0]);
+          // Bugfix (2026-08-26, Sandra: "Projects List -- Grouping has a
+          // bug. Leading to a blank page"): allGroups() above pre-seeds
+          // every canonical value (e.g. every Status option) as an empty
+          // group even when zero current rows have that value -- normal
+          // whenever a small dataset doesn't cover every possible value.
+          // getTone(groupRows[0]) was called unconditionally, so any
+          // empty group crashed the whole table (and the page, since
+          // nothing caught it) on `p.status`-style property access
+          // against `undefined`. Only compute a tone when the group
+          // actually has a row to derive it from.
+          const groupTone = groupRows.length > 0 ? activeGroupOption?.getTone?.(groupRows[0]) : undefined;
           return (
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>

@@ -49,6 +49,15 @@ interface ProjectRow {
   // visits, not just whatever this page's own local toggle happens to be
   // set to right now.
   scoping_effort_mode: string | null;
+  // 2026-08-26 (Sandra: "before requesting to close, all details are
+  // encoded like project status, phase, category, priority, source and
+  // complexity"): fetched here purely to gate handleRequestClosure below
+  // -- these are otherwise edited on the Projects & Tasks list, not this
+  // page.
+  category: string | null;
+  source_id: string | null;
+  priority: string | null;
+  effort_level: string | null;
 }
 interface TaskRow {
   id: string;
@@ -518,6 +527,35 @@ export default function WbsPlanning() {
   useEffect(() => {
     utilPersonColWRef.current = utilPersonColW;
   }, [utilPersonColW]);
+  // Bugfix (2026-08-26, Sandra: "still a bug when adjusting the person
+  // name column -- the Scenario word moved in between the dates"): the
+  // Scenario column's sticky `left` used to be set to the raw
+  // utilPersonColW state -- the WIDTH SANDRA ASKED FOR, not necessarily
+  // the column's true on-screen width. This table intentionally uses
+  // table-layout:auto (see the NOTE above the <table> below -- fixed
+  // layout broke Scenario's own width in a different way), and under
+  // auto layout a long person name can still force the Person column
+  // wider than its declared width/maxWidth even with overflow:hidden,
+  // because auto layout's column-width algorithm considers cell content
+  // regardless of overflow. Whenever that happened, Scenario's `left`
+  // (still just utilPersonColW) fell short of the column's REAL right
+  // edge, so Scenario visually overlapped/slid into the date grid --
+  // most noticeable while dragging, since that's when Sandra is
+  // watching this exact boundary. Fix: measure the Person column's
+  // actual rendered width via ResizeObserver and use THAT for
+  // Scenario's `left` instead of trusting the declared width blindly.
+  const utilPersonThRef = useRef<HTMLTableCellElement | null>(null);
+  const [utilPersonRenderedW, setUtilPersonRenderedW] = useState(utilPersonColW);
+  useEffect(() => {
+    const el = utilPersonThRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width;
+      if (w) setUtilPersonRenderedW(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const utilPersonResizeState = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
   function startUtilPersonColResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -728,7 +766,7 @@ export default function WbsPlanning() {
     // state still updates underneath, but the page never unmounts.
     if (!silent) setLoading(true);
     const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }] = await Promise.all([
-      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status").eq("id", projectId).single(),
+      supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status,category,source_id,priority,effort_level").eq("id", projectId).single(),
       supabase
         .from("tasks")
         .select(
@@ -1764,6 +1802,26 @@ export default function WbsPlanning() {
 
   async function handleRequestClosure() {
     if (!project) return;
+    // Sandra, 2026-08-26: "before requesting to close -- all details are
+    // encoded like project status, phase, category, priority, source and
+    // complexity -- technically all that requires manual input." These
+    // are all set on the Projects & Tasks list (not this page), so
+    // there's no in-context prompt nudging someone to fill them in
+    // before they get here -- gate closure on them explicitly instead of
+    // letting a project close with silently-blank properties.
+    const missingProjectFields: string[] = [];
+    if (!project.status) missingProjectFields.push("Status");
+    if (!project.phase) missingProjectFields.push("Phase");
+    if (!project.category) missingProjectFields.push("Category");
+    if (!project.priority) missingProjectFields.push("Priority");
+    if (!project.source_id) missingProjectFields.push("Source");
+    if (!project.effort_level) missingProjectFields.push("Complexity");
+    if (missingProjectFields.length) {
+      await alert(
+        `Can't request closure yet -- this project is still missing: ${missingProjectFields.join(", ")}. Set these on the Projects & Tasks list first.`
+      );
+      return;
+    }
     // Sandra, 2026-08-26: "output count will be required on project close
     // request and approval" -- unlike Output Type (required at Baseline),
     // Output Count is allowed to stay blank right up until closure.
@@ -1788,6 +1846,23 @@ export default function WbsPlanning() {
   async function handleDecideClosure(approve: boolean) {
     if (!project || !pendingClosure) return;
     if (approve) {
+      // Same project-level field gate as handleRequestClosure above --
+      // an approver shouldn't be able to wave through a closure that's
+      // still missing required properties just because the request
+      // itself slipped through before this gate existed.
+      const missingProjectFields: string[] = [];
+      if (!project.status) missingProjectFields.push("Status");
+      if (!project.phase) missingProjectFields.push("Phase");
+      if (!project.category) missingProjectFields.push("Category");
+      if (!project.priority) missingProjectFields.push("Priority");
+      if (!project.source_id) missingProjectFields.push("Source");
+      if (!project.effort_level) missingProjectFields.push("Complexity");
+      if (missingProjectFields.length) {
+        await alert(
+          `Can't approve closure yet -- this project is still missing: ${missingProjectFields.join(", ")}. Set these on the Projects & Tasks list first.`
+        );
+        return;
+      }
       const missingOutputCount = orderedTasks.filter((t) => t.output_count === null || t.output_count === undefined);
       if (missingOutputCount.length) {
         await alert(`Can't approve closure yet -- ${missingOutputCount.length} task(s) still need an Output Count.`);
@@ -2517,14 +2592,31 @@ export default function WbsPlanning() {
         const chosen = chosenChain.get(t.id);
         if (!chosen) continue;
 
-        const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
-        const { error: taskDateError } = await supabase.from("tasks").update(patch).eq("id", t.id);
-        if (taskDateError) {
-          await alert(`Couldn't save "${t.name}"'s dates: ${taskDateError.message}. Stopping here -- reloading to show what actually saved.`);
-          await loadAll();
-          return;
+        // Bugfix (2026-08-26, Sandra: "I'm trying to save output count
+        // but getting [this task is Done -- its scoping fields... are
+        // locked]"): this loop used to unconditionally rewrite EVERY
+        // task's start_date/current_due_date on every Save, including
+        // Done tasks -- so any Save at all (even one only meant to
+        // persist an Output Count edit staged via saveTaskField/
+        // flushPendingEdits above) collaterally tripped
+        // enforce_done_task_lock the moment the freshly recomputed
+        // schedule date for a Done task differed from its frozen DB
+        // value. A Done task's start date is supposed to be historical
+        // -- same reasoning as the rest of the scoping-field lock -- so
+        // skip the actual date WRITE for Done tasks. The schedule chain
+        // still computed `chosen` from their (frozen) dates for any
+        // downstream dependency math, we just don't write it back; the
+        // snapshot/Audit Trail recording below is unaffected either way.
+        if (t.status !== "Done") {
+          const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
+          const { error: taskDateError } = await supabase.from("tasks").update(patch).eq("id", t.id);
+          if (taskDateError) {
+            await alert(`Couldn't save "${t.name}"'s dates: ${taskDateError.message}. Stopping here -- reloading to show what actually saved.`);
+            await loadAll();
+            return;
+          }
+          setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
         }
-        setTasks((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...patch } : x)));
 
         const snapshotRows = MODES.map((m) => ({ m, entry: chainByMode[m].get(t.id) }))
           .filter((x): x is { m: Mode; entry: ChainEntry } => !!x.entry)
@@ -2566,7 +2658,20 @@ export default function WbsPlanning() {
         }
       }
 
-      await loadAll();
+      // Bugfix (2026-08-26, Sandra: "there seems to be a bug when we are
+      // updating the WBS, the scenarios view always ends up being the
+      // same") -- loadAll()'s default (non-silent) mode flips `loading`
+      // true/false, which unmounts this whole page behind the bare
+      // "Loading..." early-return guard and remounts it fresh once data
+      // arrives. That wiped every local UI-only toggle back to its
+      // useState default on every single Save -- visibleScenarios (the
+      // Forecasted/Capacity-Based checkboxes) chief among them, since
+      // whatever Sandra had picked before Save always reset to "all
+      // shown" after. Same root cause and same fix already established
+      // for add/delete task (see loadAll's own comment above) -- pass
+      // silent=true so state still refreshes underneath without the
+      // full unmount/remount.
+      await loadAll(true);
       await alert("Timelines have been saved. To lock this schedule, request Baseline.");
     } finally {
       setSaving(false);
@@ -3945,6 +4050,7 @@ export default function WbsPlanning() {
                 <thead>
                   <tr>
                     <th
+                      ref={utilPersonThRef}
                       style={{
                         width: utilPersonColW,
                         maxWidth: utilPersonColW,
@@ -3971,7 +4077,7 @@ export default function WbsPlanning() {
                       style={{
                         width: 150,
                         position: "sticky",
-                        left: utilPersonColW,
+                        left: utilPersonRenderedW,
                         background: "var(--surface)",
                         zIndex: 1,
                         overflow: "hidden",
@@ -4102,7 +4208,7 @@ export default function WbsPlanning() {
                                 style={{
                                   fontSize: 10.5,
                                   position: "sticky",
-                                  left: utilPersonColW,
+                                  left: utilPersonRenderedW,
                                   width: 150,
                                   maxWidth: 150,
                                   background: "var(--surface)",
