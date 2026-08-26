@@ -99,3 +99,136 @@ export function computeRateScenarios(hours: number, startDateStr: string, holida
     standard: standardScenario(hours, startDateStr, holidays),
   };
 }
+
+export interface FullCapacityQueueTask {
+  id: string;
+  estimatedHours: number;
+  /** This task's own recorded/dependency-derived Start -- acts ONLY as a
+   * floor (see packFullCapacityQueue's doc comment) and as the ordering
+   * key when two tasks would otherwise tie. */
+  ownStartDateStr: string;
+  sortOrder?: number | null;
+  isFixedSchedule?: boolean;
+}
+
+export interface FullCapacityQueueResult {
+  starts: Map<string, string>;
+  ends: Map<string, string>;
+}
+
+/**
+ * Theoretical/Full-Capacity same-person, same-project day-packing walk.
+ * (2026-08-26, Sandra: two of Joseph's tasks, 3h then 7.5h -- "if Jo
+ * still has 4.5 hours left for Aug 5, then this next task can start on
+ * the same day with overflow to the following day.")
+ *
+ * Queues every one of a person's own tasks (the caller filters to ONE
+ * project -- Theoretical stays project-scoped, unlike Capacity-Based
+ * which is deliberately cross-project) and walks them forward at a flat
+ * `dailyHours` ceiling (7.5h by default), packing multiple tasks into
+ * the same working day when there's room left and splitting a single
+ * task across a day boundary when there isn't, instead of the old
+ * per-task-independent calc (`fullCapacityScenario`) which gave every
+ * task its own untouched Start regardless of a same-person predecessor's
+ * leftover capacity that same day.
+ *
+ * Unlike `buildForwardSchedule` (capacityScheduler.ts, used by
+ * Capacity-Based/Utilization), a task's own `ownStartDateStr` is ONLY a
+ * floor: it can push the shared cursor forward (e.g. a task that's
+ * genuinely dependency-chained to end no earlier than a certain date),
+ * but it never holds a LATER-queued task back from filling an EARLIER
+ * task's same-day leftover capacity. That's intentional -- Capacity-
+ * Based's per-task floor reflects "honor what's already been declared",
+ * which is right for a more conservative, already-committed-aware
+ * reference; Theoretical is the optimistic "what if every available
+ * hour got used" reference, so it should actively close gaps.
+ */
+export function packFullCapacityQueue(
+  tasks: FullCapacityQueueTask[],
+  holidays: HolidaySet,
+  dailyHours: number = FULL_CAPACITY_DAILY_HOURS,
+  maxDaysGuard = 365
+): FullCapacityQueueResult {
+  const starts = new Map<string, string>();
+  const ends = new Map<string, string>();
+  if (tasks.length === 0) return { starts, ends };
+
+  const ordered = [...tasks].sort((a, b) => {
+    if (a.ownStartDateStr !== b.ownStartDateStr) return a.ownStartDateStr < b.ownStartDateStr ? -1 : 1;
+    if (a.sortOrder != null && b.sortOrder != null && a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  // Runs one shared-cursor walk over `queue` -- consecutive tasks in the
+  // SAME queue pack into each other's leftover same-day capacity; each
+  // call to this function starts a fresh cursor (used to keep
+  // Fixed-Schedule tasks from sharing a cursor with anything else, and
+  // with each other).
+  function walk(queue: FullCapacityQueueTask[], startCursor: { date: Date; remaining: number }, guardState: { n: number }) {
+    let cursorDate = startCursor.date;
+    let cursorRemaining = startCursor.remaining;
+    while (!isWorkingDay(cursorDate, holidays)) {
+      cursorDate = addDays(cursorDate, 1);
+      cursorRemaining = dailyHours;
+    }
+    for (const task of queue) {
+      const ownFloor = parseLocalDate(task.ownStartDateStr);
+      if (ownFloor.getTime() > cursorDate.getTime()) {
+        cursorDate = ownFloor;
+        cursorRemaining = dailyHours;
+        while (!isWorkingDay(cursorDate, holidays)) {
+          cursorDate = addDays(cursorDate, 1);
+          cursorRemaining = dailyHours;
+        }
+      }
+      let remaining = task.estimatedHours;
+      let firstDate: string | null = null;
+      let lastDate: string | null = null;
+      while (remaining > 0 && guardState.n < maxDaysGuard) {
+        guardState.n++;
+        if (!isWorkingDay(cursorDate, holidays) || cursorRemaining <= 0) {
+          cursorDate = addDays(cursorDate, 1);
+          cursorRemaining = dailyHours;
+          continue;
+        }
+        const consume = Math.min(cursorRemaining, remaining);
+        if (!firstDate) firstDate = toISO(cursorDate);
+        lastDate = toISO(cursorDate);
+        cursorRemaining -= consume;
+        remaining -= consume;
+      }
+      starts.set(task.id, firstDate ?? toISO(cursorDate));
+      ends.set(task.id, lastDate ?? toISO(cursorDate));
+    }
+  }
+
+  const guardState = { n: 0 };
+  // Fixed-Schedule tasks first, each independently at the full daily
+  // ceiling (never shares/crowds a day with anything else) -- same
+  // "honest overallocation, never silently deferred" assumption
+  // buildForwardSchedule's own fixedQueue pass uses.
+  const fixed = ordered.filter((t) => t.isFixedSchedule);
+  const flexible = ordered.filter((t) => !t.isFixedSchedule);
+  for (const t of fixed) {
+    walk([t], { date: parseLocalDate(t.ownStartDateStr), remaining: dailyHours }, guardState);
+  }
+
+  if (flexible.length) {
+    // Don't let flexible tasks double-book a day a Fixed task already
+    // claimed -- start the shared flexible cursor the working day after
+    // the latest Fixed task's own end, if any Fixed tasks exist.
+    let cursorStart = { date: parseLocalDate(flexible[0].ownStartDateStr), remaining: dailyHours };
+    if (fixed.length) {
+      const lastFixedEnd = fixed.reduce<string | null>((max, t) => {
+        const e = ends.get(t.id);
+        return e && (!max || e > max) ? e : max;
+      }, null);
+      if (lastFixedEnd && lastFixedEnd >= toISO(cursorStart.date)) {
+        cursorStart = { date: addDays(parseLocalDate(lastFixedEnd), 1), remaining: dailyHours };
+      }
+    }
+    walk(flexible, cursorStart, guardState);
+  }
+
+  return { starts, ends };
+}

@@ -124,6 +124,20 @@ export interface ForwardScheduleArgs {
   holidaySet: HolidaySet;
   availability: SchedAvailabilityRow[];
   maxDaysGuard?: number;
+  // WBS Planning bugfix (2026-08-26, Sandra: a 08/03-started task showed
+  // its Forecasted End as today (08/26) instead of 08/04): `fromDateStr`
+  // was always "today" AND every task's effective start was floored at
+  // it (see `effectiveStart` below), so a task whose own stored
+  // start_date is already in the past got silently pushed forward to
+  // today before the walk even began -- correct for Utilization.tsx's
+  // "today and future" grid (this scheduler's original, still-default
+  // use case, see the file header), wrong for WBS Planning's own
+  // Forecasted/Capacity-Based table, which should schedule from a
+  // task's REAL Start date even when that's in the past (e.g. backdated
+  // test data, or a task that's simply running late). Defaults to true
+  // (old behavior, unchanged) so Utilization.tsx's own call is
+  // unaffected; WbsPlanning.tsx's call opts out.
+  floorEffectiveStartAtFromDate?: boolean;
 }
 
 export interface ForwardScheduleDay {
@@ -159,6 +173,7 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
     holidaySet,
     availability,
     maxDaysGuard = 365,
+    floorEffectiveStartAtFromDate = true,
   } = args;
 
   const perDay = new Map<string, ForwardScheduleDay>();
@@ -189,7 +204,7 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
   // Filter + sort the task queue.
   const effectiveStart = (t: SchedTaskRow): Date => {
     const raw = parseLocalDate(t.start_date ?? t.current_due_date);
-    return maxDate(raw, fromDate);
+    return floorEffectiveStartAtFromDate ? maxDate(raw, fromDate) : raw;
   };
   const eligible = tasks.filter(
     (t) =>

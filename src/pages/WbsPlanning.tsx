@@ -9,7 +9,7 @@ import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../component
 import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
-import { fullCapacityScenario, capacityBasedScenario, FULL_CAPACITY_DAILY_HOURS } from "../lib/taskScheduling";
+import { fullCapacityScenario, capacityBasedScenario, packFullCapacityQueue, FULL_CAPACITY_DAILY_HOURS, type FullCapacityQueueTask } from "../lib/taskScheduling";
 import { buildForwardSchedule, PROJECT_PM_DAILY_HOURS, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES, TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import {
@@ -140,7 +140,7 @@ const WBS_TASK_COLUMN_DEFAULTS: Record<string, number> = {
   depends_on: 150,
   changes: 190,
 };
-const WBS_TASK_COLUMN_ORDER = ["task", "effort_hours", "spent_hrs", "effort", "assignee", "depends_on", "work_type", "output_type", "output_count", "changes"];
+const WBS_TASK_COLUMN_ORDER = ["task", "depends_on", "assignee", "work_type", "output_type", "output_count", "effort_hours", "spent_hrs", "effort", "changes"];
 const WBS_DATE_COLUMN_WIDTHS = [110, 100, 90, 110, 100, 90, 110, 100, 90]; // Start/End/Duration x3 modes, fixed
 const WBS_COL_WIDTHS_STORAGE_KEY = "capaciq_wbs_task_col_widths";
 const WBS_MIN_COL_WIDTH = 50;
@@ -1092,11 +1092,35 @@ export default function WbsPlanning() {
   // anymore. A task the user has manually overridden is left alone --
   // `dependencyConflict`'s existing warning icon is still the only signal
   // for that case, exactly as Sandra originally asked for.
+  // Bugfix (2026-08-26, Sandra: WBS visibly flickering/glitching whenever
+  // a dependency is set -- Task 2's Forecasted and Capacity-Based dates
+  // rapidly alternated between two different answers): this loop used to
+  // run for ALL THREE modes, but "standard" (Capacity-Based) has had NO
+  // draft field of its own since Phase 12 -- Manual took over
+  // start_date_standard/start_standard_auto as ITS OWN private override
+  // columns (see computeEntry's big Phase 12 comment above). Nobody
+  // updated this effect after that repurposing, so it was still writing
+  // a "standard"-derived suggested Start into the exact same column
+  // "manual" writes its OWN, DIFFERENT suggested Start into -- whenever a
+  // task's predecessor had itself been manually touched (so its Manual-
+  // chain end date differs from its Capacity-Based-chain end date, which
+  // is exactly what happened in Sandra's repro: Task 1 was manually
+  // overridden), the two mode passes computed two different candidates
+  // and each render's write clobbered the other's, forever (mode
+  // "standard" needs a *dependency-respecting floor* fed into the
+  // capacity queue too, but it must come from Manual's own write -- see
+  // `effectiveTasksForSched` above, which already reads
+  // start_date_standard for exactly this purpose -- not a second,
+  // independent write of its own). Restricting this loop to the two
+  // modes that actually own a persisted field ("manual" and
+  // "full_capacity") removes the collision entirely; Capacity-Based
+  // still gets a dependency-aware floor for free via Manual's write to
+  // the same shared column.
   useEffect(() => {
     for (const t of tasks) {
       const depIds = dependsOnIdsFor(t.id);
       if (!depIds.length) continue;
-      for (const mode of MODES) {
+      for (const mode of MODES.filter((m) => m !== "standard")) {
         const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
         const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
         if (t[autoField] === false) continue; // manually overridden -- leave it, warning icon covers this
@@ -1194,8 +1218,56 @@ export default function WbsPlanning() {
         holidaySet,
         availability: schedAvailability,
         maxDaysGuard: 365,
+        // Bugfix (2026-08-26, Sandra: Task 1 started 08/03 but Forecasted
+        // End showed today instead of 08/04): WBS Planning's own
+        // Forecasted/Capacity-Based table should schedule from a task's
+        // REAL Start date even when it's in the past, unlike
+        // Utilization.tsx's "today and future" grid (this scheduler's
+        // other caller, which keeps the old floor-at-today behavior on
+        // purpose). Sandra confirmed it's fine for Forecasted to diverge
+        // from Theoretical's flat math here -- this still runs the full
+        // capacity-aware walk, it just no longer clamps a backdated
+        // start up to today first.
+        floorEffectiveStartAtFromDate: false,
       });
       schedulesByAssignee.set(personId, sched);
+    }
+    return sched;
+  }
+
+  // Theoretical/Full-Capacity same-person day-packing (2026-08-26,
+  // Sandra: "if Jo still has 4.5 hours left for Aug 5, then this next
+  // task can start on the same day with overflow to the following
+  // day"). Deliberately project-scoped (unlike scheduleFor above, which
+  // is cross-project for Capacity-Based/Utilization) -- Theoretical is
+  // meant to answer "what does THIS project's own plan look like at a
+  // flat full day", not fold in a person's other projects' work too.
+  // See packFullCapacityQueue's own doc comment (taskScheduling.ts) for
+  // why this can't just reuse buildForwardSchedule: that engine treats
+  // every task's own recorded Start as a hard per-task floor (right for
+  // Capacity-Based's "honor what's already been declared" semantics),
+  // which is exactly what stopped Theoretical from ever pulling a later
+  // sibling task earlier to fill an earlier one's same-day leftover
+  // capacity.
+  const theoreticalTasksForSched: FullCapacityQueueTask[] = tasks
+    .filter((t) => !t.parent_task_id && t.assignee_id && t.status !== "Done" && (t.estimated_hours ?? 0) > 0 && t.start_date_full)
+    .map((t) => ({
+      id: t.id,
+      estimatedHours: t.estimated_hours ?? 0,
+      ownStartDateStr: (t.start_date_full as string).slice(0, 10),
+      sortOrder: t.sort_order ?? null,
+      isFixedSchedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
+    }));
+  const theoreticalSchedulesByAssignee = new Map<string, ReturnType<typeof packFullCapacityQueue>>();
+  function theoreticalScheduleFor(personId: string): ReturnType<typeof packFullCapacityQueue> {
+    let sched = theoreticalSchedulesByAssignee.get(personId);
+    if (!sched) {
+      sched = packFullCapacityQueue(
+        theoreticalTasksForSched.filter((t) => tasks.find((x) => x.id === t.id)?.assignee_id === personId),
+        holidaySet,
+        FULL_CAPACITY_DAILY_HOURS
+      );
+      theoreticalSchedulesByAssignee.set(personId, sched);
     }
     return sched;
   }
@@ -1208,11 +1280,15 @@ export default function WbsPlanning() {
 
   // Per-task, per-mode End-date calculator -- a task's own Start date
   // (stored, freely editable) plus its Estimated hours, run through
-  // whichever mode's flat daily rate. Deliberately independent of every
-  // other task (Sandra confirmed: simpler, predictable, lets tasks
-  // genuinely overlap/parallelize -- the utilization heat-map below is
-  // where over-allocation actually shows up, not a scheduling
-  // constraint here).
+  // whichever mode's flat daily rate. Manual and Capacity-Based are
+  // deliberately independent of every other task (Sandra confirmed:
+  // simpler, predictable, lets tasks genuinely overlap/parallelize --
+  // the utilization heat-map below is where over-allocation actually
+  // shows up, not a scheduling constraint here). Full Capacity /
+  // Theoretical is the one exception (2026-08-26): it packs same-person,
+  // same-project siblings into each other's same-day leftover capacity
+  // via theoreticalScheduleFor above, since it's meant to represent the
+  // optimistic "every available hour actually gets used" reference.
   function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
     // Phase 12 (2026-08-21): Sandra -- "add a table for Manual... the
     // manual timetable would basically reflect Capacity-Based by
@@ -1321,8 +1397,29 @@ export default function WbsPlanning() {
     }
     const hours = t.estimated_hours;
     if (hours === null || hours === undefined) return null;
-    const r = fullCapacityScenario(hours, start, holidaySet);
-    return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+    // Bugfix (2026-08-26, Sandra): an unassigned task has no one to
+    // share a queue with, so it keeps the old solo flat calc. Every
+    // assigned task now packs into its assignee's shared same-project
+    // queue instead (theoreticalScheduleFor above) -- a person's OWN
+    // leftover same-day capacity gets used by their next task rather
+    // than every task getting its own untouched day regardless of how
+    // little of the previous day it actually needed.
+    if (!t.assignee_id) {
+      const r = fullCapacityScenario(hours, start, holidaySet);
+      return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+    }
+    const sched = theoreticalScheduleFor(t.assignee_id);
+    const schedStart = sched.starts.get(t.id);
+    const schedEnd = sched.ends.get(t.id);
+    if (!schedStart || !schedEnd) {
+      // Shouldn't normally happen (every task with hours+assignee+start
+      // gets queued above) -- defensive fallback to the old solo calc
+      // rather than silently going blank.
+      const r = fullCapacityScenario(hours, start, holidaySet);
+      return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+    }
+    const durationDays = workingDaysBetween(parseLocalDate(schedStart), parseLocalDate(schedEnd), holidaySet).length;
+    return { start: schedStart, end: schedEnd, durationDays };
   }
 
   // Builds the full per-mode map: leaf tasks computed directly from their
@@ -1426,6 +1523,19 @@ export default function WbsPlanning() {
       await alert("Add at least one task before requesting a baseline.");
       return;
     }
+    // Sandra, 2026-08-26: "only push to fill in all needed info when
+    // requesting for Baseline Approval" -- softIssues() (placeholder task
+    // names, missing Effort/Scoped Hours, dependency-date conflicts) used
+    // to gate Save itself; it now gates the baseline request instead, so
+    // a draft can be saved incomplete but not baselined incomplete.
+    const issues = softIssues();
+    if (issues.length && !isFullAccess) {
+      await alert(`Can't request a baseline yet:\n\n${issues.join("\n")}`);
+      return;
+    }
+    if (issues.length && isFullAccess) {
+      if (!(await confirm(`${issues.join("\n")}\n\nFull Access override: request Baseline Approval anyway?`))) return;
+    }
     // Sandra: "make sure the output type is keyed in before saving
     // baseline, but the count can be kept optional until project is
     // closed." Output Type is a hard gate here (no Full Access override,
@@ -1502,6 +1612,14 @@ export default function WbsPlanning() {
 
   async function handleRequestClosure() {
     if (!project) return;
+    // Sandra, 2026-08-26: "output count will be required on project close
+    // request and approval" -- unlike Output Type (required at Baseline),
+    // Output Count is allowed to stay blank right up until closure.
+    const missingOutputCount = orderedTasks.filter((t) => t.output_count === null || t.output_count === undefined);
+    if (missingOutputCount.length) {
+      await alert(`Can't request closure yet -- ${missingOutputCount.length} task(s) still need an Output Count.`);
+      return;
+    }
     if (!(await confirm(`Request closure for "${project.name}"? This asks an approver to lock in the current plan as Final Scope.`))) return;
     const flushedBeforeClosureRequest = await flushPendingEdits();
     if (!flushedBeforeClosureRequest) return;
@@ -1517,6 +1635,13 @@ export default function WbsPlanning() {
 
   async function handleDecideClosure(approve: boolean) {
     if (!project || !pendingClosure) return;
+    if (approve) {
+      const missingOutputCount = orderedTasks.filter((t) => t.output_count === null || t.output_count === undefined);
+      if (missingOutputCount.length) {
+        await alert(`Can't approve closure yet -- ${missingOutputCount.length} task(s) still need an Output Count.`);
+        return;
+      }
+    }
     if (!(await confirm(approve ? "Approve this closure? This locks in the current plan as Final Scope -- final, no re-opening." : "Reject this closure request?"))) return;
     const flushedBeforeClosureDecide = await flushPendingEdits();
     if (!flushedBeforeClosureDecide) return;
@@ -1899,27 +2024,15 @@ export default function WbsPlanning() {
       // not more than 7.5 hours but... say 4 working days?"): this
       // branch used to always chain a no-dependency sibling to the NEXT
       // working day after its predecessor, for BOTH Manual and
-      // Theoretical (full_capacity) modes -- ignoring the Phase 20
-      // same-day-packing fix that addTopLevelTask/addSubtask already
-      // apply when a task is first created. Refresh dates would then
-      // silently undo that packing the moment it ran, spreading tasks
-      // that easily fit in one 7.5h day across one-day-per-task instead.
-      // This mirrors remainingFullEffortHours/packedFullEffortNextStart
-      // above, but reads from THIS pass's own freshly-computed `entries`
-      // map (and the sibling ids scheduled so far) instead of the stale
-      // pre-refresh chainByMode, since Refresh recomputes everyone in one
-      // shot before anything is saved.
-      function remainingFullEffortHoursThisPass(dateStr: string, siblingIdsSoFar: string[]): number {
-        let used = 0;
-        for (const sid of siblingIdsSoFar) {
-          const e = entries.get(sid);
-          if (e && e.start === dateStr && e.end === dateStr) {
-            const st = orderedTasks.find((x) => x.id === sid);
-            used += st?.estimated_hours ?? 0;
-          }
-        }
-        return Math.max(0, FULL_CAPACITY_DAILY_HOURS - used);
-      }
+      // Theoretical (full_capacity) modes -- ignoring same-day capacity
+      // left over from the predecessor. Superseded 2026-08-26: Theoretical
+      // now packs same-person, same-project siblings continuously via
+      // theoreticalScheduleFor/packFullCapacityQueue (with real
+      // multi-day splitting, not just a same-day-fits-or-defer-whole
+      // check), so Refresh no longer needs its own copy of that logic --
+      // see the "full_capacity" branch below, which now just anchors the
+      // very first task in a root group and leaves everyone else to the
+      // live packer.
       function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string, siblingIdsSoFar: string[] = []): ChainEntry | null {
         // Done tasks are historical -- Refresh dates should never push
         // their Start to follow a predecessor's new End, same reasoning
@@ -1938,13 +2051,21 @@ export default function WbsPlanning() {
           }
           if (latest) overrideStart = latest;
         } else if (!depIds.length && isAuto && mode === "full_capacity") {
-          if (chainPrev) {
-            const newHours = t.estimated_hours ?? 0;
-            const remaining = remainingFullEffortHoursThisPass(chainPrev.end, siblingIdsSoFar);
-            overrideStart = newHours <= remaining ? chainPrev.end : nextWorkingDayAfter(chainPrev.end, holidaySet);
-          } else if (anchorStart) {
-            overrideStart = anchorStart;
-          }
+          // Bugfix (2026-08-26): the live Theoretical packer
+          // (computeEntry -> theoreticalScheduleFor, taskScheduling.ts's
+          // packFullCapacityQueue) now handles same-person, same-project
+          // day-packing continuously on every render -- writing a
+          // pre-packed guess here (this used to decide "fits in the
+          // predecessor's own leftover same day, or defer the WHOLE task
+          // to the next day") would fight it, since the live packer
+          // treats whatever's stored in start_date_full as a hard floor
+          // and can't pull a task earlier than a value Refresh just
+          // wrote here. Only the very first task in a root group still
+          // needs an explicit anchor (nothing else to chain from); every
+          // other no-dependency sibling is left alone so the live packer
+          // decides its real placement, same as it already does without
+          // ever clicking Refresh.
+          if (!chainPrev && anchorStart) overrideStart = anchorStart;
         } else if (!depIds.length && isAuto) {
           if (mode === "standard") {
             // Phase 22 bugfix (see [[project_capaciq_scheduler_tiebreak_fix]]):
@@ -2150,14 +2271,13 @@ export default function WbsPlanning() {
       return;
     }
 
-    const issues = softIssues();
-    if (issues.length && !isFullAccess) {
-      await alert(`Can't save yet:\n\n${issues.join("\n")}`);
-      return;
-    }
-    if (issues.length && isFullAccess) {
-      if (!(await confirm(`${issues.join("\n")}\n\nFull Access override: save anyway?`))) return;
-    }
+    // Sandra, 2026-08-26: "allow saving even WBS data is not complete
+    // yet -- only push to fill in all needed info when requesting for
+    // Baseline Approval." softIssues() (placeholder names, missing
+    // Effort/hours, dependency-date conflicts) used to hard-block Save
+    // itself; that gate now lives on handleRequestBaseline instead, so a
+    // draft can be saved at any stage of completeness. See
+    // [[project_capaciq_wbs_planning]].
 
     const verb = MODE_LABEL[activeMode];
     // Phase 6 (2026-08-21): replaces the old "applyingRevision" branch --
@@ -3756,14 +3876,14 @@ export default function WbsPlanning() {
                 <tr>
                   <th rowSpan={2} className="row-gutter-cell" style={{ width: 22, minWidth: 22 }} />
                   <ResizableTh colKey="task">Task</ResizableTh>
+                  <ResizableTh colKey="depends_on">Depends on</ResizableTh>
+                  <ResizableTh colKey="assignee">Assignee</ResizableTh>
                   <ResizableTh colKey="work_type">Work Type</ResizableTh>
-                  <ResizableTh colKey="effort_hours">Scoped Hours</ResizableTh>
-                  <ResizableTh colKey="spent_hrs">Spent hrs</ResizableTh>
-                  <ResizableTh colKey="effort">Effort</ResizableTh>
                   <ResizableTh colKey="output_type">Output Type</ResizableTh>
                   <ResizableTh colKey="output_count">Output Count</ResizableTh>
-                  <ResizableTh colKey="assignee">Assignee</ResizableTh>
-                  <ResizableTh colKey="depends_on">Depends on</ResizableTh>
+                  <ResizableTh colKey="effort_hours">Scoped Hours</ResizableTh>
+                  <ResizableTh colKey="spent_hrs">Logged Hours</ResizableTh>
+                  <ResizableTh colKey="effort">Effort</ResizableTh>
                   <ResizableTh colKey="changes" title="vs the active Baseline">
                     Changes vs Baseline
                   </ResizableTh>
@@ -3886,112 +4006,17 @@ export default function WbsPlanning() {
                           )}
                         </div>
                       </td>
-                      <td>
-                        {isParent ? (
-                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
-                            N/A
-                          </span>
-                        ) : (
-                          (() => {
-                            const currentWt = workTypes.find((w) => w.id === t.work_type_id);
-                            // Active work types for the picker, plus the
-                            // task's own currently-set Work Type even if it
-                            // was since deactivated, so its historical
-                            // label doesn't just vanish from the dropdown.
-                            const pickable = workTypes.filter((w) => w.is_active || w.id === t.work_type_id);
-                            return (
-                              <InlineSelect
-                                value={currentWt?.name ?? ""}
-                                editable={rowEditable}
-                                allowEmpty
-                                emptyLabel="Pick work type"
-                                options={pickable.map((w) => w.name)}
-                                onCommit={(v) => {
-                                  const match = pickable.find((w) => w.name === v);
-                                  saveTaskField(t.id, { work_type_id: match?.id ?? null });
-                                }}
-                              />
-                            );
-                          })()
-                        )}
-                      </td>
-                      <td>
-                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Scoped Hours)" : undefined}>
-                          <InlineNumber
-                            value={t.estimated_hours}
-                            editable={rowEditable && !isParent}
-                            onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })}
-                          />
-                        </span>
-                      </td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(spentHoursFor(t.id))}</td>
-                      <td>
-                        {isParent ? (
-                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own effort is already represented by its sub-tasks' own Effort/points, so it doesn't carry a separate value.">
-                            N/A
-                          </span>
-                        ) : (
-                          // Phase 12 (2026-08-20): Effort is no longer
-                          // independently pickable -- it's always computed
-                          // from Scoped Hours by the DB trigger
-                          // (derive_task_effort, supabase/phase12_migration.sql),
-                          // so this is now a plain read-only chip, same as
-                          // the main Tasks page. A "Very Heavy" result gets
-                          // a small non-blocking hint suggesting the task
-                          // be split up -- purely informational.
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                            {t.effort ? (
-                              <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral"}`}>{t.effort}</span>
-                            ) : (
-                              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>—</span>
-                            )}
-                            {t.effort === "Very Heavy" && (
-                              <span title="Very Heavy (over 24 planned effort hours) -- consider breaking this task into smaller sub-tasks.">
-                                <AlertTriangle size={12} color="var(--warning-text)" />
-                              </span>
-                            )}
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {(() => {
-                          const currentOt = outputTypes.find((o) => o.id === t.output_type_id);
-                          // Phase 23 (2026-08-25): conditional Output Type --
-                          // Sandra: "I want the output be conditional based
-                          // on task type." Once a Work Type is mapped to at
-                          // least one Output Type, only those (plus the
-                          // active-or-already-set rule from before) are
-                          // pickable; with no Work Type set, or a Work Type
-                          // that has zero mapped rows, every active Output
-                          // Type is offered so nothing is ever unpickable.
-                          const mappedOutputTypeIds = t.work_type_id
-                            ? new Set(workTypeOutputTypes.filter((m) => m.work_type_id === t.work_type_id).map((m) => m.output_type_id))
-                            : null;
-                          const pickableOt = outputTypes.filter(
-                            (o) =>
-                              (o.is_active || o.id === t.output_type_id) &&
-                              (!mappedOutputTypeIds || mappedOutputTypeIds.size === 0 || mappedOutputTypeIds.has(o.id) || o.id === t.output_type_id)
-                          );
-                          return (
-                            <InlineSelect
-                              value={currentOt?.name ?? ""}
-                              editable={rowEditable}
-                              allowEmpty
-                              emptyLabel="Pick output type"
-                              options={pickableOt.map((o) => o.name)}
-                              onCommit={(v) => {
-                                const match = pickableOt.find((o) => o.name === v);
-                                saveTaskField(t.id, { output_type_id: match?.id ?? null });
-                              }}
-                            />
-                          );
-                        })()}
-                      </td>
-                      <td>
-                        <InlineNumber
-                          value={t.output_count}
+                      <td style={{ position: "relative" }}>
+                        <DependsOnPicker
+                          task={t}
+                          allTasks={orderedTasks}
+                          dependsOnIds={dependsOnIds}
+                          isOpen={depPickerOpenFor === t.id}
                           editable={rowEditable}
-                          onCommit={(v) => saveTaskField(t.id, { output_count: v })}
+                          onToggle={() => setDepPickerOpenFor((prev) => (prev === t.id ? null : t.id))}
+                          onClose={() => setDepPickerOpenFor(null)}
+                          onAdd={(depId) => addDependency(t.id, depId)}
+                          onRemove={(depId) => removeDependency(t.id, depId)}
                         />
                       </td>
                       <td>
@@ -4049,18 +4074,128 @@ export default function WbsPlanning() {
                           />
                         )}
                       </td>
-                      <td style={{ position: "relative" }}>
-                        <DependsOnPicker
-                          task={t}
-                          allTasks={orderedTasks}
-                          dependsOnIds={dependsOnIds}
-                          isOpen={depPickerOpenFor === t.id}
+                      <td>
+                        {isParent ? (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
+                            N/A
+                          </span>
+                        ) : (
+                          (() => {
+                            const currentWt = workTypes.find((w) => w.id === t.work_type_id);
+                            // Active work types for the picker, plus the
+                            // task's own currently-set Work Type even if it
+                            // was since deactivated, so its historical
+                            // label doesn't just vanish from the dropdown.
+                            const pickable = workTypes.filter((w) => w.is_active || w.id === t.work_type_id);
+                            return (
+                              <InlineSelect
+                                value={currentWt?.name ?? ""}
+                                editable={rowEditable}
+                                allowEmpty
+                                emptyLabel="Pick work type"
+                                options={pickable.map((w) => w.name)}
+                                onCommit={(v) => {
+                                  const match = pickable.find((w) => w.name === v);
+                                  saveTaskField(t.id, { work_type_id: match?.id ?? null });
+                                }}
+                              />
+                            );
+                          })()
+                        )}
+                      </td>
+                      <td>
+                        {(() => {
+                          const currentOt = outputTypes.find((o) => o.id === t.output_type_id);
+                          // Phase 23 (2026-08-25): conditional Output Type --
+                          // Sandra: "I want the output be conditional based
+                          // on task type." Once a Work Type is mapped to at
+                          // least one Output Type, only those (plus the
+                          // active-or-already-set rule from before) are
+                          // pickable; with no Work Type set, or a Work Type
+                          // that has zero mapped rows, every active Output
+                          // Type is offered so nothing is ever unpickable.
+                          const mappedOutputTypeIds = t.work_type_id
+                            ? new Set(workTypeOutputTypes.filter((m) => m.work_type_id === t.work_type_id).map((m) => m.output_type_id))
+                            : null;
+                          const pickableOt = outputTypes.filter(
+                            (o) =>
+                              (o.is_active || o.id === t.output_type_id) &&
+                              (!mappedOutputTypeIds || mappedOutputTypeIds.size === 0 || mappedOutputTypeIds.has(o.id) || o.id === t.output_type_id)
+                          );
+                          // Sandra, 2026-08-26: Output Type shouldn't be
+                          // pickable at all until a Work Type is chosen
+                          // first (leaf tasks only -- parent rows never
+                          // carry a Work Type, that's N/A by design, so
+                          // they stay open per the "every task gets
+                          // Output Type" rule from the original Materials
+                          // Output ship).
+                          const needsWorkTypeFirst = !isParent && !t.work_type_id;
+                          if (needsWorkTypeFirst) {
+                            return (
+                              <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Pick a Work Type first -- Output Type options depend on it.">
+                                Pick Work Type first
+                              </span>
+                            );
+                          }
+                          return (
+                            <InlineSelect
+                              value={currentOt?.name ?? ""}
+                              editable={rowEditable}
+                              allowEmpty
+                              emptyLabel="Pick output type"
+                              options={pickableOt.map((o) => o.name)}
+                              onCommit={(v) => {
+                                const match = pickableOt.find((o) => o.name === v);
+                                saveTaskField(t.id, { output_type_id: match?.id ?? null });
+                              }}
+                            />
+                          );
+                        })()}
+                      </td>
+                      <td>
+                        <InlineNumber
+                          value={t.output_count}
                           editable={rowEditable}
-                          onToggle={() => setDepPickerOpenFor((prev) => (prev === t.id ? null : t.id))}
-                          onClose={() => setDepPickerOpenFor(null)}
-                          onAdd={(depId) => addDependency(t.id, depId)}
-                          onRemove={(depId) => removeDependency(t.id, depId)}
+                          onCommit={(v) => saveTaskField(t.id, { output_count: v })}
                         />
+                      </td>
+                      <td>
+                        <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Scoped Hours)" : undefined}>
+                          <InlineNumber
+                            value={t.estimated_hours}
+                            editable={rowEditable && !isParent}
+                            onCommit={(v) => saveTaskField(t.id, { estimated_hours: v })}
+                          />
+                        </span>
+                      </td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(spentHoursFor(t.id))}</td>
+                      <td>
+                        {isParent ? (
+                          <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own effort is already represented by its sub-tasks' own Effort/points, so it doesn't carry a separate value.">
+                            N/A
+                          </span>
+                        ) : (
+                          // Phase 12 (2026-08-20): Effort is no longer
+                          // independently pickable -- it's always computed
+                          // from Scoped Hours by the DB trigger
+                          // (derive_task_effort, supabase/phase12_migration.sql),
+                          // so this is now a plain read-only chip, same as
+                          // the main Tasks page. A "Very Heavy" result gets
+                          // a small non-blocking hint suggesting the task
+                          // be split up -- purely informational.
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            {t.effort ? (
+                              <span className={`status-pill ${TASK_EFFORT_DEFAULT_TONES[t.effort] ?? "neutral"}`}>{t.effort}</span>
+                            ) : (
+                              <span style={{ fontSize: 11.5, color: "var(--muted)" }}>—</span>
+                            )}
+                            {t.effort === "Very Heavy" && (
+                              <span title="Very Heavy (over 24 planned effort hours) -- consider breaking this task into smaller sub-tasks.">
+                                <AlertTriangle size={12} color="var(--warning-text)" />
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </td>
                       <td>
                         {(() => {
