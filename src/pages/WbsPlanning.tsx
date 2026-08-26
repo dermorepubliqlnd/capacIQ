@@ -3911,7 +3911,33 @@ export default function WbsPlanning() {
               />
             </div>
             <div ref={utilSnapshotScrollRef} style={{ overflowX: "auto" }}>
-              <table className="data-table" style={{ borderCollapse: "collapse" }}>
+              {/* table-layout:fixed (2026-08-26) -- without it, a <th>'s
+                  `width` style is only a hint: a wide body cell (a long
+                  person name, or the "Committed (Existing)" scenario
+                  label) can still stretch that whole column past its
+                  declared width, which is exactly what silently broke
+                  the sticky Person/Scenario `left` offsets below (they're
+                  computed FROM utilPersonColW/150, so once the real
+                  rendered column grew wider than that, the Scenario
+                  header started drawing on top of the first date
+                  column -- confirmed live via getBoundingClientRect,
+                  Person measured 170px wide vs the 130px it was styled
+                  for). A <colgroup> here makes every column's width
+                  authoritative, so overflow:hidden/textOverflow:ellipsis
+                  on the cells actually clips instead of the column
+                  silently growing around them -- this is also the real,
+                  root-cause fix for the zoom-clipping bug reported
+                  earlier (STICKY_OFFSET alone couldn't fix a column
+                  whose true width didn't match what the offset math
+                  assumed). */}
+              <table className="data-table" style={{ borderCollapse: "collapse", tableLayout: "fixed" }}>
+                <colgroup>
+                  <col style={{ width: utilPersonColW }} />
+                  <col style={{ width: 150 }} />
+                  {utilDays.map((d) => (
+                    <col key={toISO(d)} style={{ width: 40 }} />
+                  ))}
+                </colgroup>
                 <thead>
                   <tr>
                     <th
