@@ -103,10 +103,30 @@ export function computeRateScenarios(hours: number, startDateStr: string, holida
 export interface FullCapacityQueueTask {
   id: string;
   estimatedHours: number;
-  /** This task's own recorded/dependency-derived Start -- acts ONLY as a
-   * floor (see packFullCapacityQueue's doc comment) and as the ordering
-   * key when two tasks would otherwise tie. */
+  /** This task's own recorded Start -- used ONLY to order the queue
+   * (whichever task's stored Start is earliest goes first). Every task
+   * has one of these (even an untouched sibling that was never
+   * dependency-linked to anything -- it still got SOME default value
+   * when it was created), so it must NOT also act as a hard floor, or
+   * every such sibling would keep its old, pre-packing placement and
+   * never actually pack -- see `floorDateStr` below for the field that
+   * DOES act as a real floor. */
   ownStartDateStr: string;
+  /** A REAL constraint this task can't start before -- set this ONLY
+   * when it's genuinely load-bearing (e.g. this task has an actual
+   * Depends-on link, and this is the dependency-derived "day after the
+   * predecessor's End" floor). Leave undefined for an ordinary,
+   * unconstrained sibling -- undefined means "pack wherever the shared
+   * cursor naturally lands," never "pull the cursor forward to here."
+   * Bugfix (2026-08-26, Sandra: Joseph's Task 3/4 still weren't
+   * packing): the original version conflated this with
+   * `ownStartDateStr` -- treating EVERY task's stored Start as a hard
+   * floor accidentally preserved every untouched sibling's old,
+   * independent placement instead of ever letting it pack into an
+   * earlier task's leftover same-day capacity, defeating the entire
+   * feature for the exact "two ordinary siblings, no dependency
+   * between them" case it was built for. */
+  floorDateStr?: string;
   sortOrder?: number | null;
   isFixedSchedule?: boolean;
 }
@@ -133,15 +153,17 @@ export interface FullCapacityQueueResult {
  * leftover capacity that same day.
  *
  * Unlike `buildForwardSchedule` (capacityScheduler.ts, used by
- * Capacity-Based/Utilization), a task's own `ownStartDateStr` is ONLY a
- * floor: it can push the shared cursor forward (e.g. a task that's
- * genuinely dependency-chained to end no earlier than a certain date),
- * but it never holds a LATER-queued task back from filling an EARLIER
- * task's same-day leftover capacity. That's intentional -- Capacity-
- * Based's per-task floor reflects "honor what's already been declared",
- * which is right for a more conservative, already-committed-aware
- * reference; Theoretical is the optimistic "what if every available
- * hour got used" reference, so it should actively close gaps.
+ * Capacity-Based/Utilization), a task's `floorDateStr` -- set ONLY for a
+ * genuinely dependency-constrained task, see FullCapacityQueueTask's doc
+ * comment -- can push the shared cursor forward, but it never holds a
+ * LATER-queued task back from filling an EARLIER task's same-day
+ * leftover capacity, and an ORDINARY (non-dependency) task has no floor
+ * at all, so it always packs wherever the cursor naturally lands. That's
+ * intentional -- Capacity-Based's per-task floor reflects "honor what's
+ * already been declared", which is right for a more conservative,
+ * already-committed-aware reference; Theoretical is the optimistic
+ * "what if every available hour got used" reference, so it should
+ * actively close gaps between ordinary siblings.
  */
 export function packFullCapacityQueue(
   tasks: FullCapacityQueueTask[],
@@ -172,13 +194,15 @@ export function packFullCapacityQueue(
       cursorRemaining = dailyHours;
     }
     for (const task of queue) {
-      const ownFloor = parseLocalDate(task.ownStartDateStr);
-      if (ownFloor.getTime() > cursorDate.getTime()) {
-        cursorDate = ownFloor;
-        cursorRemaining = dailyHours;
-        while (!isWorkingDay(cursorDate, holidays)) {
-          cursorDate = addDays(cursorDate, 1);
+      if (task.floorDateStr) {
+        const ownFloor = parseLocalDate(task.floorDateStr);
+        if (ownFloor.getTime() > cursorDate.getTime()) {
+          cursorDate = ownFloor;
           cursorRemaining = dailyHours;
+          while (!isWorkingDay(cursorDate, holidays)) {
+            cursorDate = addDays(cursorDate, 1);
+            cursorRemaining = dailyHours;
+          }
         }
       }
       let remaining = task.estimatedHours;

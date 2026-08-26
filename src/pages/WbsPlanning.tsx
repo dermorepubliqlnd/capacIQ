@@ -143,6 +143,7 @@ const WBS_TASK_COLUMN_DEFAULTS: Record<string, number> = {
 const WBS_TASK_COLUMN_ORDER = ["task", "depends_on", "assignee", "work_type", "output_type", "output_count", "effort_hours", "spent_hrs", "effort", "changes"];
 const WBS_DATE_COLUMN_WIDTHS = [110, 100, 90, 110, 100, 90, 110, 100, 90]; // Start/End/Duration x3 modes, fixed
 const WBS_COL_WIDTHS_STORAGE_KEY = "capaciq_wbs_task_col_widths";
+const WBS_FREEZE_STORAGE_KEY = "capaciq_wbs_freeze_task_col";
 const WBS_MIN_COL_WIDTH = 50;
 interface PersonRow {
   id: string;
@@ -460,6 +461,36 @@ export default function WbsPlanning() {
     })()
   );
   const [wbsColWidthsVersion, setWbsColWidthsVersion] = useState(0);
+  // Freeze panes (2026-08-26, Sandra: "allow freezing of panes in the WBS
+  // table") -- keeps the gutter + Task name column pinned in place while
+  // scrolling right through the many Work Type/Output/date-mode columns,
+  // Excel/Notion-style. Persisted like column widths (no server-side
+  // "saved views" concept for this page yet); defaults ON since that's
+  // the more useful state for a table this wide.
+  const [wbsFreezeTaskCol, setWbsFreezeTaskCol] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(WBS_FREEZE_STORAGE_KEY);
+      return raw === null ? true : raw === "1";
+    } catch {
+      return true;
+    }
+  });
+  function toggleWbsFreeze() {
+    setWbsFreezeTaskCol((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(WBS_FREEZE_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // ignore -- private browsing / storage full, toggle still works
+        // for the rest of this session, it just won't persist
+      }
+      return next;
+    });
+  }
+  // Gutter is a fixed 22px; the Task column's own width is whatever
+  // wbsColWidth("task") currently resolves to (resizable) -- the frozen
+  // Task column's sticky offset must track that live, not a constant.
+  const wbsFrozenGutterW = 22;
   const wbsResizeState = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   // Cross-project data, fetched ONLY for the utilization heat-map -- a
@@ -1255,6 +1286,16 @@ export default function WbsPlanning() {
       id: t.id,
       estimatedHours: t.estimated_hours ?? 0,
       ownStartDateStr: (t.start_date_full as string).slice(0, 10),
+      // Bugfix (2026-08-26, Sandra: Joseph's Task 3/4 still weren't
+      // packing after the first fix): only a task that's ACTUALLY
+      // dependency-linked gets a real floor here -- an ordinary,
+      // unconstrained sibling's stored start_date_full is just whatever
+      // default it happened to get at creation time (e.g. "day after
+      // the previous row"), not a genuine constraint, so it must NOT
+      // block the live packer from pulling it earlier into a
+      // predecessor's same-day leftover capacity. See
+      // FullCapacityQueueTask's own doc comment (taskScheduling.ts).
+      floorDateStr: dependsOnIdsFor(t.id).length > 0 ? (t.start_date_full as string).slice(0, 10) : undefined,
       sortOrder: t.sort_order ?? null,
       isFixedSchedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
     }));
@@ -2605,8 +2646,29 @@ export default function WbsPlanning() {
   // as the plain <th>s it replaces), a drag handle on its right edge.
   function ResizableTh({ colKey, title, children }: { colKey: string; title?: string; children: React.ReactNode }) {
     const w = wbsColWidth(colKey);
+    // Freeze panes: only the Task column freezes (pins right after the
+    // 22px gutter) -- see wbsFreezeTaskCol above. `position:relative` on
+    // an unfrozen header would break `position:sticky` freezing that
+    // relies on the nearest scrolling ancestor being the `.card`
+    // container, so it's only applied when actually needed for the
+    // resize-handle overlay below (still fine to combine with sticky --
+    // sticky elements can be positioning contexts too).
+    const frozen = colKey === "task" && wbsFreezeTaskCol;
     return (
-      <th rowSpan={2} style={{ width: w, minWidth: WBS_MIN_COL_WIDTH, maxWidth: w, position: "relative" }} title={title}>
+      <th
+        rowSpan={2}
+        style={{
+          width: w,
+          minWidth: WBS_MIN_COL_WIDTH,
+          maxWidth: w,
+          position: frozen ? "sticky" : "relative",
+          left: frozen ? wbsFrozenGutterW : undefined,
+          zIndex: frozen ? 3 : undefined,
+          background: frozen ? "var(--surface)" : undefined,
+          boxShadow: frozen ? "1px 0 0 0 var(--border)" : undefined,
+        }}
+        title={title}
+      >
         {children}
         <span
           onMouseDown={(e) => startWbsColResize(colKey, e)}
@@ -3713,13 +3775,31 @@ export default function WbsPlanning() {
                       });
                     }
                     if (!isExpanded) {
+                      // Bugfix (2026-08-26, Sandra: "confusing to click on
+                      // View scenarios then the collapse will be in the
+                      // name"): the expand trigger (chevron + "View
+                      // scenarios") used to live in the SECOND column,
+                      // separate from the person's name -- but the
+                      // collapse trigger (chevron right before the name)
+                      // lives in the FIRST column once expanded, so the
+                      // clickable chevron visually jumped to a different
+                      // spot depending on state. Both states now put the
+                      // chevron in the exact same place, right before the
+                      // name in the Person column, so there's one
+                      // consistent click target regardless of expanded/
+                      // collapsed -- "View scenarios" stays as a plain
+                      // (still-clickable, the whole row has onClick) hint
+                      // in the second column rather than owning the icon.
                       return (
                         <tr key={p.id} style={{ borderTop: "2px solid var(--border)", cursor: "pointer" }} onClick={toggleExpanded}>
-                          <td style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)" }}>{p.name}</td>
-                          <td colSpan={utilDays.length + 1} style={{ fontSize: 11, color: "var(--accent)", fontWeight: 600 }}>
+                          <td style={{ fontSize: 12, fontWeight: 600, position: "sticky", left: 0, background: "var(--surface)" }}>
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                              <ChevronRight size={12} /> View scenarios
+                              <ChevronRight size={12} />
+                              {p.name}
                             </span>
+                          </td>
+                          <td colSpan={utilDays.length + 1} style={{ fontSize: 11, color: "var(--muted)" }}>
+                            View scenarios
                           </td>
                         </tr>
                       );
@@ -3862,6 +3942,25 @@ export default function WbsPlanning() {
               <span />
             )}
             <button
+              onClick={toggleWbsFreeze}
+              title={wbsFreezeTaskCol ? "Unfreeze the Task column (it currently stays pinned while you scroll right)" : "Freeze the Task column so it stays visible while scrolling through the Work Type/Output/date columns"}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                padding: "5px 10px",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm, 6px)",
+                background: wbsFreezeTaskCol ? "var(--accent-bg, #eef2ff)" : "var(--surface)",
+                color: wbsFreezeTaskCol ? "var(--accent, #4f46e5)" : "var(--text)",
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              <Pin size={13} /> {wbsFreezeTaskCol ? "Task column frozen" : "Freeze Task column"}
+            </button>
+            <button
               onClick={refreshDates}
               title="Recompute Start dates for tasks that are still on auto-pilot (no dependency set, not manually overridden) based on the current row order -- useful after dragging a task into a new position."
               style={{
@@ -3908,7 +4007,15 @@ export default function WbsPlanning() {
               </colgroup>
               <thead>
                 <tr>
-                  <th rowSpan={2} className="row-gutter-cell" style={{ width: 22, minWidth: 22 }} />
+                  <th
+                    rowSpan={2}
+                    className="row-gutter-cell"
+                    style={
+                      wbsFreezeTaskCol
+                        ? { width: 22, minWidth: 22, position: "sticky", left: 0, zIndex: 3, background: "var(--surface)" }
+                        : { width: 22, minWidth: 22 }
+                    }
+                  />
                   <ResizableTh colKey="task">Task</ResizableTh>
                   <ResizableTh colKey="depends_on">Depends on</ResizableTh>
                   <ResizableTh colKey="assignee">Assignee</ResizableTh>
@@ -4003,7 +4110,15 @@ export default function WbsPlanning() {
                           over an invalid target (e.g. a different
                           task's sub-task) no longer looks like a normal
                           drop zone that silently does nothing. */}
-                      <td className="row-gutter-cell" onClick={(e) => e.stopPropagation()}>
+                      <td
+                        className="row-gutter-cell"
+                        onClick={(e) => e.stopPropagation()}
+                        style={
+                          wbsFreezeTaskCol
+                            ? { position: "sticky", left: 0, zIndex: 2, background: rowLocked ? "var(--hover-bg)" : "var(--surface)" }
+                            : undefined
+                        }
+                      >
                         <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
                             className="row-grip-btn"
@@ -4020,7 +4135,20 @@ export default function WbsPlanning() {
                           </span>
                         </div>
                       </td>
-                      <td style={{ overflow: "hidden" }}>
+                      <td
+                        style={
+                          wbsFreezeTaskCol
+                            ? {
+                                overflow: "hidden",
+                                position: "sticky",
+                                left: wbsFrozenGutterW,
+                                zIndex: 2,
+                                background: rowLocked ? "var(--hover-bg)" : "var(--surface)",
+                                boxShadow: "1px 0 0 0 var(--border)",
+                              }
+                            : { overflow: "hidden" }
+                        }
+                      >
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <span title={glyph.title} style={{ display: "inline-flex", flexShrink: 0 }}>
                             <glyph.Icon size={13} color={glyph.color} />
