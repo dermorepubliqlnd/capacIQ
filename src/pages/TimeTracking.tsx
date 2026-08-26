@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, XCircle, Clock, ShieldCheck, ChevronRight, ChevronDown, Plus, Pencil } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
@@ -67,6 +67,98 @@ const STATUS_TONE: Record<string, string> = {
 
 const SOURCE_LABEL: Record<string, string> = { timer: "Timer", manual: "Manual", legacy: "Legacy" };
 
+// Small searchable combobox (Sandra, 2026-08-26: "allow project selection
+// in the time tracker then next will be task... allow search too for both
+// options") -- a plain <select> got unwieldy once Project became its own
+// step ahead of Task. Filters options client-side as you type; click a row
+// or the input's current match to select. Local to this file since Task
+// Tracking is the only place a project-then-task cascade like this exists
+// so far.
+function SearchSelect({
+  options,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  options: { id: string; label: string }[];
+  value: string;
+  onChange: (id: string) => void;
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.id === value);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const filtered = options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <input
+        disabled={disabled}
+        value={open ? query : selected?.label ?? ""}
+        placeholder={placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{
+          width: "100%",
+          fontSize: 12,
+          padding: "6px 8px",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+          boxSizing: "border-box",
+          background: disabled ? "var(--bg)" : "var(--surface)",
+        }}
+      />
+      {open && !disabled && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 2px)",
+            left: 0,
+            right: 0,
+            maxHeight: 180,
+            overflowY: "auto",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            boxShadow: "0 4px 16px rgba(15,41,66,0.14)",
+            zIndex: 50,
+          }}
+        >
+          {filtered.length === 0 && <div style={{ padding: "6px 8px", fontSize: 11.5, color: "var(--muted)" }}>No matches</div>}
+          {filtered.map((o) => (
+            <button
+              key={o.id}
+              onClick={() => {
+                onChange(o.id);
+                setOpen(false);
+                setQuery("");
+              }}
+              style={{ display: "block", width: "100%", textAlign: "left", fontSize: 12, padding: "6px 8px", background: "none", border: "none", cursor: "pointer" }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Separate date + time fields rather than <input type="datetime-local">:
 // that control's displayed time format is rendered per the OS locale,
 // which on some systems shows a period instead of a colon between hours
@@ -94,6 +186,7 @@ export default function TimeTracking() {
   const [correctDraft, setCorrectDraft] = useState<{ hours: string; notes: string }>({ hours: "", notes: "" });
 
   const [showLogForm, setShowLogForm] = useState(false);
+  const [logProjectId, setLogProjectId] = useState("");
   const [logTaskId, setLogTaskId] = useState("");
   const [logStartDate, setLogStartDate] = useState(toDateInputValue());
   const [logStartTime, setLogStartTime] = useState(toTimeInputValue());
@@ -216,6 +309,7 @@ export default function TimeTracking() {
       return;
     }
     setShowLogForm(false);
+    setLogProjectId("");
     setLogTaskId("");
     setLogNotes("");
     setLogReasonCategory(TIME_ENTRY_REASON_OPTIONS[0]);
@@ -226,6 +320,20 @@ export default function TimeTracking() {
     );
     loadAll();
   }
+
+  // Sandra, 2026-08-26: a Done task shouldn't accept more logged time --
+  // it's already gated the other direction too (marking Done requires
+  // logged hours, see [[project_capaciq_wbs_batch_2026_08_26_part2]]), so
+  // once it's Done, time tracking against it is finished.
+  const loggableTasks = myTasks.filter((t) => t.project?.timelines_locked && t.status !== "Done");
+  const loggableProjectOptions = (() => {
+    const seen = new Map<string, string>();
+    for (const t of loggableTasks) {
+      if (t.project && !seen.has(t.project.id)) seen.set(t.project.id, t.project.name);
+    }
+    return Array.from(seen, ([id, label]) => ({ id, label }));
+  })();
+  const loggableTasksForProject = loggableTasks.filter((t) => t.project_id === logProjectId).map((t) => ({ id: t.id, label: t.name }));
 
   const personName = (id: string | null) => people.find((p) => p.id === id)?.name ?? "—";
 
@@ -426,29 +534,31 @@ export default function TimeTracking() {
         ) : (
           <div className="card" style={{ padding: 14, maxWidth: 480 }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10, color: "var(--navy)" }}>Log time manually</div>
+            {/* Sandra, 2026-08-26: "allow project selection in the time
+                tracker then next will be task" -- Project first narrows
+                down which tasks show, then Task, both searchable. */}
+            <label style={{ display: "block", marginBottom: 8 }}>
+              <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Project</span>
+              <SearchSelect
+                placeholder="Choose a project…"
+                value={logProjectId}
+                onChange={(id) => {
+                  setLogProjectId(id);
+                  setLogTaskId("");
+                }}
+                options={loggableProjectOptions}
+              />
+            </label>
             <label style={{ display: "block", marginBottom: 8 }}>
               <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginBottom: 3 }}>Task (assigned to you)</span>
-              <select
+              <SearchSelect
+                placeholder={logProjectId ? "Choose a task…" : "Choose a project first"}
                 value={logTaskId}
-                onChange={(e) => setLogTaskId(e.target.value)}
-                style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
-              >
-                <option value="">Choose a task…</option>
-                {myTasks
-                  // Sandra, 2026-08-26: a Done task shouldn't accept more
-                  // logged time -- it's already gated the other direction
-                  // too (marking Done requires logged hours, see
-                  // [[project_capaciq_wbs_batch_2026_08_26_part2]]), so once
-                  // it's Done, time tracking against it is finished.
-                  .filter((t) => t.project?.timelines_locked && t.status !== "Done")
-                  .map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.project?.name ? `${t.project.name} -- ` : ""}
-                      {t.name}
-                    </option>
-                  ))}
-              </select>
-              {myTasks.length > 0 && myTasks.every((t) => !t.project?.timelines_locked || t.status === "Done") && (
+                onChange={setLogTaskId}
+                disabled={!logProjectId}
+                options={loggableTasksForProject}
+              />
+              {loggableProjectOptions.length === 0 && (
                 <span style={{ display: "block", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
                   None of your tasks are loggable right now -- either their project's baseline hasn't been locked in WBS Planning, or they're already marked Done.
                 </span>
@@ -574,7 +684,11 @@ export default function TimeTracking() {
                 {logSaving ? "Submitting…" : "Submit for approval"}
               </button>
               <button
-                onClick={() => setShowLogForm(false)}
+                onClick={() => {
+                  setShowLogForm(false);
+                  setLogProjectId("");
+                  setLogTaskId("");
+                }}
                 style={{ fontSize: 12, color: "var(--muted)", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "7px 12px", cursor: "pointer" }}
               >
                 Cancel

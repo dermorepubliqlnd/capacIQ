@@ -7,6 +7,9 @@ interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  // See ConfirmDialog.tsx -- swaps the visual emphasis so Cancel reads as
+  // the safe default instead of Confirm.
+  emphasizeCancel?: boolean;
 }
 
 interface AlertOptions {
@@ -52,6 +55,7 @@ export function useConfirm() {
       confirmLabel={pending.confirmLabel ?? (pending.alertOnly ? "OK" : undefined)}
       cancelLabel={pending.cancelLabel}
       danger={pending.danger}
+      emphasizeCancel={pending.emphasizeCancel}
       hideCancel={pending.alertOnly}
       onConfirm={() => respond(true)}
       onCancel={() => respond(false)}

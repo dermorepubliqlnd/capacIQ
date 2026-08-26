@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle, Handshake, ShieldCheck, Cpu, Crown, TrendingUp, Wrench, Sparkles, Folder } from "lucide-react";
+import { Plus, CornerDownRight, ChevronRight, ChevronDown, Archive, ArchiveRestore, Trash2, Feather, Weight, BicepsFlexed, Flame, AlertTriangle, CalendarClock, CheckCircle2, X, RotateCcw, MessageCircle, Handshake, ShieldCheck, Cpu, Crown, TrendingUp, Wrench, Sparkles, Folder, Lock } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useTableViews } from "../lib/useTableViews";
@@ -34,7 +34,7 @@ const WBS_STATUS_TONES: Record<WbsStatus, string> = {
   changed_after_baseline: "gold",
   closed: "neutral",
 };
-import { rollupHoursFor, ownHoursFor, formatHours, personHoursBreakdownFor, type TimeEntryRow } from "../lib/timeTracking";
+import { rollupHoursFor, ownHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 // Deletion history archive (2026-08-14c): a permanently-deleted task's own
 // logged Spent Hrs are archived (supabase/policies.sql "Migration
 // 2026-08-14c") as a raw per-project-per-person hours total before the
@@ -146,6 +146,8 @@ export interface TaskRow {
   submitted_by: string | null;
   validated_completion_date: string | null;
   validated_by: string | null;
+  validated_locked_at: string | null;
+  validated_locked_by: string | null;
   // Assignee self-reported (2026-08-20, Sandra: "allow users to add
   // their actual task completion date") -- distinct from both
   // submitted_on (automatic, stamped the instant Status flips to Done)
@@ -2805,48 +2807,98 @@ export default function Projects() {
             );
           }
           const dateOnly = t.validated_completion_date.slice(0, 10);
+          const locked = Boolean(t.validated_locked_at);
+          const canReopen = canReopenTask(t);
+          // Reopening clears the validation (and, via the DB trigger, the
+          // lock alongside it) and reverts Status to In Progress,
+          // unlocking Assignee/Status/Effort/Est. Hrs/Start/Due (and Actual
+          // Completion) again (see isTaskLocked above). Broadened per
+          // Sandra's 2026-08-20 instruction to "only be done by the
+          // immediate manager with skip level option as fallback" -- see
+          // canReopenTask above. 2026-08-26: reopening a LOCKED validation
+          // now routes through this same confirm but with Cancel styled as
+          // the prominent choice (Sandra: "ensure that re-opening is
+          // intentional and not confuse the re-open as the dominant
+          // button") -- see emphasizeCancel on ConfirmDialog.
+          async function doReopen() {
+            const ok = await confirm({
+              title: "Reopen task",
+              message: `Reopen "${t.name}"? This clears its validation${locked ? " and lock" : ""} and sets Status back to In Progress, unlocking its fields for editing again.`,
+              confirmLabel: "Reopen",
+              cancelLabel: "Cancel",
+              emphasizeCancel: locked,
+            });
+            if (!ok) return;
+            const { error } = await supabase.rpc("reopen_task", { p_task_id: t.id });
+            if (error) alert(`Couldn't reopen: ${error.message}`);
+            else loadAll();
+          }
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <InlineDate
-                value={dateOnly}
-                editable={canValidate}
-                onCommit={async (v) => {
-                  if (!v) return;
-                  // Sandra, 2026-08-25: validation date can't be earlier
-                  // than the actual completion date -- you can't sign off
-                  // on completion before the work was actually done.
-                  const completionRef = t.actual_completion_date ?? t.submitted_on;
-                  if (completionRef && v < completionRef.slice(0, 10)) {
-                    alert(`Validation date can't be earlier than the actual completion date (${formatDate(completionRef)}).`);
-                    return;
-                  }
-                  const { error } = await supabase.rpc("validate_task_completion", { p_task_id: t.id, p_validated_date: new Date(v).toISOString() });
-                  if (error) alert(`Couldn't save: ${error.message}`);
-                  else loadAll();
-                }}
-              />
-              {/* Reopening clears the validation and reverts Status to
-                  In Progress, unlocking Assignee/Status/Effort/Est. Hrs/
-                  Start/Due (and now Actual Completion) again (see
-                  isTaskLocked above). QA fix (2026-08-21): was
-                  Full-Access-only per Sandra's original 2026-07-22
-                  decision; broadened per her follow-up instruction to
-                  "only be done by the immediate manager with skip level
-                  option as fallback" -- see canReopenTask above, which
-                  replaces the decorative can_approve_reopening flag. */}
-              {canReopenTask(t) && (
+              {locked ? (
+                // Locked: read-only, green-checkmark/lock indicator.
+                // Clicking it (when authorized) is the entry point into
+                // Reopen -- Sandra: "clicking on a locked validated date
+                // can trigger that".
                 <button
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: "Reopen task",
-                      message: `Reopen "${t.name}"? This clears its validation and sets Status back to In Progress, unlocking its fields for editing again.`,
-                      confirmLabel: "Reopen",
-                    });
-                    if (!ok) return;
-                    const { error } = await supabase.rpc("reopen_task", { p_task_id: t.id });
-                    if (error) alert(`Couldn't reopen: ${error.message}`);
+                  onClick={canReopen ? doReopen : undefined}
+                  disabled={!canReopen}
+                  title={canReopen ? "Validation locked -- click to reopen" : "Validation locked"}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 11.5,
+                    color: "var(--text-secondary)",
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: canReopen ? "pointer" : "default",
+                  }}
+                >
+                  <Lock size={11} style={{ color: "var(--success-text)" }} />
+                  {formatDate(dateOnly)}
+                </button>
+              ) : (
+                <InlineDate
+                  value={dateOnly}
+                  editable={canValidate}
+                  onCommit={async (v) => {
+                    if (!v) return;
+                    // Sandra, 2026-08-25: validation date can't be earlier
+                    // than the actual completion date -- you can't sign off
+                    // on completion before the work was actually done.
+                    const completionRef = t.actual_completion_date ?? t.submitted_on;
+                    if (completionRef && v < completionRef.slice(0, 10)) {
+                      alert(`Validation date can't be earlier than the actual completion date (${formatDate(completionRef)}).`);
+                      return;
+                    }
+                    const { error } = await supabase.rpc("validate_task_completion", { p_task_id: t.id, p_validated_date: new Date(v).toISOString() });
+                    if (error) alert(`Couldn't save: ${error.message}`);
                     else loadAll();
                   }}
+                />
+              )}
+              {/* Lock (2026-08-26, Sandra): a deliberate second step after
+                  Validate -- freezes validated_completion_date/validated_by
+                  (enforced server-side via tasks_validation_lock) until
+                  Reopen clears it. Same authorization as Validate itself. */}
+              {!locked && canValidate && (
+                <button
+                  onClick={async () => {
+                    const { error } = await supabase.rpc("lock_task_validation", { p_task_id: t.id });
+                    if (error) alert(`Couldn't lock: ${error.message}`);
+                    else loadAll();
+                  }}
+                  title="Lock this validation -- freezes the date until reopened"
+                  style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: 2, color: "var(--success-text)" }}
+                >
+                  <CheckCircle2 size={13} />
+                </button>
+              )}
+              {!locked && canReopen && (
+                <button
+                  onClick={doReopen}
                   title="Reopen -- clears validation and unlocks this task"
                   style={{ display: "flex", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: 2, color: "var(--muted)" }}
                 >
@@ -3760,6 +3812,7 @@ export default function Projects() {
               selectable
               selectedKeys={selectedProjectIds}
               onToggleSelect={(key) => setSelectedProjectIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
+              onSelectRange={(keys) => setSelectedProjectIds(keys)}
               onToggleSelectAll={toggleProjectSelectAll}
               orderable
               onReorder={reorderProjects}
@@ -3957,6 +4010,7 @@ export default function Projects() {
               selectable
               selectedKeys={selectedTaskIds}
               onToggleSelect={(key) => setSelectedTaskIds((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
+              onSelectRange={(keys) => setSelectedTaskIds(keys)}
               onToggleSelectAll={toggleTaskSelectAll}
               // Sandra, 2026-07-29: task creation, reordering, and the
               // "+ New task" row/group-footer trigger are removed from
@@ -4094,23 +4148,55 @@ export default function Projects() {
       {hoursBreakdownTaskId && (() => {
         const task = tasks.find((t) => t.id === hoursBreakdownTaskId);
         if (!task) return null;
-        const breakdown = personHoursBreakdownFor(task.id, timeEntries, (id) => tasks.filter((tt) => tt.parent_task_id === id).map((tt) => tt.id));
-        const total = breakdown.reduce((sum, b) => sum + b.hours, 0);
+        // 2026-08-26 (Sandra: "when clicking on time spent and viewing
+        // logs can we list all the logs say if it's been logged for
+        // multiple days and also indicate if it's via time tracking or
+        // manual") -- was a per-person TOTAL only (personHoursBreakdownFor);
+        // now lists every individual entry under each person, in date
+        // order, with a source pill, still grouped/summed by person and
+        // grand-totaled the same way as before.
+        const childIds = tasks.filter((tt) => tt.parent_task_id === task.id).map((tt) => tt.id);
+        const relevantTaskIds = new Set([task.id, ...childIds]);
+        const entries = timeEntries
+          .filter((e) => relevantTaskIds.has(e.task_id))
+          .slice()
+          .sort((a, b) => a.started_at.localeCompare(b.started_at));
+        const byPerson = new Map<string, TimeEntryRow[]>();
+        for (const e of entries) {
+          if (!byPerson.has(e.person_id)) byPerson.set(e.person_id, []);
+          byPerson.get(e.person_id)!.push(e);
+        }
+        const total = entries.reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0) / 60;
+        const sourceTone: Record<string, string> = { timer: "accent", manual: "neutral", legacy: "neutral" };
+        const sourceLabel: Record<string, string> = { timer: "Timer", manual: "Manual", legacy: "Legacy" };
         return (
           <Modal title={`Time spent -- ${task.name}`} onClose={() => setHoursBreakdownTaskId(null)}>
-            {breakdown.length === 0 ? (
+            {entries.length === 0 ? (
               <p style={{ fontSize: 12, color: "var(--muted)" }}>No confirmed time logged on this task yet.</p>
             ) : (
               <>
-                {breakdown.map((b) => (
-                  <div
-                    key={b.personId}
-                    style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border)", fontSize: 12.5 }}
-                  >
-                    <span>{people.find((p) => p.id === b.personId)?.name ?? "Unknown"}</span>
-                    <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatHours(b.hours)}h</span>
-                  </div>
-                ))}
+                {Array.from(byPerson.entries()).map(([personId, personEntries]) => {
+                  const personTotal = personEntries.reduce((sum, e) => sum + (e.duration_minutes ?? 0), 0) / 60;
+                  return (
+                    <div key={personId} style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 4px", borderBottom: "1px solid var(--border)", fontSize: 12.5, fontWeight: 600 }}>
+                        <span>{people.find((p) => p.id === personId)?.name ?? "Unknown"}</span>
+                        <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(personTotal)}h</span>
+                      </div>
+                      {personEntries.map((e) => (
+                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", fontSize: 11.5, color: "var(--text-secondary)" }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {formatDate(e.started_at)}
+                            <span className={`status-pill ${sourceTone[e.source] ?? "neutral"}`} style={{ fontSize: 9.5, padding: "1px 5px" }}>
+                              {sourceLabel[e.source] ?? e.source}
+                            </span>
+                          </span>
+                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours((e.duration_minutes ?? 0) / 60)}h</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 12.5, fontWeight: 700 }}>
                   <span>Total</span>
                   <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(total)}h</span>

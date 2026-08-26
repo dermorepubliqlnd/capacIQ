@@ -22,6 +22,10 @@ interface DataTableProps<T> {
   selectedKeys?: string[];
   onToggleSelect?: (key: string) => void;
   onToggleSelectAll?: (visibleKeys: string[]) => void;
+  // Shift-click range-select (see lastSelectedKeyRef below) -- replaces
+  // the current selection with exactly this contiguous range, matching
+  // the usual file-explorer/spreadsheet convention.
+  onSelectRange?: (keys: string[]) => void;
   // Drag-to-reorder via a grip handle in the same gutter column. Dropping a
   // dragged row onto another inserts it immediately before the target --
   // the caller (Projects.tsx) is responsible for persisting the new order
@@ -69,12 +73,14 @@ export default function DataTable<T>({
   selectedKeys,
   onToggleSelect,
   onToggleSelectAll,
+  onSelectRange,
   orderable,
   compactGutter,
   onReorder,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
+  const lastSelectedKeyRef = useRef<string | null>(null);
   const [dragOverRowKey, setDragOverRowKey] = useState<string | null>(null);
   // Persisted per-user, per-view (2026-08-26, Sandra: "the task list
   // defaults to expanded view every time there's a refresh, can the
@@ -358,7 +364,36 @@ export default function DataTable<T>({
                 </span>
               )}
               {selectable && (
-                <input type="checkbox" className="row-checkbox" checked={isSelected} onChange={() => onToggleSelect?.(key)} />
+                <input
+                  type="checkbox"
+                  className="row-checkbox"
+                  checked={isSelected}
+                  onChange={() => {}}
+                  onClick={(e) => {
+                    // Standard shift/ctrl multi-select gestures (Sandra,
+                    // 2026-08-26). Shift-click selects the contiguous
+                    // range between the last plain/ctrl click and this
+                    // row, in the table's current sorted/grouped order --
+                    // sortedRows is exactly that order, so no separate
+                    // "visible keys" list is needed. Ctrl/Cmd-click is
+                    // just this table's existing per-row toggle (a
+                    // checkbox already only ever affects its own row), so
+                    // it needs no special handling beyond not being
+                    // treated as a range anchor reset oddly.
+                    if (e.shiftKey && lastSelectedKeyRef.current && onSelectRange) {
+                      const keys = sortedRows.map((r) => rowKey(r));
+                      const from = keys.indexOf(lastSelectedKeyRef.current);
+                      const to = keys.indexOf(key);
+                      if (from !== -1 && to !== -1) {
+                        const [start, end] = from < to ? [from, to] : [to, from];
+                        onSelectRange(keys.slice(start, end + 1));
+                        return;
+                      }
+                    }
+                    lastSelectedKeyRef.current = key;
+                    onToggleSelect?.(key);
+                  }}
+                />
               )}
             </div>
           </td>

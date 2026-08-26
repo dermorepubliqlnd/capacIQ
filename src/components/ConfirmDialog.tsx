@@ -11,6 +11,13 @@ interface ConfirmDialogProps {
   // danger styling implied) -- used for validation/error messages that
   // used to be window.alert(), so they match the app's own dialog style.
   hideCancel?: boolean;
+  // When true, swaps which button reads as the "safe default" -- Cancel
+  // gets the solid, filled style and Confirm becomes the plain outline
+  // button. Used for actions where accidentally hitting the normally-
+  // prominent Confirm button would be worse than an extra click (Sandra,
+  // 2026-08-26, on reopening a locked validation: "cancel the more
+  // prominent option to ensure that re-opening is intentional").
+  emphasizeCancel?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -73,6 +80,7 @@ export default function ConfirmDialog({
   cancelLabel = "Cancel",
   danger = false,
   hideCancel = false,
+  emphasizeCancel = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -115,23 +123,22 @@ export default function ConfirmDialog({
           {!hideCancel && (
             <button
               onClick={onCancel}
-              style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }}
+              style={
+                emphasizeCancel
+                  ? { fontSize: 12, fontWeight: 600, color: "#fff", background: "var(--accent)", border: "none", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }
+                  : { fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }
+              }
             >
               {cancelLabel}
             </button>
           )}
           <button
             onClick={onConfirm}
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#fff",
-              background: danger ? "var(--danger-text)" : "var(--accent)",
-              border: "none",
-              borderRadius: "var(--radius-sm)",
-              padding: "6px 12px",
-              cursor: "pointer",
-            }}
+            style={
+              emphasizeCancel
+                ? { fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }
+                : { fontSize: 12, fontWeight: 600, color: "#fff", background: danger ? "var(--danger-text)" : "var(--accent)", border: "none", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer" }
+            }
           >
             {confirmLabel}
           </button>
