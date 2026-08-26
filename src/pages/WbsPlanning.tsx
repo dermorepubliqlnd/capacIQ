@@ -2673,9 +2673,18 @@ export default function WbsPlanning() {
                   ? `Computed from this task's own sub-tasks (earliest Start under ${MODE_LABEL[mode]})`
                   : `${MODE_LABEL[mode]} is read-only -- edit dates under Forecasted instead.`
               }
-              style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}
             >
-              {entry ? formatDate(entry.start) : "—"}
+              {/* Bugfix (2026-08-26, Sandra: warning/pin icons overlapping
+                  the date text in a narrow column): the date text had no
+                  minWidth:0/overflow handling of its own, so a flex-item
+                  squeeze (icon(s) + a full date string all fighting for a
+                  ~100px date column) rendered as visual overlap instead of
+                  the icon(s) reliably keeping their own space and the date
+                  truncating gracefully if it ever runs out of room. */}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                {entry ? formatDate(entry.start) : "—"}
+              </span>
               {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
             </span>
           </td>
@@ -2698,19 +2707,30 @@ export default function WbsPlanning() {
                 ? `Starts on or before "${conflict.name}" finishes (${formatDate(conflict.end)}) under ${MODE_LABEL[mode]} -- double-check this Start date.`
                 : undefined
             }
-            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}
           >
-            <InlineDate
-              value={t[field]}
-              editable={canEditWbs && !isParent}
-              onCommit={(v) =>
-                // A manual edit here freezes this task's Manual date --
-                // it stops mirroring Capacity-Based from now on. Re-adding/
-                // re-selecting a dependency turns auto-pilot back on, same
-                // as before (Round 10).
-                saveTaskField(t.id, { [field]: v, [autoField]: false } as Partial<TaskRow>)
-              }
-            />
+            {/* Bugfix (2026-08-26, Sandra: warning/pin icons overlapping
+                the date text in a narrow column): wrap InlineDate in a
+                shrinkable, truncating flex item (minWidth:0 -- flex items
+                default to minWidth:auto, i.e. "never shrink below my own
+                content's width", which is exactly what let a squeeze here
+                render as icons overlapping the date instead of the date
+                truncating and the icon(s) keeping their own reserved
+                space) and mark both icons flexShrink:0 so they're never
+                the ones that give up room. */}
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <InlineDate
+                value={t[field]}
+                editable={canEditWbs && !isParent}
+                onCommit={(v) =>
+                  // A manual edit here freezes this task's Manual date --
+                  // it stops mirroring Capacity-Based from now on. Re-adding/
+                  // re-selecting a dependency turns auto-pilot back on, same
+                  // as before (Round 10).
+                  saveTaskField(t.id, { [field]: v, [autoField]: false } as Partial<TaskRow>)
+                }
+              />
+            </span>
             {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
             {entry?.isOverridden && (
               <span
