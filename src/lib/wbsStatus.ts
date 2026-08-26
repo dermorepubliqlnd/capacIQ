@@ -24,10 +24,12 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   baseline_locked: {
     label: "Baseline Locked",
-    // Sandra, 2026-08-24: re-baselining disabled -- approval is a one-time
-    // gate. Once locked, this baseline is permanent; editing continues but
-    // there is no more "request approval to re-lock" path.
-    hint: "This is the official, final commitment. You can still edit for your own records, but this baseline cannot be re-locked.",
+    // Phase 24 (2026-08-26): re-baselining revived, gated behind
+    // can_approve_rebaseline -- reverses the 2026-08-24 one-time-gate
+    // decision. Editing continues to be open, and a re-baseline can be
+    // requested (and approved by someone flagged in User Management) to
+    // promote the current plan into a new official Baseline.
+    hint: "This is the official commitment. You can keep editing, and request Re-baseline Approval if this plan should become the new official Baseline.",
     color: "var(--accent)",
     bg: "#eaf1fb",
     border: "#cfe0f5",

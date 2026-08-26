@@ -2592,7 +2592,7 @@ export default function WbsPlanning() {
     // and flips status to Changed After Baseline (record_wbs_edit below).
     const wasBaselineLocked = project.wbs_status === "baseline_locked";
     const confirmMsg = wasBaselineLocked
-      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Baselines are locked once by design and this project's baseline will not be re-lockable.`
+      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Request Re-baseline Approval from the actions above once you want this plan promoted to a new official Baseline.`
       : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting.${
           project.wbs_status === "draft" ? " Nothing is locked yet -- request Baseline Approval from the actions above when you're ready." : ""
         }`;
@@ -3513,12 +3513,23 @@ export default function WbsPlanning() {
               is open the whole time a baseline exists (see canEditWbs),
               and locking/re-locking a baseline is now the single Request
               Baseline Approval action below, whichever case applies. */}
-          {/* Sandra, 2026-08-24: re-baselining disabled -- approval is a
-              one-time gate. Once a project has ever been Baseline Locked,
-              this button never reappears, even after further edits. */}
-          {canManageWbs && project.wbs_status === "draft" && !pendingBaselineRequest && (
+          {/* Phase 24 (2026-08-26): re-baselining revived, permanently
+              gated behind can_approve_rebaseline (Sandra: "bring it
+              back, gated -- this one needs to go through to me or
+              someone who has re-baseline approval access only"). This
+              button now shows for baseline_locked/changed_after_baseline
+              too, not just draft -- handleRequestBaseline already had
+              the correct "Request approval to re-baseline..." messaging
+              for this case the whole time (see its own comment), it just
+              couldn't be reached while the button was draft-only and the
+              request_baseline_approval RPC rejected anything else
+              (phase18_migration.sql, 2026-08-24 -- superseded by
+              phase24_migration.sql). Approving a re-baseline is strictly
+              gated on can_approve_rebaseline via canDecideBaselineRequest
+              below -- Full Access does not auto-qualify, by design. */}
+          {canManageWbs && project.wbs_status !== "closed" && !pendingBaselineRequest && (
               <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestBaseline}>
-                Request Baseline Approval
+                {project.wbs_status === "draft" ? "Request Baseline Approval" : "Request Re-baseline Approval"}
               </button>
             )}
           {/* Duplicate Close Project button removed here (2026-08-26,
@@ -3844,19 +3855,22 @@ export default function WbsPlanning() {
               )}
               {/* Round (2026-08-26): the old "Revision History" panel here
                   read from project_revisions/project_revision_changes --
-                  the Phase 6 Start Revision/Apply Revision flow, RETIRED
-                  when re-baselining was disabled (see
-                  project_capaciq_rebaseline_disabled memory). Nothing has
-                  written to those tables since, so this always showed "No
-                  changes made yet" even on projects with real, visible
-                  changes (the Overall Variance / Changes vs Baseline
-                  column above already show those, computed live -- not
-                  from this dead log). Sandra: "Revisions histroy is not
+                  the Phase 6 Start Revision/Apply Revision flow, which had
+                  gone dead when re-baselining was disabled (see
+                  project_capaciq_rebaseline_disabled memory) and always
+                  showed "No changes made yet" even on projects with real,
+                  visible changes. Sandra: "Revisions histroy is not
                   showing" -- replaced with a real, currently-written log:
                   this project's own Start Date change requests (see
-                  startDateRequests above), the one thing that now
-                  actually needs a "what happened, who approved it"
-                  history once the baseline locks Start Date edits. */}
+                  startDateRequests above). Phase 24 (2026-08-26) revived
+                  re-baselining, so project_revision_changes is written to
+                  again on each approved re-baseline (see
+                  decide_baseline_request) -- the Revision Summary panel
+                  above (latestRevisionChanges) and the dedicated Audit
+                  Trail page will both start populating again for any
+                  project that goes through a re-baseline from here on;
+                  this Start Date Change Requests panel is kept as-is
+                  alongside it, not replaced by it. */}
               <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Start Date Change Requests</strong>
               {startDateRequests.length === 0 ? (
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
@@ -5054,7 +5068,7 @@ export default function WbsPlanning() {
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
           {project.wbs_status === "draft" && "Request Baseline Approval once scoping is final to start tracking against it."}
-          {project.wbs_status === "baseline_locked" && "This is the official, final commitment. You can still edit for your own records, but this baseline cannot be re-locked -- close the project once work is complete."}
+          {project.wbs_status === "baseline_locked" && "This is the official commitment. You can keep editing, and request Re-baseline Approval if this plan should become the new official Baseline -- or close the project once work is complete."}
           {project.wbs_status === "changed_after_baseline" &&
             "This plan differs from the original baseline. Baselines are locked once by design -- variance tracking measures against the original. Close the project once work is complete."}
           {project.wbs_status === "revision_in_progress" && "This project has a legacy revision in progress -- view the audit trail for its history."}
