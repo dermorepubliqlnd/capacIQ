@@ -283,7 +283,20 @@ const MODE_LABEL: Record<Mode, string> = {
 // Capacity-Based, Manual) -- drives column order in the task table,
 // Timeline (Gantt) section order, and (via the scenario-key mapping
 // below) the Utilization snapshot row order.
-const MODES: Mode[] = ["manual", "standard", "full_capacity"];
+// 2026-08-26 (Sandra: "remove the Capacity-Based option, it's just
+// added noise -- remove all capacity based related features and
+// functions"): "standard" dropped from this array, which drives the
+// task table's column groups, the Timeline (Gantt) sections, and the
+// Effort Comparison chart -- all three now only ever iterate
+// Forecasted/Theoretical. The "standard" Mode value, MODE_LABEL entry,
+// and buildChain("standard") computation are left in place rather than
+// deleted outright: Capacity-Based has no dedicated persisted columns
+// of its own (see the big Phase 12 comment below -- it reads the SAME
+// start_date_standard/start_standard_auto fields Forecasted owns), so
+// there's no live data path left to break by leaving the plumbing
+// present but simply never invoked from the UI. See
+// [[project_capaciq_capacity_based_removal]].
+const MODES: Mode[] = ["manual", "full_capacity"];
 
 // Phase 21 (2026-08-24): a single small vocabulary ("scenario") that
 // both Mode (task table / Gantt) and UtilPreviewMode (Utilization
@@ -294,7 +307,7 @@ const MODES: Mode[] = ["manual", "standard", "full_capacity"];
 // visible in the snapshot as the ground-truth reference row, per
 // Sandra's explicit confirmation, and has no Gantt equivalent at all.
 type ScenarioKey = "forecasted" | "capacity_based" | "full";
-const SCENARIO_ORDER: ScenarioKey[] = ["forecasted", "capacity_based", "full"];
+const SCENARIO_ORDER: ScenarioKey[] = ["forecasted", "full"];
 const SCENARIO_LABEL: Record<ScenarioKey, string> = {
   forecasted: "Forecasted",
   capacity_based: "Capacity-Based",
@@ -336,7 +349,7 @@ type UtilPreviewMode = "actual" | "full_capacity" | "standard_suggested" | "stan
 // Phase 21 reorder (2026-08-24): Actual first (always-shown baseline
 // reference), then Forecasted/Capacity-Based/Full in the same standard
 // order used everywhere else on the page.
-const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "standard_committed", "standard_suggested", "full_capacity"];
+const UTIL_PREVIEW_MODES: UtilPreviewMode[] = ["actual", "standard_committed", "full_capacity"];
 // Maps each preview mode onto the shared ScenarioKey vocabulary above --
 // "actual" has no ScenarioKey (it's not toggle-able, always shown).
 const UTIL_MODE_TO_SCENARIO: Partial<Record<UtilPreviewMode, ScenarioKey>> = {
@@ -1986,14 +1999,6 @@ export default function WbsPlanning() {
   // rows in between no longer break the chain. Round 11: mode-parameterized
   // now that Full Effort and Conservative Effort each need their own
   // independent "what did the last real task end on" answer.
-  function lastResolvedEntry(list: (TaskRow & { depth: number })[], mode: Mode): ChainEntry | null {
-    for (let i = list.length - 1; i >= 0; i--) {
-      const entry = chainByMode[mode].get(list[i].id);
-      if (entry) return entry;
-    }
-    return null;
-  }
-
   async function addTopLevelTask() {
     if (!project) return;
     // Bugfix (2026-08-24, Sandra: "when adding a task -- all existing
@@ -2009,17 +2014,33 @@ export default function WbsPlanning() {
     const flushed = await flushPendingEdits();
     if (!flushed) return;
     const today = new Date().toISOString().slice(0, 10);
-    const roots = orderedTasks.filter((t) => t.depth === 0);
     const anchor = project.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
     let defaultStartFull = anchor;
     let defaultStartStandard = anchor;
-    const entryFull = lastResolvedEntry(roots, "full_capacity");
-    // Packing-aware now (Phase 20) -- a brand-new task has no hours yet,
-    // so this only rolls to the next day if the predecessor's day is
-    // already fully (7.5h) accounted for by other same-day root tasks;
-    // otherwise it defaults onto that same day, ready for real hours to
-    // be typed in.
-    if (entryFull) defaultStartFull = packedFullEffortNextStart(entryFull.end, 0, roots);
+    // Bugfix (2026-08-26, Sandra: "why is Gemma and Fritzie's task start
+    // dates plotted after prior's end date -- I thought if the resource
+    // is different then assume parallel work unless tagged with
+    // dependencies"): this used to seed a brand-new task's Theoretical
+    // default Start via packedFullEffortNextStart(lastResolvedEntry(roots,
+    // "full_capacity").end, 0, roots) -- but with newHours hardcoded to 0
+    // (a brand-new task has no hours yet), that packing call ALWAYS just
+    // returns predecessorEnd unchanged (0 hours always "fits" in whatever
+    // room is left), so in practice this simply chained every new task's
+    // default Start onto the literal previous root task's END date --
+    // unconditionally, regardless of assignee, purely because of list
+    // order. Once created with `start_full_auto: true`, nothing ever
+    // re-evaluates that default (the dependency-auto-refresh effect above
+    // only runs for tasks with a REAL tagged dependency), so it read
+    // exactly like a permanent finish-to-start chain between two
+    // different people's tasks that were never actually linked. Same
+    // reasoning and same fix as the Phase 22 bugfix already applied to
+    // Capacity-Based's own default below: stop artificially advancing
+    // this floor at all -- every no-dependency task just anchors to the
+    // same starting point (this project's own anchor date) like
+    // Capacity-Based already does, and real per-person day-packing only
+    // ever applies once a task has both a real assignee AND real hours
+    // (handled live by the render-time chain computation, not this
+    // one-time creation default).
     // Phase 22 bugfix (2026-08-24, Sandra: "How come ... the 4th task
     // [is placed] to start on Sept 2 when there is still available hours
     // remaining on Sept 1 ... given the overlap in the 7.5 hours?"):
@@ -2067,14 +2088,14 @@ export default function WbsPlanning() {
     // this insert's own loadAll() can discard them.
     const flushed = await flushPendingEdits();
     if (!flushed) return;
-    const siblings = orderedTasks.filter((t) => t.depth === 1 && t.parent_task_id === parent.id);
     const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
     let defaultStartFull = parent.start_date_full ? parent.start_date_full.slice(0, 10) : projectAnchor;
     let defaultStartStandard = parent.start_date_standard ? parent.start_date_standard.slice(0, 10) : projectAnchor;
-    const siblingEntryFull = lastResolvedEntry(siblings, "full_capacity");
-    // Same Phase 20 packing as addTopLevelTask above, scoped to this
-    // parent's own children.
-    if (siblingEntryFull) defaultStartFull = packedFullEffortNextStart(siblingEntryFull.end, 0, siblings);
+    // 2026-08-26 bugfix -- same fix as addTopLevelTask above, scoped to
+    // this parent's own children: no longer chains a new sub-task's
+    // Theoretical default Start after the last sibling's end (list-order
+    // based, assignee-blind); it anchors to the parent's own Start
+    // instead, matching Capacity-Based's already-fixed behavior below.
     // Phase 22 bugfix -- same fix as addTopLevelTask above, scoped to
     // this parent's own children: no longer advances past a sibling's
     // end for Capacity-Based, since the real scheduler already packs
@@ -2498,7 +2519,15 @@ export default function WbsPlanning() {
     // to some level) -- so check that instead of the lagging derived
     // column.
     const noEffort = orderedTasks.filter((t) => t.estimated_hours == null && !(t.depth === 0 && hasChildren(t.id)));
-    const conflicted = orderedTasks.filter((t) => dependencyConflict(t, "full_capacity") || dependencyConflict(t, "standard"));
+    // 2026-08-26 (Sandra: "I tried to move a task with dependency to an
+    // earlier date than the dependency's end date but the warning shown
+    // was on the Capacity-Based start date" -- i.e. this aggregate
+    // pre-Save check used to also test the now-removed "standard"
+    // (Capacity-Based) mode, so a conflict only visible on that hidden
+    // column still surfaced a warning with nowhere for her to actually
+    // see or resolve it. Only Theoretical (full_capacity) has its own
+    // real column left to check against.
+    const conflicted = orderedTasks.filter((t) => dependencyConflict(t, "full_capacity"));
     if (noName.length) issues.push(`${noName.length} task(s) still have a placeholder name.`);
     if (noEffort.length) issues.push(`${noEffort.length} task(s) still need an Effort level.`);
     if (conflicted.length)
@@ -3730,7 +3759,7 @@ export default function WbsPlanning() {
                 const color =
                   m === "full_capacity" ? UTIL_PREVIEW_COLOR.full_capacity : m === "standard" ? UTIL_PREVIEW_COLOR.standard_suggested : UTIL_PREVIEW_COLOR.standard_committed;
                 const rate = m === "full_capacity" ? "7.5 h/day" : null;
-                const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.standard.durationDays, summaries.manual.durationDays, 1);
+                const maxDuration = Math.max(summaries.full_capacity.durationDays, summaries.manual.durationDays, 1);
                 const widthPct = s.durationDays ? Math.max(18, Math.round((s.durationDays / maxDuration) * 100)) : 0;
                 // Sandra, 2026-07-29 follow-up: label moved ABOVE the bar
                 // (was to its left) per her reference mockup -- same
@@ -4430,9 +4459,6 @@ export default function WbsPlanning() {
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("manual") }} title="Mirrors Capacity-Based until edited, then freezes -- this is what Save always records">
                     Forecasted
                   </th>
-                  <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("standard") }} title="Read-only reference -- edit dates under Forecasted instead">
-                    Capacity-Based
-                  </th>
                   <th colSpan={3} style={{ textAlign: "center", ...modeColStyle("full_capacity") }} title="Read-only reference -- edit dates under Forecasted instead">
                     Theoretical
                   </th>
@@ -4441,9 +4467,6 @@ export default function WbsPlanning() {
                   <th style={{ width: 110, ...modeColStyle("manual") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("manual") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("manual") }}>Duration (days)</th>
-                  <th style={{ width: 110, ...modeColStyle("standard") }}>Start</th>
-                  <th style={{ width: 100, ...modeColStyle("standard") }}>End Date</th>
-                  <th style={{ width: 90, ...modeColStyle("standard") }}>Duration (days)</th>
                   <th style={{ width: 110, ...modeColStyle("full_capacity") }}>Start</th>
                   <th style={{ width: 100, ...modeColStyle("full_capacity") }}>End Date</th>
                   <th style={{ width: 90, ...modeColStyle("full_capacity") }}>Duration (days)</th>
@@ -4452,7 +4475,7 @@ export default function WbsPlanning() {
               <tbody>
                 {orderedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={20} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
+                    <td colSpan={17} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
                       No tasks in this project yet.
                     </td>
                   </tr>
@@ -4798,14 +4821,14 @@ export default function WbsPlanning() {
                       {/* Phase 21: render order matches the reordered
                           header above -- Forecasted, Capacity-Based, Full. */}
                       {renderModeCells(t, "manual", isParent)}
-                      {renderModeCells(t, "standard", isParent)}
+                      {/* Capacity-Based column removed 2026-08-26 */}
                       {renderModeCells(t, "full_capacity", isParent)}
                     </tr>
                   );
                 })}
                 {canEditWbs && (
                   <tr>
-                    <td colSpan={20} className="add-row-cell">
+                    <td colSpan={17} className="add-row-cell">
                       <div className="add-row-trigger" onClick={addTopLevelTask}>
                         <Plus size={12} />
                         New task
