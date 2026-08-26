@@ -213,9 +213,23 @@ export default function HoursOverview() {
       .filter((e) => e.person_id === personId && e.task_id === taskId && e.started_at.slice(0, 10) === dateStr)
       .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
   }
+  // 2026-08-26 bugfix (Sandra: "why do the scoped hours and logged do not
+  // sum in the 1st level for each person"): this per-task cell used to
+  // only check assignee_id, so a Done task still showed its real scoped
+  // hours here -- but scopedPersonTotalFor/scopedOpenTasksFor (the
+  // collapsed row's total) deliberately EXCLUDE complete tasks, mirroring
+  // Utilization.tsx's capacity math (a finished task isn't upcoming
+  // capacity anymore). Two different filters on the same data meant the
+  // collapsed total and the sum of its own expanded sub-rows could never
+  // agree once any task was Done. Now this applies the identical
+  // "not complete" rule scopedOpenTasksFor already uses, so a Done task's
+  // scoped side reads "–" here too -- exactly the same "– / {logged}h"
+  // pattern this page already uses for logged-outside-the-scoped-window
+  // (see the file header comment), just extended to logged-after-Done.
   function scopedHoursFor(personId: string, taskId: string, dateStr: string): number {
     const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
     if (!t) return 0;
+    if (statusGroupOf(TASK_STATUS_GROUPED, t.status) === "complete") return 0;
     return scopedHoursOnDate(t, dateStr);
   }
 
