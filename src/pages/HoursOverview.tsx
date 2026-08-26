@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIco
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { scopedHoursOnDate } from "../lib/scopedHours";
+import UtilPersonFilterButton from "../components/UtilPersonFilterButton";
 
 // Scoped vs Logged (2026-08-25, consolidated same day). Originally shipped
 // alongside a separate "Work Schedule" page (Logged tab + Scoped tab).
@@ -101,6 +102,12 @@ export default function HoursOverview() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
   const [sortBy, setSortBy] = useState<"variance" | "scoped" | "logged" | "name">("variance");
+  // 2026-08-26 (Sandra: "allow selection of person to show similar to the
+  // utilization snap shot") -- same reusable searchable multi-select
+  // already used by WbsPlanning.tsx's Utilization snapshot panel.
+  const [personFilter, setPersonFilter] = useState<Set<string> | null>(null);
+  const [personFilterOpen, setPersonFilterOpen] = useState(false);
+  const [personFilterSearch, setPersonFilterSearch] = useState("");
 
   async function loadAll() {
     setLoading(true);
@@ -181,6 +188,8 @@ export default function HoursOverview() {
     const desired = targetLeft - el.clientWidth / 2 - LABEL_W / 2 + CELL_W / 2;
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
   }, [days]);
+
+  const visiblePeople = personFilter ? people.filter((p) => personFilter.has(p.id)) : people;
 
   const holidayByDate = useMemo(() => {
     const m = new Map<string, HolidayRow>();
@@ -265,23 +274,64 @@ export default function HoursOverview() {
         const owner = people.find((p) => p.id === t.assignee_id);
         const scoped = t.estimated_hours ?? 0;
         const logged = timeEntries.filter((e) => e.task_id === t.id).reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
-        return { id: t.id, name: t.name, project: proj?.name ?? "—", owner: owner?.name ?? "Unassigned", scoped, logged, variance: logged - scoped };
+        return {
+          id: t.id,
+          name: t.name,
+          projectId: t.project_id,
+          project: proj?.name ?? "—",
+          ownerId: t.assignee_id,
+          owner: owner?.name ?? "Unassigned",
+          scoped,
+          logged,
+          variance: logged - scoped,
+        };
       })
       .filter((r) => r.scoped > 0 || r.logged > 0);
   }, [tasks, projects, people, timeEntries, parentTaskIds]);
 
+  // 2026-08-26 (Sandra: "allow grouping and filtering by person and by
+  // project") -- both single-select dropdowns; kept simple (one active
+  // filter/group at a time) rather than the Day view's multi-select
+  // UtilPersonFilterButton, since this table is a flat list where a
+  // single active group/filter reads more clearly than a checklist.
+  const [taskFilterPersonId, setTaskFilterPersonId] = useState<string>("");
+  const [taskFilterProjectId, setTaskFilterProjectId] = useState<string>("");
+  const [taskGroupBy, setTaskGroupBy] = useState<"none" | "person" | "project">("none");
+
+  const filteredTaskRows = useMemo(() => {
+    return taskRows.filter(
+      (r) => (!taskFilterPersonId || r.ownerId === taskFilterPersonId) && (!taskFilterProjectId || r.projectId === taskFilterProjectId)
+    );
+  }, [taskRows, taskFilterPersonId, taskFilterProjectId]);
+
   const sortedTaskRows = useMemo(() => {
-    const rows = [...taskRows];
+    const rows = [...filteredTaskRows];
     if (sortBy === "variance") rows.sort((a, b) => Math.abs(b.variance) - Math.abs(a.variance));
     else if (sortBy === "scoped") rows.sort((a, b) => b.scoped - a.scoped);
     else if (sortBy === "logged") rows.sort((a, b) => b.logged - a.logged);
     else rows.sort((a, b) => a.name.localeCompare(b.name));
     return rows;
-  }, [taskRows, sortBy]);
+  }, [filteredTaskRows, sortBy]);
+
+  // Grouped view: same sortedTaskRows order, just bucketed into
+  // Person/Project sections with their own subtotal, instead of one flat
+  // list -- built from sortedTaskRows so within-group ordering still
+  // respects the active Sort by.
+  const groupedTaskRows = useMemo(() => {
+    if (taskGroupBy === "none") return null;
+    const groups = new Map<string, { label: string; rows: typeof sortedTaskRows }>();
+    for (const r of sortedTaskRows) {
+      const key = taskGroupBy === "person" ? r.ownerId ?? "__unassigned" : r.projectId;
+      const label = taskGroupBy === "person" ? r.owner : r.project;
+      if (!groups.has(key)) groups.set(key, { label, rows: [] });
+      groups.get(key)!.rows.push(r);
+    }
+    return Array.from(groups.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [sortedTaskRows, taskGroupBy]);
 
   const taskTotals = useMemo(
-    () => taskRows.reduce((acc, r) => ({ scoped: acc.scoped + r.scoped, logged: acc.logged + r.logged }), { scoped: 0, logged: 0 }),
-    [taskRows]
+    () => filteredTaskRows.reduce((acc, r) => ({ scoped: acc.scoped + r.scoped, logged: acc.logged + r.logged }), { scoped: 0, logged: 0 }),
+    [filteredTaskRows]
   );
 
   function rollupCellStyle(i: number): CSSProperties {
@@ -359,7 +409,18 @@ export default function HoursOverview() {
             >
               <ChevronLeft size={14} />
             </button>
-            <button onClick={() => setWeekOffset(0)} className="planner-nav-btn">
+            {/* 2026-08-26 bugfix (Sandra: "fix the box for today's date,
+                the text overflows") -- .planner-nav-btn is a fixed 24x24px
+                icon-only square (built for the prev/next chevrons either
+                side of it); "Today" is text, not an icon, so it needed its
+                own auto-width style instead of being squeezed into that
+                box. Utilization.tsx's own week-nav already solved this the
+                same way (plain text button, no fixed-size class) -- this
+                just applies that same pattern here. */}
+            <button
+              onClick={() => setWeekOffset(0)}
+              style={{ fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "4px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
+            >
               Today
             </button>
             <button onClick={() => setWeekOffset((w) => w + rangeWeeks)} className="planner-nav-btn">
@@ -372,6 +433,15 @@ export default function HoursOverview() {
                 </option>
               ))}
             </select>
+            <UtilPersonFilterButton
+              people={people}
+              selected={personFilter}
+              open={personFilterOpen}
+              setOpen={setPersonFilterOpen}
+              search={personFilterSearch}
+              setSearch={setPersonFilterSearch}
+              onChange={setPersonFilter}
+            />
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours. Click a person to see the task breakdown.</span>
           </div>
 
@@ -450,7 +520,7 @@ export default function HoursOverview() {
                   </tr>
                 ) : (
                   <Fragment>
-                    {people.map((person) => {
+                    {visiblePeople.map((person) => {
                       const isExpanded = expanded.includes(person.id);
                       const items = combinedSubItemsFor(person.id);
                       return (
@@ -568,8 +638,8 @@ export default function HoursOverview() {
                       </td>
                       {days.map((d, i) => {
                         const dateStr = toISO(d);
-                        const scoped = people.reduce((sum, p) => sum + scopedPersonTotalFor(p.id, dateStr), 0);
-                        const logged = people.reduce((sum, p) => sum + loggedPersonTotalFor(p.id, dateStr), 0);
+                        const scoped = visiblePeople.reduce((sum, p) => sum + scopedPersonTotalFor(p.id, dateStr), 0);
+                        const logged = visiblePeople.reduce((sum, p) => sum + loggedPersonTotalFor(p.id, dateStr), 0);
                         return (
                           <td key={i} style={{ ...rollupCellStyle(i), borderTop: "1px solid var(--border)", fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>
                             {scoped > 0 || logged > 0 ? `${scoped.toFixed(1)}/${logged.toFixed(1)}h` : "–"}
@@ -582,14 +652,40 @@ export default function HoursOverview() {
               </tbody>
             </table>
           </div>
-          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--muted)" }}>
-            Green = logged covers at least 90% of scoped for that day. Amber = 50–89%. Red = under 50%. Gray "–" = nothing scoped or logged.
-            Logged hours always show on the day they were actually worked, even outside a task's scoped window.
+          {/* 2026-08-26 (Sandra: "can the guide text at the bottom of
+              this page show the color coding instead of just text") --
+              actual swatches matching coverageTone/toneColors' real
+              colors, instead of naming them in prose. */}
+          <div style={{ marginTop: 10, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 14, fontSize: 11.5, color: "var(--muted)" }}>
+            {(
+              [
+                { tone: "success" as const, label: "Logged covers ≥90% of scoped" },
+                { tone: "warning" as const, label: "50–89%" },
+                { tone: "danger" as const, label: "Under 50%" },
+                { tone: "neutral" as const, label: '"–" = nothing scoped or logged' },
+              ]
+            ).map(({ tone, label }) => {
+              const colors = toneColors(tone);
+              return (
+                <span key={tone} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ width: 10, height: 10, borderRadius: 3, background: colors.bg ?? "var(--hover-bg)", border: `1px solid ${colors.fg}` }} />
+                  {label}
+                </span>
+              );
+            })}
+            <span>Logged hours always show on the day they were actually worked, even outside a task's scoped window.</span>
           </div>
         </>
       ) : (
         <>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          {/* 2026-08-26 redesign (Sandra): column order Person/Project/
+              Task/Scoped/Logged/Variance (was Task/Project/Owner/...);
+              added Group by + Filter by person/project; table now sits in
+              a proper white card (border+radius) with hover-highlighted
+              rows via .hours-per-task-row instead of bare rows straight on
+              the page's own grey background, which read as "the whole
+              page is grey" against the Day view's much more colorful grid. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
             <label style={{ fontSize: 12, color: "var(--muted)" }}>Sort by</label>
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} style={{ fontSize: 12, padding: "4px 6px" }}>
               <option value="variance">Variance (largest first)</option>
@@ -597,14 +693,38 @@ export default function HoursOverview() {
               <option value="logged">Logged hours</option>
               <option value="name">Task name</option>
             </select>
+            <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Group by</label>
+            <select value={taskGroupBy} onChange={(e) => setTaskGroupBy(e.target.value as typeof taskGroupBy)} style={{ fontSize: 12, padding: "4px 6px" }}>
+              <option value="none">None</option>
+              <option value="person">Person</option>
+              <option value="project">Project</option>
+            </select>
+            <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Person</label>
+            <select value={taskFilterPersonId} onChange={(e) => setTaskFilterPersonId(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+              <option value="">All people</option>
+              {people.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Project</label>
+            <select value={taskFilterProjectId} onChange={(e) => setTaskFilterProjectId(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
+              <option value="">All projects</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
           </div>
-          <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
+          <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)", background: "var(--surface)" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Task</th>
+                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Person</th>
                   <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Project</th>
-                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Owner</th>
+                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Task</th>
                   <th style={{ textAlign: "right", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Scoped</th>
                   <th style={{ textAlign: "right", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Logged</th>
                   <th style={{ textAlign: "right", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Variance</th>
@@ -617,23 +737,28 @@ export default function HoursOverview() {
                       No tasks with Scoped or Logged hours yet.
                     </td>
                   </tr>
-                ) : (
-                  sortedTaskRows.map((r) => {
-                    const varColor = r.variance > 0.05 ? "var(--danger-text)" : r.variance < -0.05 ? "var(--warning-text)" : "var(--success-text)";
+                ) : groupedTaskRows ? (
+                  groupedTaskRows.map((group) => {
+                    const groupScoped = group.rows.reduce((sum, r) => sum + r.scoped, 0);
+                    const groupLogged = group.rows.reduce((sum, r) => sum + r.logged, 0);
                     return (
-                      <tr key={r.id}>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)" }}>{r.name}</td>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.project}</td>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.owner}</td>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right" }}>{r.scoped.toFixed(1)}h</td>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right" }}>{r.logged.toFixed(1)}h</td>
-                        <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right", fontWeight: 600, color: varColor }}>
-                          {r.variance > 0 ? "+" : ""}
-                          {r.variance.toFixed(1)}h
-                        </td>
-                      </tr>
+                      <Fragment key={group.label}>
+                        <tr>
+                          <td colSpan={3} style={{ padding: "6px 13px", fontSize: 11.5, fontWeight: 700, color: "var(--navy)", background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>
+                            {group.label} <span style={{ fontWeight: 500, color: "var(--muted)" }}>({group.rows.length})</span>
+                          </td>
+                          <td style={{ padding: "6px 13px", textAlign: "right", fontSize: 11.5, fontWeight: 700, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>{groupScoped.toFixed(1)}h</td>
+                          <td style={{ padding: "6px 13px", textAlign: "right", fontSize: 11.5, fontWeight: 700, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>{groupLogged.toFixed(1)}h</td>
+                          <td style={{ padding: "6px 13px", background: "var(--bg)", borderBottom: "1px solid var(--border)" }} />
+                        </tr>
+                        {group.rows.map((r) => (
+                          <TaskHourRow key={r.id} r={r} />
+                        ))}
+                      </Fragment>
                     );
                   })
+                ) : (
+                  sortedTaskRows.map((r) => <TaskHourRow key={r.id} r={r} />)
                 )}
               </tbody>
               {sortedTaskRows.length > 0 && (
@@ -655,5 +780,36 @@ export default function HoursOverview() {
         </>
       )}
     </div>
+  );
+}
+
+type TaskHourRowData = {
+  id: string;
+  name: string;
+  projectId: string;
+  project: string;
+  ownerId: string | null;
+  owner: string;
+  scoped: number;
+  logged: number;
+  variance: number;
+};
+
+// Extracted 2026-08-26 so both the flat and grouped render branches of the
+// "Per task" view share one row (was inlined only in the flat branch).
+function TaskHourRow({ r }: { r: TaskHourRowData }) {
+  const varColor = r.variance > 0.05 ? "var(--danger-text)" : r.variance < -0.05 ? "var(--warning-text)" : "var(--success-text)";
+  return (
+    <tr className="hours-per-task-row">
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.owner}</td>
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)" }}>{r.project}</td>
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)" }}>{r.name}</td>
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right" }}>{r.scoped.toFixed(1)}h</td>
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right" }}>{r.logged.toFixed(1)}h</td>
+      <td style={{ padding: "7px 13px", borderBottom: "1px solid var(--border)", textAlign: "right", fontWeight: 600, color: varColor }}>
+        {r.variance > 0 ? "+" : ""}
+        {r.variance.toFixed(1)}h
+      </td>
+    </tr>
   );
 }

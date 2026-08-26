@@ -1709,3 +1709,11 @@ tr.row-drop-target td { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .user-mgmt-row.selected {
   background: var(--hover-bg);
 }
+
+/* 2026-08-26: Scoped vs Logged "Per task" view row hover (Sandra: table
+   sits in a plain white card now instead of the bare grey page background;
+   this just gives rows the same subtle hover affordance DataTable rows
+   already have elsewhere in the app). */
+.hours-per-task-row:hover {
+  background: var(--bg);
+}
