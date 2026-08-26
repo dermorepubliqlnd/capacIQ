@@ -2728,7 +2728,23 @@ export default function WbsPlanning() {
     if (mode !== "manual") {
       return (
         <>
-          <td style={style}>
+          {/* Bugfix (2026-08-26, round 2 -- Sandra's follow-up screenshot
+              showed the SAME overlap after round 1's fix, now clearly
+              landing in the END-date column's space): the real cause was
+              never the date TEXT squeezing against the icon -- it's that
+              a `<td>` has no overflow clipping of its own, and while a
+              Start cell is being actively edited, `InlineDate` renders a
+              native `<input type="date">` with a browser-enforced
+              ~150px min-width (see InlineCell.tsx's own comment on this)
+              that's WIDER than this column's actual width (~110px
+              default). With nothing clipping it, that overflow -- input
+              AND whatever icon(s) sit after it in the flex row -- spills
+              rightward past this cell's own boundary and visually lands
+              on top of the NEXT column (End Date), which is exactly what
+              looked like "icon overlapping the End date". `overflow:
+              hidden` on the `<td>` itself (not just an inner span) is
+              what actually stops that bleed. */}
+          <td style={{ ...style, overflow: "hidden" }}>
             <span
               title={
                 isParent
@@ -2760,7 +2776,7 @@ export default function WbsPlanning() {
     const autoField = "start_standard_auto";
     return (
       <>
-        <td style={style}>
+        <td style={{ ...style, overflow: "hidden" }}>
           <span
             title={
               isParent
@@ -3942,25 +3958,6 @@ export default function WbsPlanning() {
               <span />
             )}
             <button
-              onClick={toggleWbsFreeze}
-              title={wbsFreezeTaskCol ? "Unfreeze the Task column (it currently stays pinned while you scroll right)" : "Freeze the Task column so it stays visible while scrolling through the Work Type/Output/date columns"}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: 12,
-                padding: "5px 10px",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius-sm, 6px)",
-                background: wbsFreezeTaskCol ? "var(--accent-bg, #eef2ff)" : "var(--surface)",
-                color: wbsFreezeTaskCol ? "var(--accent, #4f46e5)" : "var(--text)",
-                cursor: "pointer",
-                flexShrink: 0,
-              }}
-            >
-              <Pin size={13} /> {wbsFreezeTaskCol ? "Task column frozen" : "Freeze Task column"}
-            </button>
-            <button
               onClick={refreshDates}
               title="Recompute Start dates for tasks that are still on auto-pilot (no dependency set, not manually overridden) based on the current row order -- useful after dragging a task into a new position."
               style={{
@@ -4016,7 +4013,36 @@ export default function WbsPlanning() {
                         : { width: 22, minWidth: 22 }
                     }
                   />
-                  <ResizableTh colKey="task">Task</ResizableTh>
+                  <ResizableTh colKey="task">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      Task
+                      {/* Freeze panes (2026-08-26, Sandra: "I want the
+                          freeze task pin to be in the column headers in
+                          the table" -- moved here from a separate
+                          toolbar button per her follow-up ask). Pin
+                          toggles wbsFreezeTaskCol; stopPropagation so it
+                          doesn't also trigger anything else on the
+                          header cell (there's nothing else today, but
+                          the resize-handle span is a sibling in this
+                          same <th> and shouldn't ever fire from this
+                          click either). */}
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleWbsFreeze();
+                        }}
+                        title={wbsFreezeTaskCol ? "Unfreeze the Task column" : "Freeze the Task column so it stays visible while scrolling"}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          cursor: "pointer",
+                          color: wbsFreezeTaskCol ? "var(--accent, #4f46e5)" : "var(--muted)",
+                        }}
+                      >
+                        <Pin size={12} />
+                      </span>
+                    </span>
+                  </ResizableTh>
                   <ResizableTh colKey="depends_on">Depends on</ResizableTh>
                   <ResizableTh colKey="assignee">Assignee</ResizableTh>
                   <ResizableTh colKey="work_type">Work Type</ResizableTh>
