@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment, type CSSProperties } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, Fragment, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin } from "lucide-react";
@@ -612,7 +612,7 @@ export default function WbsPlanning() {
   const utilSnapshotTableRef = useRef<HTMLTableElement | null>(null);
   const [utilPersonRenderedW, setUtilPersonRenderedW] = useState(utilPersonColW);
   const [utilScenarioRenderedW, setUtilScenarioRenderedW] = useState(150);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const tableEl = utilSnapshotTableRef.current;
     if (!tableEl) return;
     function measure() {
@@ -626,30 +626,33 @@ export default function WbsPlanning() {
       if (scenarioEl) setUtilScenarioRenderedW(scenarioEl.getBoundingClientRect().width);
     }
     measure();
-    // Observe the <table> itself, not the sticky <th>s -- confirmed
-    // live that a ResizeObserver on this table's sticky <th> never
-    // fires at all in production Chrome; the plain <table> element
-    // does not have that problem and its own size changes (window
-    // resize, day-window navigation adding/removing date columns,
-    // Person column being dragged) are a superset of everything that
-    // could change either sticky column's real rendered width.
-    const ro = new ResizeObserver(measure);
-    ro.observe(tableEl);
+    // Round 4 bugfix (2026-08-27): a ResizeObserver on the <table> (or
+    // on the sticky <th>s themselves, tried first) does NOT reliably
+    // fire in production Chrome for this table -- confirmed live: even
+    // expanding a person row (which visibly adds new <tr>s and grows
+    // the table's own height) never triggered a callback, so the very
+    // first (mount-time, collapsed-rows) measurement stayed forever
+    // stale once a row was expanded and the real per-column widths
+    // shifted. This looks like the same unresolved "Chrome + table +
+    // position:sticky" quirk noted above utilPersonThRef -- rather than
+    // chase it further, don't depend on ResizeObserver firing for DOM
+    // content changes at all. A MutationObserver watching the table's
+    // subtree re-measures on ANY row expand/collapse, scenario-visibility
+    // toggle, person-filter change, or day-window navigation -- all of
+    // which mutate this table's DOM directly -- without needing any of
+    // those pieces of state listed as effect dependencies (several of
+    // them, e.g. expandedUtilPeople/visibleScenarios/utilPersonFilter,
+    // aren't declared until later in this component, so referencing them
+    // here would throw a temporal-dead-zone error anyway). A plain
+    // window resize listener still covers viewport/zoom changes that
+    // don't touch this table's DOM.
+    const mo = new MutationObserver(measure);
+    mo.observe(tableEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
     window.addEventListener("resize", measure);
     return () => {
-      ro.disconnect();
+      mo.disconnect();
       window.removeEventListener("resize", measure);
     };
-    // Mount-only deps: the SAME <table> element stays observed across
-    // re-renders (it isn't remounted), so the ResizeObserver above
-    // reactively re-fires measure() whenever the table's real box size
-    // changes for ANY reason -- Person column resize, day-window
-    // navigation adding/removing date columns, visible-scenario/person
-    // filters changing row count, window resize. No need to list those
-    // as explicit deps (several of them -- utilWindowOffset,
-    // visibleScenarios, utilPersonFilter -- aren't declared until later
-    // in this component anyway, so referencing them here would throw a
-    // temporal-dead-zone error).
   }, []);
   // Read by the auto-scroll effect below WITHOUT being one of its
   // dependencies (same reasoning as utilPersonColWRef above) -- these
