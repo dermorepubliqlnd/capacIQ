@@ -566,18 +566,104 @@ export default function WbsPlanning() {
   // watching this exact boundary. Fix: measure the Person column's
   // actual rendered width via ResizeObserver and use THAT for
   // Scenario's `left` instead of trusting the declared width blindly.
+  //
+  // Round 2 bugfix (2026-08-27, Sandra: "date columns are clipped --
+  // looks like the Scenario column is too wide"): confirmed live
+  // (getBoundingClientRect on the deployed page) that Chrome renders
+  // BOTH sticky columns narrower than their declared width under this
+  // table's auto layout (Person: declared 183px, real ~170px; Scenario:
+  // declared 150px, real ~136px -- the same "Chrome quirk" noted above
+  // the <table> below, just milder than the table-layout:fixed version
+  // of it). That alone would be harmless -- the non-sticky date <th>s
+  // that follow are positioned by ordinary table flow using the REAL
+  // column widths regardless. The actual bug was in THIS measurement:
+  // `entries[0].contentRect.width` reports the CONTENT-box width (i.e.
+  // real width minus the 20px of left+right padding from `.data-table
+  // th`), not the border-box width the column is actually painted at --
+  // so even a correctly-firing observer would have fed Scenario's
+  // `left` a value ~20px too small. Worse, a fresh ResizeObserver
+  // attached directly to this sticky <th> was confirmed (live, via
+  // devtools) to never fire a single notification -- so in production
+  // `utilPersonRenderedW` never left its `useState(utilPersonColW)`
+  // initializer at all, meaning Scenario's `left` used the bare
+  // DECLARED width (183) instead of the real rendered one (~170), a
+  // ~13px gap. Since the date columns start immediately after Scenario
+  // in real, un-measured table flow, that 13px gap meant the sticky
+  // Scenario column's true painted footprint extended ~13px further
+  // right than code assumed -- covering the leading edge of the first
+  // date column(s), which is exactly the "date columns clipped" bug:
+  // the very first visible date header rendered as "8/04" with its
+  // leading "0" painted over by the sticky Scenario overlay.
+  //
+  // Fix, two parts: (1) observe the <table> element itself, not the
+  // sticky <th> -- a plain block-level element ResizeObserver reliably
+  // fires for, unlike this sticky table cell -- and re-measure both
+  // sticky columns' real getBoundingClientRect().width (border-box,
+  // matching what's actually painted) whenever it fires or any
+  // width-affecting dependency changes; also measure synchronously on
+  // mount so there's a correct value before any observer callback ever
+  // runs. (2) Apply the SAME measured-width approach to the Scenario
+  // column (utilScenarioRenderedW) instead of leaving it as a bare `150`
+  // constant everywhere downstream -- see the auto-scroll effect above,
+  // which used to hardcode SCENARIO_COL_W = 150 for its sticky-offset
+  // math despite the real column never actually rendering at 150.
   const utilPersonThRef = useRef<HTMLTableCellElement | null>(null);
+  const utilScenarioThRef = useRef<HTMLTableCellElement | null>(null);
+  const utilSnapshotTableRef = useRef<HTMLTableElement | null>(null);
   const [utilPersonRenderedW, setUtilPersonRenderedW] = useState(utilPersonColW);
+  const [utilScenarioRenderedW, setUtilScenarioRenderedW] = useState(150);
   useEffect(() => {
-    const el = utilPersonThRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect?.width;
-      if (w) setUtilPersonRenderedW(w);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
+    const tableEl = utilSnapshotTableRef.current;
+    if (!tableEl) return;
+    function measure() {
+      const personEl = utilPersonThRef.current;
+      const scenarioEl = utilScenarioThRef.current;
+      // getBoundingClientRect (border-box, actually-painted size) --
+      // NOT ResizeObserver's contentRect, which excludes this table's
+      // 20px of th/td horizontal padding and would under-report by
+      // exactly that much.
+      if (personEl) setUtilPersonRenderedW(personEl.getBoundingClientRect().width);
+      if (scenarioEl) setUtilScenarioRenderedW(scenarioEl.getBoundingClientRect().width);
+    }
+    measure();
+    // Observe the <table> itself, not the sticky <th>s -- confirmed
+    // live that a ResizeObserver on this table's sticky <th> never
+    // fires at all in production Chrome; the plain <table> element
+    // does not have that problem and its own size changes (window
+    // resize, day-window navigation adding/removing date columns,
+    // Person column being dragged) are a superset of everything that
+    // could change either sticky column's real rendered width.
+    const ro = new ResizeObserver(measure);
+    ro.observe(tableEl);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+    // Mount-only deps: the SAME <table> element stays observed across
+    // re-renders (it isn't remounted), so the ResizeObserver above
+    // reactively re-fires measure() whenever the table's real box size
+    // changes for ANY reason -- Person column resize, day-window
+    // navigation adding/removing date columns, visible-scenario/person
+    // filters changing row count, window resize. No need to list those
+    // as explicit deps (several of them -- utilWindowOffset,
+    // visibleScenarios, utilPersonFilter -- aren't declared until later
+    // in this component anyway, so referencing them here would throw a
+    // temporal-dead-zone error).
   }, []);
+  // Read by the auto-scroll effect below WITHOUT being one of its
+  // dependencies (same reasoning as utilPersonColWRef above) -- these
+  // update on every animation frame the ResizeObserver fires during a
+  // Person-column drag, and depending on them directly would re-trigger
+  // the scroll-jump bug that ref was already introduced to avoid.
+  const utilPersonRenderedWRef = useRef(utilPersonRenderedW);
+  useEffect(() => {
+    utilPersonRenderedWRef.current = utilPersonRenderedW;
+  }, [utilPersonRenderedW]);
+  const utilScenarioRenderedWRef = useRef(utilScenarioRenderedW);
+  useEffect(() => {
+    utilScenarioRenderedWRef.current = utilScenarioRenderedW;
+  }, [utilScenarioRenderedW]);
   const utilPersonResizeState = useRef<{ startX: number; startWidth: number; latest: number } | null>(null);
   function startUtilPersonColResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -1943,8 +2029,19 @@ export default function WbsPlanning() {
     // along with Person's new width during the drag itself is correct,
     // intentional behavior (see the `left: utilPersonColW` styles below)
     // -- only the scroll-jumping was the bug.
-    const PERSON_COL_W = utilPersonColWRef.current;
-    const SCENARIO_COL_W = 150;
+    // Round 3 bugfix (2026-08-27, Sandra: "date columns are clipped --
+    // looks like the Scenario column is too wide"): PERSON_COL_W/
+    // SCENARIO_COL_W used to be the DECLARED widths (utilPersonColWRef,
+    // and a bare 150 constant for Scenario) rather than what Chrome
+    // actually renders those two sticky columns at -- confirmed live
+    // that both render narrower than declared under this table's auto
+    // layout (see the long comment above utilPersonThRef/
+    // utilScenarioThRef). Using the REAL measured widths here keeps
+    // this effect's sticky-offset math consistent with the actual
+    // on-screen sticky footprint instead of a guess that's provably
+    // off by ~13-14px.
+    const PERSON_COL_W = utilPersonRenderedWRef.current;
+    const SCENARIO_COL_W = utilScenarioRenderedWRef.current;
     const DAY_COL_W = 40;
     const targetLeft = PERSON_COL_W + SCENARIO_COL_W + idx * DAY_COL_W;
     // Bugfix (2026-08-26, Sandra: "Aug 3 can't be seen in the snapshot"):
@@ -4094,7 +4191,7 @@ export default function WbsPlanning() {
                   below), which is what actually keeps them from growing
                   past their declared size under auto layout regardless of
                   a long person name or the "Committed (Existing)" label. */}
-              <table className="data-table" style={{ borderCollapse: "collapse" }}>
+              <table ref={utilSnapshotTableRef} className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th
@@ -4122,6 +4219,7 @@ export default function WbsPlanning() {
                       />
                     </th>
                     <th
+                      ref={utilScenarioThRef}
                       style={{
                         width: 150,
                         position: "sticky",
