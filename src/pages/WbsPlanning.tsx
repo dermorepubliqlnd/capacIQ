@@ -1732,7 +1732,7 @@ export default function WbsPlanning() {
       return;
     }
     if (issues.length && isFullAccess) {
-      if (!(await confirm(`${issues.join("\n")}\n\nFull Access override: request Baseline Approval anyway?`))) return;
+      if (!(await confirm(`${issues.join("\n")}\n\nFull Access override: Start Project anyway?`))) return;
     }
     // Sandra: "make sure the output type is keyed in before saving
     // baseline, but the count can be kept optional until project is
@@ -1748,13 +1748,14 @@ export default function WbsPlanning() {
       );
       return;
     }
-    const isFirstBaseline = project.wbs_status === "draft";
+    // 2026-08-27 (Sandra: rename Lock Baseline -> Start Project, remove
+    // Re-baseline): this action is now only ever reachable from Draft
+    // (see canRequestBaseline above), so the old isFirstBaseline branch
+    // that handled a second/later re-baseline request no longer applies.
     if (
       !(await confirm({
-        title: "Request Baseline Approval",
-        message: isFirstBaseline
-          ? `Request approval to lock ${MODE_LABEL[activeMode]} as this project's Baseline? Once approved, this becomes the official commitment.`
-          : `Request approval to re-baseline "${project.name}"? Once approved, the current plan is promoted to be the new official Baseline -- the old Baseline is kept in history but Compare with Baseline and variance tracking will measure against this new one going forward.`,
+        title: "Start Project",
+        message: `Request approval to lock ${MODE_LABEL[activeMode]} as this project's Baseline and start the project? Once approved, this becomes the official commitment.`,
         confirmLabel: "Request Approval",
       }))
     )
@@ -1778,10 +1779,10 @@ export default function WbsPlanning() {
     if (!project || !pendingBaselineRequest) return;
     if (
       !(await confirm({
-        title: approve ? "Approve Baseline" : "Reject Baseline Request",
+        title: approve ? "Start Project" : "Reject Start Project Request",
         message: approve
-          ? `Approve this baseline request? This captures the current plan as the official Baseline.`
-          : "Reject this baseline request?",
+          ? `Confirm this baseline request? This captures the current plan as the official Baseline, marking the project as started.`
+          : "Reject this Start Project request?",
         confirmLabel: approve ? "Approve" : "Reject",
         danger: !approve,
       }))
@@ -2587,9 +2588,9 @@ export default function WbsPlanning() {
     // and flips status to Changed After Baseline (record_wbs_edit below).
     const wasBaselineLocked = project.wbs_status === "baseline_locked";
     const confirmMsg = wasBaselineLocked
-      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked. Request Re-baseline Approval from the actions above once you want this plan promoted to a new official Baseline.`
+      ? `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date, records both modes for reporting, and marks the project Changed After Baseline since this is an edit made after the Baseline was locked.`
       : `Save this project's timelines using ${verb}?\n\nThis writes every task's computed End date (Start dates are already saved per-task) and records both modes for reporting.${
-          project.wbs_status === "draft" ? " Nothing is locked yet -- request Baseline Approval from the actions above when you're ready." : ""
+          project.wbs_status === "draft" ? " Nothing is locked yet -- use Start Project from the actions above when you're ready." : ""
         }`;
     if (!(await confirm(confirmMsg))) return;
 
@@ -3144,9 +3145,10 @@ export default function WbsPlanning() {
                 // baseline is locked, direct edits are blocked at the DB
                 // level (enforce_start_date_lock trigger) -- turn the
                 // field read-only here too so a save attempt doesn't
-                // silently fail against that trigger. Start dates now only
-                // move via Re-baseline (per-task change requests removed
-                // 2026-08-27).
+                // silently fail against that trigger. Per-task change
+                // requests were removed 2026-08-27 the same day Re-baseline
+                // itself was removed entirely, so once locked a Start Date
+                // never moves again for the life of the project.
                 editable={canEditWbs && !isParent && !project!.timelines_locked}
                 onCommit={(v) =>
                   // A manual edit here freezes this task's Manual date --
@@ -3545,17 +3547,23 @@ export default function WbsPlanning() {
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
           {/* 2026-08-27 (Sandra: "can we just add an action button
               instead and from there pick Re-Baseline and Close project")
-              -- single Actions menu replaces the separate Request/
-              Re-baseline Approval button that used to render here AND
-              the Close Project button that used to render in its own
-              button down in the bottom status bar. Phase 6/24 history
-              (Start Revision/Apply/Discard Revision/Lock Baseline are
-              retired; re-baselining is gated behind can_approve_rebaseline
-              via canDecideBaselineRequest below) is unchanged -- only
-              which element renders each action moved, not the handlers
-              or their visibility conditions. */}
+              -- single Actions menu replaces the separate Request Baseline
+              Approval button that used to render here AND the Close
+              Project button that used to render in its own button down in
+              the bottom status bar. Later the same day (Sandra: rename to
+              "Start Project" and remove Re-baseline entirely) -- the
+              request/approve RPCs (request_baseline_approval/
+              decide_baseline_request) and can_approve_rebaseline flag stay
+              as-is under the hood (still gate approving the first-ever
+              Start Project request via canDecideBaselineRequest below),
+              but canRequestBaseline is now draft-only so there is no UI
+              path left to invoke them a second time. */}
           {(() => {
-            const canRequestBaseline = canManageWbs && project.wbs_status !== "closed" && !pendingBaselineRequest;
+            // 2026-08-27 (Sandra: re-baseline removed) -- Start Project (the
+            // renamed first-ever "Request Baseline Approval") is only
+            // reachable from Draft now; baseline_locked/changed_after_baseline
+            // projects no longer get a way to re-trigger this RPC.
+            const canRequestBaseline = canManageWbs && project.wbs_status === "draft" && !pendingBaselineRequest;
             const canRequestClosure =
               canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && !pendingClosure;
             if (!canRequestBaseline && !canRequestClosure) return null;
@@ -3601,7 +3609,7 @@ export default function WbsPlanning() {
                           }}
                           style={{ display: "flex", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 4, padding: "6px 8px", fontSize: 12.5, cursor: "pointer", color: "var(--text)" }}
                         >
-                          {project.wbs_status === "draft" ? "Request Baseline Approval" : "Request Re-baseline Approval"}
+                          Start Project
                         </button>
                       )}
                       {canRequestClosure && (
@@ -3631,7 +3639,7 @@ export default function WbsPlanning() {
           className="card"
           style={{ padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: "var(--warning-bg, #fff7ed)" }}
         >
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--warning-text, #b45309)" }}>Baseline requested</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--warning-text, #b45309)" }}>Start Project requested</span>
           <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
             Awaiting approval from someone flagged to approve baselines (User Management).
           </span>
@@ -3641,7 +3649,7 @@ export default function WbsPlanning() {
                 Reject
               </button>
               <button className="btn-primary" disabled={workflowBusy} onClick={() => handleDecideBaselineRequest(true)}>
-                Approve Baseline
+                Start Project
               </button>
             </div>
           )}
@@ -3730,9 +3738,11 @@ export default function WbsPlanning() {
               // Design spec item 2 (Sandra, 2026-07-29): Baseline version
               // shown in the Project Details strip, but READ-ONLY --
               // unlike Project/Owner/Start date/Scoping Effort, there's no
-              // direct-edit path for this (it only changes via Lock
-              // Baseline/Re-baseline in the Actions menu), so it renders
-              // as plain text in a muted box rather than an InlineX field.
+              // direct-edit path for this (it only changes via Start
+              // Project in the Actions menu -- Re-baseline removed
+              // 2026-08-27, so this stays V1 for the life of the project),
+              // so it renders as plain text in a muted box rather than an
+              // InlineX field.
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                 <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Baseline:</span>
                 <div className="wbs-field-box" style={fieldBoxStyle(true, 90, true)}>
@@ -5012,8 +5022,8 @@ export default function WbsPlanning() {
           {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          {project.wbs_status === "draft" && "Request Baseline Approval once scoping is final to start tracking against it."}
-          {project.wbs_status === "baseline_locked" && "This is the official commitment. You can keep editing, and request Re-baseline Approval if this plan should become the new official Baseline -- or close the project once work is complete."}
+          {project.wbs_status === "draft" && "Start Project once scoping is final to start tracking against it."}
+          {project.wbs_status === "baseline_locked" && "This is the official commitment. You can keep editing -- close the project once work is complete."}
           {project.wbs_status === "changed_after_baseline" &&
             "This plan differs from the original baseline. Baselines are locked once by design -- variance tracking measures against the original. Close the project once work is complete."}
           {project.wbs_status === "revision_in_progress" && "This project has a legacy revision in progress -- view the audit trail for its history."}

@@ -24,12 +24,12 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
   },
   baseline_locked: {
     label: "Baseline Locked",
-    // Phase 24 (2026-08-26): re-baselining revived, gated behind
-    // can_approve_rebaseline -- reverses the 2026-08-24 one-time-gate
-    // decision. Editing continues to be open, and a re-baseline can be
-    // requested (and approved by someone flagged in User Management) to
-    // promote the current plan into a new official Baseline.
-    hint: "This is the official commitment. You can keep editing, and request Re-baseline Approval if this plan should become the new official Baseline.",
+    // 2026-08-27 (Sandra: rename Lock Baseline -> Start Project, remove
+    // Re-baseline): re-baselining (Phase 24, 2026-08-26) is removed again
+    // -- there is no more UI path to re-trigger request_baseline_approval/
+    // decide_baseline_request once a project has left Draft. Editing
+    // continues to be open; it just no longer resets the Baseline.
+    hint: "This is the official commitment. You can keep editing -- close the project once work is complete.",
     color: "var(--accent)",
     bg: "#eaf1fb",
     border: "#cfe0f5",

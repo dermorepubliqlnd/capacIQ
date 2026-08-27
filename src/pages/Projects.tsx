@@ -1373,7 +1373,7 @@ export default function Projects() {
     if (p.wbs_status !== "draft") return true;
     if (
       await confirm(
-        `Moving "${p.name}" to Design first needs its WBS Baseline locked -- that's now done from the WBS Planning page (it needs the full task plan, not just a quick toggle here).\n\nGo to WBS Planning now to Lock Baseline?`
+        `Moving "${p.name}" to Design first needs its WBS Baseline locked -- that's now done from the WBS Planning page (it needs the full task plan, not just a quick toggle here).\n\nGo to WBS Planning now to Start Project?`
       )
     ) {
       navigate(`/projects/${p.id}/wbs`);

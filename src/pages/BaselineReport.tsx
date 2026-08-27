@@ -154,7 +154,7 @@ export default function BaselineReport() {
         </Link>
         <h1>Baseline vs Final — {project.name}</h1>
         <div className="card" style={{ padding: 14, fontSize: 12.5, color: "var(--muted)" }}>
-          No baseline yet -- go to this project's WBS Planning page and Lock Baseline to capture one.
+          No baseline yet -- go to this project's WBS Planning page and Start Project to capture one.
         </div>
       </div>
     );
@@ -205,7 +205,7 @@ export default function BaselineReport() {
       </Link>
       <h1>Baseline vs Final — {project.name}</h1>
       <p className="subtitle">
-        Baseline is captured when this project's plan is Locked (or Re-baselined) on the WBS Planning page and never changes on its own. Final is
+        Baseline is captured when this project's plan is Started (Baseline Locked) on the WBS Planning page and never changes on its own. Final is
         captured only once a Closure Request is approved there -- final and not re-runnable.
       </p>
 
