@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, Fragment, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin } from "lucide-react";
@@ -609,12 +609,35 @@ export default function WbsPlanning() {
   // math despite the real column never actually rendering at 150.
   const utilPersonThRef = useRef<HTMLTableCellElement | null>(null);
   const utilScenarioThRef = useRef<HTMLTableCellElement | null>(null);
-  const utilSnapshotTableRef = useRef<HTMLTableElement | null>(null);
   const [utilPersonRenderedW, setUtilPersonRenderedW] = useState(utilPersonColW);
   const [utilScenarioRenderedW, setUtilScenarioRenderedW] = useState(150);
-  useLayoutEffect(() => {
-    const tableEl = utilSnapshotTableRef.current;
-    if (!tableEl) return;
+  // Round 5 bugfix (2026-08-27): found the REAL reason nothing above
+  // ever took effect, in either the ResizeObserver or MutationObserver
+  // form -- this whole measurement effect (like the ORIGINAL Person-only
+  // version before it) used a plain `useRef` + `useEffect(..., [])`,
+  // which only runs ONCE, on this component's very first commit. This
+  // component has an early `if (loading) return ...` gate further down
+  // (see the comment on the auto-scroll effect above), so on that FIRST
+  // commit -- while the project/people data is still being fetched --
+  // the whole Utilization snapshot panel, including this <table>, isn't
+  // in the DOM at all yet. `utilSnapshotTableRef.current` was therefore
+  // ALWAYS null the one time this effect ever ran, so it always hit its
+  // `if (!tableEl) return` and never even created an observer -- not a
+  // ResizeObserver/MutationObserver reliability problem at all, just a
+  // mount-timing one. By the time `loading` flips to false and the real
+  // table renders, the `[]`-deps effect never runs again to notice.
+  // Fixed for real with a CALLBACK ref instead of useRef: React invokes
+  // this the moment the <table> DOM node is actually attached (i.e. on
+  // the render where `loading` has become false), which is exactly the
+  // "mount" this measurement needs to react to -- and again with `null`
+  // on unmount, when cleanup runs.
+  const utilSnapshotObserverCleanupRef = useRef<(() => void) | null>(null);
+  const utilSnapshotTableCallbackRef = useCallback((node: HTMLTableElement | null) => {
+    if (utilSnapshotObserverCleanupRef.current) {
+      utilSnapshotObserverCleanupRef.current();
+      utilSnapshotObserverCleanupRef.current = null;
+    }
+    if (!node) return;
     function measure() {
       const personEl = utilPersonThRef.current;
       const scenarioEl = utilScenarioThRef.current;
@@ -625,31 +648,23 @@ export default function WbsPlanning() {
       if (personEl) setUtilPersonRenderedW(personEl.getBoundingClientRect().width);
       if (scenarioEl) setUtilScenarioRenderedW(scenarioEl.getBoundingClientRect().width);
     }
+    // React attaches child refs (the Person/Scenario <th> ones) before
+    // it invokes a parent's ref callback, so utilPersonThRef/
+    // utilScenarioThRef are already populated here -- this first
+    // measure() runs synchronously against the real, already-laid-out
+    // DOM, no extra frame needed.
     measure();
-    // Round 4 bugfix (2026-08-27): a ResizeObserver on the <table> (or
-    // on the sticky <th>s themselves, tried first) does NOT reliably
-    // fire in production Chrome for this table -- confirmed live: even
-    // expanding a person row (which visibly adds new <tr>s and grows
-    // the table's own height) never triggered a callback, so the very
-    // first (mount-time, collapsed-rows) measurement stayed forever
-    // stale once a row was expanded and the real per-column widths
-    // shifted. This looks like the same unresolved "Chrome + table +
-    // position:sticky" quirk noted above utilPersonThRef -- rather than
-    // chase it further, don't depend on ResizeObserver firing for DOM
-    // content changes at all. A MutationObserver watching the table's
-    // subtree re-measures on ANY row expand/collapse, scenario-visibility
-    // toggle, person-filter change, or day-window navigation -- all of
-    // which mutate this table's DOM directly -- without needing any of
-    // those pieces of state listed as effect dependencies (several of
-    // them, e.g. expandedUtilPeople/visibleScenarios/utilPersonFilter,
-    // aren't declared until later in this component, so referencing them
-    // here would throw a temporal-dead-zone error anyway). A plain
-    // window resize listener still covers viewport/zoom changes that
-    // don't touch this table's DOM.
+    // MutationObserver, not ResizeObserver: re-measures on the row
+    // expand/collapse, scenario-visibility, and person-filter DOM
+    // changes that actually alter the real column widths, without
+    // depending on any of that state (several pieces of it --
+    // expandedUtilPeople/visibleScenarios/utilPersonFilter -- aren't
+    // declared until later in this component, so listing them as a dep
+    // array here isn't an option anyway).
     const mo = new MutationObserver(measure);
-    mo.observe(tableEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+    mo.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
     window.addEventListener("resize", measure);
-    return () => {
+    utilSnapshotObserverCleanupRef.current = () => {
       mo.disconnect();
       window.removeEventListener("resize", measure);
     };
@@ -4194,7 +4209,7 @@ export default function WbsPlanning() {
                   below), which is what actually keeps them from growing
                   past their declared size under auto layout regardless of
                   a long person name or the "Committed (Existing)" label. */}
-              <table ref={utilSnapshotTableRef} className="data-table" style={{ borderCollapse: "collapse" }}>
+              <table ref={utilSnapshotTableCallbackRef} className="data-table" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th
