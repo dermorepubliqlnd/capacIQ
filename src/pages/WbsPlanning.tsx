@@ -2811,8 +2811,19 @@ export default function WbsPlanning() {
         return;
       }
 
-      if (wasBaselineLocked) {
-        const { error } = await supabase.rpc("record_wbs_edit", { p_project_id: project.id });
+      // Bugfix (2026-08-27, Phase 25 -- Audit Trail gap reintroduced by
+      // 91ccc4f's re-baseline removal): decide_baseline_request's
+      // re-baseline branch used to be the only place project_revision_
+      // changes diff rows ever got written, and it's now unreachable
+      // from the UI (canRequestBaseline is draft-only). record_wbs_edit
+      // now has a 2-arg overload that both opens/reuses the revision AND
+      // recomputes the full diff against its source snapshot every time
+      // -- call it on every Save while baseline_locked OR
+      // changed_after_baseline (not just the one-time transition
+      // wasBaselineLocked alone would catch), passing the same fresh
+      // task snapshot shape decide_baseline_request itself always used.
+      if (wasBaselineLocked || project.wbs_status === "changed_after_baseline") {
+        const { error } = await supabase.rpc("record_wbs_edit", { p_project_id: project.id, p_tasks: buildTaskSnapshotPayload() });
         if (error) {
           await alert(`Timelines were saved, but the project's status couldn't be updated: ${error.message}`);
           await loadAll();
@@ -2834,7 +2845,7 @@ export default function WbsPlanning() {
       // silent=true so state still refreshes underneath without the
       // full unmount/remount.
       await loadAll(true);
-      await alert("Timelines have been saved. To lock this schedule, request Baseline.");
+      await alert("Timelines have been saved. Start the project to lock the timelines.");
     } finally {
       setSaving(false);
     }
