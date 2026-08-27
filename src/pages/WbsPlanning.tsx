@@ -153,7 +153,8 @@ const WBS_TASK_COLUMN_DEFAULTS: Record<string, number> = {
 const WBS_TASK_COLUMN_ORDER = ["task", "depends_on", "assignee", "work_type", "output_type", "output_count", "effort_hours", "spent_hrs", "effort", "changes"];
 const WBS_DATE_COLUMN_WIDTHS = [110, 100, 90, 110, 100, 90, 110, 100, 90]; // Start/End/Duration x3 modes, fixed
 const WBS_COL_WIDTHS_STORAGE_KEY = "capaciq_wbs_task_col_widths";
-const WBS_FREEZE_STORAGE_KEY = "capaciq_wbs_freeze_task_col";
+const WBS_FREEZE_STORAGE_KEY = "capaciq_wbs_freeze_task_col"; // legacy -- read once as a migration fallback
+const WBS_FREEZE_COL_STORAGE_KEY = "capaciq_wbs_freeze_col_key";
 const WBS_MIN_COL_WIDTH = 50;
 interface PersonRow {
   id: string;
@@ -485,24 +486,33 @@ export default function WbsPlanning() {
   );
   const [wbsColWidthsVersion, setWbsColWidthsVersion] = useState(0);
   // Freeze panes (2026-08-26, Sandra: "allow freezing of panes in the WBS
-  // table") -- keeps the gutter + Task name column pinned in place while
-  // scrolling right through the many Work Type/Output/date-mode columns,
-  // Excel/Notion-style. Persisted like column widths (no server-side
-  // "saved views" concept for this page yet); defaults ON since that's
-  // the more useful state for a table this wide.
-  const [wbsFreezeTaskCol, setWbsFreezeTaskCol] = useState<boolean>(() => {
+  // table"; generalized 2026-08-27, Sandra: "can we pin any column, not
+  // just Task") -- keeps the gutter + every column up to (and including)
+  // the pinned one visible while scrolling right through the many Work
+  // Type/Output/date-mode columns, Excel/Notion-style. Only one column
+  // can be pinned at a time -- pinning a different column moves the
+  // freeze point there (and un-pins whatever was pinned before);
+  // clicking the currently-pinned column's own pin again turns freezing
+  // off entirely. `null` means nothing is frozen. Persisted like column
+  // widths (no server-side "saved views" concept for this page yet).
+  const [wbsFreezeColKey, setWbsFreezeColKey] = useState<string | null>(() => {
     try {
-      const raw = localStorage.getItem(WBS_FREEZE_STORAGE_KEY);
-      return raw === null ? true : raw === "1";
+      const raw = localStorage.getItem(WBS_FREEZE_COL_STORAGE_KEY);
+      if (raw !== null) return raw === "" ? null : raw;
+      // Migration fallback: an existing user's old "Task column frozen"
+      // boolean pref (defaulted ON) carries forward as the Task column
+      // being the pinned one, so nobody's freeze state silently resets.
+      const legacyRaw = localStorage.getItem(WBS_FREEZE_STORAGE_KEY);
+      return legacyRaw === null || legacyRaw === "1" ? "task" : null;
     } catch {
-      return true;
+      return "task";
     }
   });
-  function toggleWbsFreeze() {
-    setWbsFreezeTaskCol((prev) => {
-      const next = !prev;
+  function toggleWbsFreezeCol(colKey: string) {
+    setWbsFreezeColKey((prev) => {
+      const next = prev === colKey ? null : colKey;
       try {
-        localStorage.setItem(WBS_FREEZE_STORAGE_KEY, next ? "1" : "0");
+        localStorage.setItem(WBS_FREEZE_COL_STORAGE_KEY, next ?? "");
       } catch {
         // ignore -- private browsing / storage full, toggle still works
         // for the rest of this session, it just won't persist
@@ -688,6 +698,18 @@ export default function WbsPlanning() {
   // against, e.g. after a re-baseline event.
   const [activeBaseline, setActiveBaseline] = useState<ActiveBaselineRow | null>(null);
   const [workflowBusy, setWorkflowBusy] = useState(false);
+  // Actions menu (2026-08-27, Sandra: "is it possible to remove the
+  // request for baseline approval at the top? can we just add an
+  // action button instead and from there pick Re-Baseline and Close
+  // project") -- consolidates the top status banner's separate
+  // workflow buttons (previously just the single Request/Re-baseline
+  // Approval button) plus the bottom status bar's Close Project button
+  // into one menu, so there's a single place to look for "what can I
+  // do to this project's workflow right now" instead of buttons
+  // scattered across two banners. Same handlers, same visibility
+  // conditions as before -- placement/consolidation only, not a
+  // behavior change.
+  const [wbsActionsMenuOpen, setWbsActionsMenuOpen] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<RevisionRow[]>([]);
   const [revisionChangesById, setRevisionChangesById] = useState<Record<string, RevisionChangeRow[]>>({});
   const [expandedRevisionId, setExpandedRevisionId] = useState<string | null>(null);
@@ -1252,6 +1274,22 @@ export default function WbsPlanning() {
     for (const t of tasks) {
       if (t.parent_task_id) continue;
       if (!hasChildren(t.id)) continue;
+      // Bugfix (2026-08-27, Sandra: false "Done task locked" error on
+      // Close Project / Request Baseline Approval): this rollup used to
+      // run for every parent regardless of its own status. A Done parent
+      // is locked server-side (enforce_done_task_lock trigger) against
+      // writes to exactly these scoping fields -- if a Done parent's
+      // computed rollup ever drifted from its stored value (e.g. a child
+      // task's hours/start/assignee changed after the parent was marked
+      // Done), this silently staged a patch into pendingTaskPatches that
+      // the NEXT flushPendingEdits() call -- fired by totally unrelated
+      // actions like Close Project or Request Baseline Approval -- would
+      // then try to write, tripping the DB lock trigger even though
+      // neither action needed to touch task fields at all. Skipping Done
+      // parents here stops the patch from ever being staged in the first
+      // place; this does not affect the normal Done-task edit lock UI,
+      // which is enforced separately.
+      if (t.status === "Done") continue;
       const sum = subtaskHoursSum(t.id);
       const minLegacy = subtaskStartMinField(t.id, "start_date");
       const minFull = subtaskStartMinField(t.id, "start_date_full");
@@ -1311,6 +1349,11 @@ export default function WbsPlanning() {
   // the same shared column.
   useEffect(() => {
     for (const t of tasks) {
+      // Same fix as the parent-rollup effect above (2026-08-27) -- a
+      // Done task's Start is locked server-side, so this dependency
+      // auto-pilot effect must never stage a patch for one, even if its
+      // live-computed suggested Start still drifts from what's stored.
+      if (t.status === "Done") continue;
       const depIds = dependsOnIdsFor(t.id);
       if (!depIds.length) continue;
       for (const mode of MODES.filter((m) => m !== "standard")) {
@@ -2937,16 +2980,48 @@ export default function WbsPlanning() {
   }
   // One resizable header cell -- rowSpan=2 (spans both header rows, same
   // as the plain <th>s it replaces), a drag handle on its right edge.
+  // Freeze-pane sticky positioning, generalized to any resizable column
+  // (2026-08-27) -- a column is sticky whenever a freeze point is set
+  // AND this column sits at or before it in WBS_TASK_COLUMN_ORDER (the
+  // table's current, fixed display order -- there's no column drag-
+  // reorder on this page, unlike task rows). `left` is the cumulative
+  // width of the gutter plus every earlier resizable column, so it
+  // tracks live resizing exactly like the old Task-only freeze did.
+  // Only the pinned column itself (the rightmost sticky one) gets the
+  // boundary boxShadow; earlier sticky columns don't need their own,
+  // same as before.
+  function wbsColStickyStyle(colKey: string, isTd: boolean, rowLocked?: boolean): CSSProperties | undefined {
+    const idx = WBS_TASK_COLUMN_ORDER.indexOf(colKey);
+    const frozenIdx = wbsFreezeColKey ? WBS_TASK_COLUMN_ORDER.indexOf(wbsFreezeColKey) : -1;
+    if (frozenIdx < 0 || idx < 0 || idx > frozenIdx) return undefined;
+    let left = wbsFrozenGutterW;
+    for (let i = 0; i < idx; i++) left += wbsColWidth(WBS_TASK_COLUMN_ORDER[i]);
+    return {
+      position: "sticky",
+      left,
+      zIndex: isTd ? 2 : 3,
+      background: rowLocked ? "var(--hover-bg)" : "var(--surface)",
+      ...(idx === frozenIdx ? { boxShadow: "1px 0 0 0 var(--border)" } : {}),
+    };
+  }
+  // Same idea for the row-gutter column itself (always index -1, i.e.
+  // "before" every resizable column) -- sticky whenever ANY column is
+  // pinned, never carries the boundary boxShadow itself (that belongs to
+  // whichever real column is actually the pinned one).
+  function wbsGutterStickyStyle(isTd: boolean, rowLocked?: boolean): CSSProperties | undefined {
+    if (!wbsFreezeColKey) return undefined;
+    return { position: "sticky", left: 0, zIndex: isTd ? 2 : 3, background: rowLocked ? "var(--hover-bg)" : "var(--surface)" };
+  }
   function ResizableTh({ colKey, title, children }: { colKey: string; title?: string; children: React.ReactNode }) {
     const w = wbsColWidth(colKey);
-    // Freeze panes: only the Task column freezes (pins right after the
-    // 22px gutter) -- see wbsFreezeTaskCol above. `position:relative` on
-    // an unfrozen header would break `position:sticky` freezing that
-    // relies on the nearest scrolling ancestor being the `.card`
-    // container, so it's only applied when actually needed for the
-    // resize-handle overlay below (still fine to combine with sticky --
-    // sticky elements can be positioning contexts too).
-    const frozen = colKey === "task" && wbsFreezeTaskCol;
+    // `position:relative` on an unfrozen header would break
+    // `position:sticky` freezing that relies on the nearest scrolling
+    // ancestor being the `.card` container, so it's only applied when
+    // actually needed for the resize-handle overlay below (still fine to
+    // combine with sticky -- sticky elements can be positioning contexts
+    // too).
+    const sticky = wbsColStickyStyle(colKey, false);
+    const isPinned = wbsFreezeColKey === colKey;
     return (
       <th
         rowSpan={2}
@@ -2954,15 +3029,36 @@ export default function WbsPlanning() {
           width: w,
           minWidth: WBS_MIN_COL_WIDTH,
           maxWidth: w,
-          position: frozen ? "sticky" : "relative",
-          left: frozen ? wbsFrozenGutterW : undefined,
-          zIndex: frozen ? 3 : undefined,
-          background: frozen ? "var(--surface)" : undefined,
-          boxShadow: frozen ? "1px 0 0 0 var(--border)" : undefined,
+          position: sticky ? "sticky" : "relative",
+          ...(sticky ?? {}),
         }}
         title={title}
       >
-        {children}
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {children}
+          {/* Freeze panes (2026-08-26, Sandra: "I want the freeze task
+              pin to be in the column headers in the table"; generalized
+              2026-08-27, Sandra: "can we pin any column, not just Task")
+              -- every resizable column gets its own pin, mutually
+              exclusive with every other column's. stopPropagation so it
+              doesn't also trigger the resize-handle span, its sibling in
+              this same <th>. */}
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleWbsFreezeCol(colKey);
+            }}
+            title={isPinned ? "Unfreeze this column" : "Freeze this column (and every column to its left) so it stays visible while scrolling"}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              cursor: "pointer",
+              color: isPinned ? "var(--accent, #4f46e5)" : "var(--muted)",
+            }}
+          >
+            <Pin size={12} />
+          </span>
+        </span>
         <span
           onMouseDown={(e) => startWbsColResize(colKey, e)}
           title="Drag to resize"
@@ -3521,36 +3617,87 @@ export default function WbsPlanning() {
             Baseline V{activeBaseline.version_number} (locked {formatDate(activeBaseline.captured_at.slice(0, 10))})
           </span>
         )}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Phase 6 (2026-08-21): Start Revision/Apply Revision/Discard
-              Revision/Lock Baseline/Re-baseline are all retired -- editing
-              is open the whole time a baseline exists (see canEditWbs),
-              and locking/re-locking a baseline is now the single Request
-              Baseline Approval action below, whichever case applies. */}
-          {/* Phase 24 (2026-08-26): re-baselining revived, permanently
-              gated behind can_approve_rebaseline (Sandra: "bring it
-              back, gated -- this one needs to go through to me or
-              someone who has re-baseline approval access only"). This
-              button now shows for baseline_locked/changed_after_baseline
-              too, not just draft -- handleRequestBaseline already had
-              the correct "Request approval to re-baseline..." messaging
-              for this case the whole time (see its own comment), it just
-              couldn't be reached while the button was draft-only and the
-              request_baseline_approval RPC rejected anything else
-              (phase18_migration.sql, 2026-08-24 -- superseded by
-              phase24_migration.sql). Approving a re-baseline is strictly
-              gated on can_approve_rebaseline via canDecideBaselineRequest
-              below -- Full Access does not auto-qualify, by design. */}
-          {canManageWbs && project.wbs_status !== "closed" && !pendingBaselineRequest && (
-              <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestBaseline}>
-                {project.wbs_status === "draft" ? "Request Baseline Approval" : "Request Re-baseline Approval"}
-              </button>
-            )}
-          {/* Duplicate Close Project button removed here (2026-08-26,
-              Sandra: "Remove the Close Project action at the top of the
-              page. Just retain the one at the bottom.") -- the bottom
-              status-banner button (same handleRequestClosure handler,
-              same visibility condition) is the only one now. */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+          {/* 2026-08-27 (Sandra: "can we just add an action button
+              instead and from there pick Re-Baseline and Close project")
+              -- single Actions menu replaces the separate Request/
+              Re-baseline Approval button that used to render here AND
+              the Close Project button that used to render in its own
+              button down in the bottom status bar. Phase 6/24 history
+              (Start Revision/Apply/Discard Revision/Lock Baseline are
+              retired; re-baselining is gated behind can_approve_rebaseline
+              via canDecideBaselineRequest below) is unchanged -- only
+              which element renders each action moved, not the handlers
+              or their visibility conditions. */}
+          {(() => {
+            const canRequestBaseline = canManageWbs && project.wbs_status !== "closed" && !pendingBaselineRequest;
+            const canRequestClosure =
+              canManageWbs && (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") && !pendingClosure;
+            if (!canRequestBaseline && !canRequestClosure) return null;
+            return (
+              <>
+                <button
+                  className="btn-secondary"
+                  disabled={workflowBusy}
+                  onClick={() => setWbsActionsMenuOpen((v) => !v)}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                >
+                  Actions <ChevronDown size={13} />
+                </button>
+                {wbsActionsMenuOpen && (
+                  <>
+                    {/* Transparent click-outside-to-close backdrop, same
+                        trick used elsewhere for lightweight popovers in
+                        this app (see DependsOnPicker below) rather than a
+                        document-level event listener. */}
+                    <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setWbsActionsMenuOpen(false)} />
+                    <div
+                      className="card"
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 4px)",
+                        right: 0,
+                        zIndex: 41,
+                        minWidth: 220,
+                        padding: 4,
+                        boxShadow: "0 4px 14px rgba(0,0,0,0.18)",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                      }}
+                    >
+                      {canRequestBaseline && (
+                        <button
+                          className="row-menu-item"
+                          disabled={workflowBusy}
+                          onClick={() => {
+                            setWbsActionsMenuOpen(false);
+                            handleRequestBaseline();
+                          }}
+                          style={{ display: "flex", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 4, padding: "6px 8px", fontSize: 12.5, cursor: "pointer", color: "var(--text)" }}
+                        >
+                          {project.wbs_status === "draft" ? "Request Baseline Approval" : "Request Re-baseline Approval"}
+                        </button>
+                      )}
+                      {canRequestClosure && (
+                        <button
+                          className="row-menu-item"
+                          disabled={workflowBusy}
+                          onClick={() => {
+                            setWbsActionsMenuOpen(false);
+                            handleRequestClosure();
+                          }}
+                          style={{ display: "flex", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 4, padding: "6px 8px", fontSize: 12.5, cursor: "pointer", color: "var(--text)" }}
+                        >
+                          Close Project
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -4434,42 +4581,9 @@ export default function WbsPlanning() {
                   <th
                     rowSpan={2}
                     className="row-gutter-cell"
-                    style={
-                      wbsFreezeTaskCol
-                        ? { width: 22, minWidth: 22, position: "sticky", left: 0, zIndex: 3, background: "var(--surface)" }
-                        : { width: 22, minWidth: 22 }
-                    }
+                    style={{ width: 22, minWidth: 22, ...(wbsGutterStickyStyle(false) ?? {}) }}
                   />
-                  <ResizableTh colKey="task">
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      Task
-                      {/* Freeze panes (2026-08-26, Sandra: "I want the
-                          freeze task pin to be in the column headers in
-                          the table" -- moved here from a separate
-                          toolbar button per her follow-up ask). Pin
-                          toggles wbsFreezeTaskCol; stopPropagation so it
-                          doesn't also trigger anything else on the
-                          header cell (there's nothing else today, but
-                          the resize-handle span is a sibling in this
-                          same <th> and shouldn't ever fire from this
-                          click either). */}
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleWbsFreeze();
-                        }}
-                        title={wbsFreezeTaskCol ? "Unfreeze the Task column" : "Freeze the Task column so it stays visible while scrolling"}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          cursor: "pointer",
-                          color: wbsFreezeTaskCol ? "var(--accent, #4f46e5)" : "var(--muted)",
-                        }}
-                      >
-                        <Pin size={12} />
-                      </span>
-                    </span>
-                  </ResizableTh>
+                  <ResizableTh colKey="task">Task</ResizableTh>
                   <ResizableTh colKey="depends_on">Depends on</ResizableTh>
                   <ResizableTh colKey="assignee">Assignee</ResizableTh>
                   <ResizableTh colKey="work_type">Work Type</ResizableTh>
@@ -4560,11 +4674,7 @@ export default function WbsPlanning() {
                       <td
                         className="row-gutter-cell"
                         onClick={(e) => e.stopPropagation()}
-                        style={
-                          wbsFreezeTaskCol
-                            ? { position: "sticky", left: 0, zIndex: 2, background: rowLocked ? "var(--hover-bg)" : "var(--surface)" }
-                            : undefined
-                        }
+                        style={wbsGutterStickyStyle(true, rowLocked)}
                       >
                         <div className="row-gutter-inner" style={{ opacity: 1, paddingLeft: 4 }}>
                           <span
@@ -4582,20 +4692,7 @@ export default function WbsPlanning() {
                           </span>
                         </div>
                       </td>
-                      <td
-                        style={
-                          wbsFreezeTaskCol
-                            ? {
-                                overflow: "hidden",
-                                position: "sticky",
-                                left: wbsFrozenGutterW,
-                                zIndex: 2,
-                                background: rowLocked ? "var(--hover-bg)" : "var(--surface)",
-                                boxShadow: "1px 0 0 0 var(--border)",
-                              }
-                            : { overflow: "hidden" }
-                        }
-                      >
+                      <td style={{ overflow: "hidden", ...(wbsColStickyStyle("task", true, rowLocked) ?? {}) }}>
                         <div style={{ paddingLeft: t.depth * 16, fontWeight: t.depth === 0 ? 600 : 400, display: "flex", alignItems: "center", gap: 4 }}>
                           <span title={glyph.title} style={{ display: "inline-flex", flexShrink: 0 }}>
                             <glyph.Icon size={13} color={glyph.color} />
@@ -4615,7 +4712,7 @@ export default function WbsPlanning() {
                           )}
                         </div>
                       </td>
-                      <td style={{ position: "relative" }}>
+                      <td style={{ position: "relative", ...(wbsColStickyStyle("depends_on", true, rowLocked) ?? {}) }}>
                         <DependsOnPicker
                           task={t}
                           allTasks={orderedTasks}
@@ -4628,7 +4725,7 @@ export default function WbsPlanning() {
                           onRemove={(depId) => removeDependency(t.id, depId)}
                         />
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("assignee", true, rowLocked)}>
                         {isParent ? (
                           (() => {
                             const { multiple } = parentAssigneeState(t.id);
@@ -4683,7 +4780,7 @@ export default function WbsPlanning() {
                           />
                         )}
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("work_type", true, rowLocked)}>
                         {isParent ? (
                           <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own Work Type is already represented by its sub-tasks.">
                             N/A
@@ -4712,7 +4809,7 @@ export default function WbsPlanning() {
                           })()
                         )}
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("output_type", true, rowLocked)}>
                         {(() => {
                           const currentOt = outputTypes.find((o) => o.id === t.output_type_id);
                           // Phase 23 (2026-08-25): conditional Output Type --
@@ -4761,7 +4858,7 @@ export default function WbsPlanning() {
                           );
                         })()}
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("output_count", true, rowLocked)}>
                         <InlineNumber
                           value={t.output_count}
                           // Sandra, 2026-08-26: "I can't edit output count.
@@ -4783,7 +4880,7 @@ export default function WbsPlanning() {
                           onCommit={(v) => saveTaskField(t.id, { output_count: v })}
                         />
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("effort_hours", true, rowLocked)}>
                         <span title={isParent ? "Computed from this task's own sub-tasks (sum of their Scoped Hours)" : undefined}>
                           <InlineNumber
                             value={t.estimated_hours}
@@ -4792,8 +4889,8 @@ export default function WbsPlanning() {
                           />
                         </span>
                       </td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{formatHours(spentHoursFor(t.id))}</td>
-                      <td>
+                      <td style={{ fontVariantNumeric: "tabular-nums", ...(wbsColStickyStyle("spent_hrs", true, rowLocked) ?? {}) }}>{formatHours(spentHoursFor(t.id))}</td>
+                      <td style={wbsColStickyStyle("effort", true, rowLocked)}>
                         {isParent ? (
                           <span style={{ fontSize: 11.5, color: "var(--muted)" }} title="Not applicable -- a parent task's own effort is already represented by its sub-tasks' own Effort/points, so it doesn't carry a separate value.">
                             N/A
@@ -4821,7 +4918,7 @@ export default function WbsPlanning() {
                           </span>
                         )}
                       </td>
-                      <td>
+                      <td style={wbsColStickyStyle("changes", true, rowLocked)}>
                         {(() => {
                           // Sandra, 2026-07-29: "omit the notes column and
                           // just put the values in the changes vs baseline,
@@ -5094,13 +5191,11 @@ export default function WbsPlanning() {
               View Audit Trail
             </button>
           )}
-          {canManageWbs &&
-            (project.wbs_status === "baseline_locked" || project.wbs_status === "changed_after_baseline") &&
-            !pendingClosure && (
-              <button className="btn-primary" disabled={workflowBusy} onClick={handleRequestClosure}>
-                Close Project
-              </button>
-            )}
+          {/* Close Project moved into the top banner's Actions menu
+              (2026-08-27, Sandra: "add an action button instead and from
+              there pick Re-Baseline and Close project") -- same
+              handleRequestClosure handler, same visibility condition,
+              just no longer duplicated as its own button down here. */}
         </div>
       </div>
     </div>
