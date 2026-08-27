@@ -1044,11 +1044,22 @@ export default function WbsPlanning() {
 
   async function loadLatestRevisionChanges() {
     if (!projectId) return;
+    // Phase 25 (2026-08-27) fix: this used to filter to status="applied",
+    // which was correct back when the Phase 6 Start Revision/Apply
+    // Revision flow existed. Re-baselining removal (91ccc4f) means a
+    // project's revision now opens once on the first post-baseline edit
+    // and stays "in_progress" forever -- record_wbs_edit(uuid, jsonb)
+    // (phase25_migration.sql) recomputes its diff on every Save, but it
+    // never transitions to "applied". Filtering on that status made this
+    // query always return nothing, silently emptying the Revision
+    // Summary panel below even though the diff was being captured (and
+    // visible on the full Audit Trail page, which reads every revision
+    // regardless of status -- see AuditTrail.tsx). Just take the latest
+    // revision by number, matching AuditTrail.tsx's own query.
     const { data: latestRev } = await supabase
       .from("project_revisions")
       .select("id")
       .eq("project_id", projectId)
-      .eq("status", "applied")
       .order("revision_number", { ascending: false })
       .limit(1)
       .maybeSingle();
