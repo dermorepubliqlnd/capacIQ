@@ -1100,53 +1100,33 @@ export default function WbsPlanning() {
   // editable afterward. If the user later edits either into a conflict,
   // `dependencyConflict` (mode-parameterized, checked against that SAME
   // mode's own Start field) catches it.
-  // Phase 20 (2026-08-24, Sandra: "in the full effort, can you make sure
-  // that math is done properly, always assume a full day of 7.5 hours --
-  // if there are 2 tasks that is set at 3 hours each, this can still be
-  // done in one day"): Full Effort previously always chained a task to
-  // the NEXT working day after whatever it follows, regardless of how
-  // much of that day's assumed 7.5h was actually left -- two 3-hour tasks
-  // got pushed onto two separate days instead of packing into one. These
-  // two helpers give Full Effort real same-day packing: sum up every
-  // OTHER same-level task (root siblings, or one parent's own children --
-  // whichever scope this task belongs to) that already lands entirely on
-  // a given date, and only roll to the next working day if the new
-  // task's own hours would not actually fit in what's left. Scoped to
-  // full_capacity only -- Capacity-Based already does real per-person
-  // capacity-aware queueing via buildForwardSchedule, and Manual's Start
-  // is either a live mirror of that or a frozen human override, neither
-  // of which this flat-rate assumption applies to.
-  function sameLevelScope(taskId: string): (TaskRow & { depth: number })[] {
-    const t = orderedTasks.find((x) => x.id === taskId);
-    if (!t) return [];
-    return t.depth === 0
-      ? orderedTasks.filter((x) => x.depth === 0)
-      : orderedTasks.filter((x) => x.depth === 1 && x.parent_task_id === t.parent_task_id);
-  }
-  function remainingFullEffortHours(dateStr: string, scope: TaskRow[], excludeTaskId?: string): number {
-    let used = 0;
-    for (const s of scope) {
-      if (s.id === excludeTaskId) continue;
-      const entry = chainByMode.full_capacity.get(s.id);
-      if (entry && entry.start === dateStr && entry.end === dateStr) used += s.estimated_hours ?? 0;
-    }
-    return Math.max(0, FULL_CAPACITY_DAILY_HOURS - used);
-  }
-  function packedFullEffortNextStart(predecessorEnd: string, newHours: number, scope: TaskRow[], excludeTaskId?: string): string {
-    const remaining = remainingFullEffortHours(predecessorEnd, scope, excludeTaskId);
-    if (newHours <= remaining) return predecessorEnd; // packs into the same day
-    return nextWorkingDayAfter(predecessorEnd, holidaySet);
-  }
-
-  function suggestedStartFor(depIds: string[], mode: Mode, forTaskId?: string): string | null {
+  // Bugfix (2026-08-27, Sandra -- screenshot showed Task 3's Theoretical
+  // Start landing on the SAME day as Task 2's Theoretical End, flagged
+  // with a dependency-conflict warning): this used to special-case
+  // full_capacity by calling a same-day-packing heuristic
+  // (packedFullEffortNextStart, removed) that could return the
+  // predecessor's own End date unchanged whenever the new task's hours
+  // "fit" in whatever leftover capacity it estimated was left that day --
+  // but that estimate was scope-blind (it summed same-level SIBLING
+  // tasks regardless of assignee, so it had nothing to do with whether
+  // THIS task's own predecessor was actually done yet) and, more
+  // fundamentally, a dependent task can never start before the working
+  // day AFTER its predecessor's own End regardless of anyone's leftover
+  // capacity that day -- that's the whole meaning of "depends on". The
+  // real same-day packing feature (Phase 20's actual goal, for ordinary
+  // same-person siblings with NO dependency between them) already lives
+  // in theoreticalScheduleFor/packFullCapacityQueue above and is
+  // untouched by this -- this function only ever computes the FLOOR a
+  // real dependency imposes, which is always simply "next working day
+  // after the predecessor's End", the same as every other mode and the
+  // same as the Refresh dates button's own dependency-chaining branch
+  // (`scheduledEntry` below) already does.
+  function suggestedStartFor(depIds: string[], mode: Mode): string | null {
     let latest: string | null = null;
     for (const depId of depIds) {
       const entry = chainByMode[mode].get(depId);
       if (!entry) continue;
-      const candidate =
-        mode === "full_capacity" && forTaskId
-          ? packedFullEffortNextStart(entry.end, tasks.find((x) => x.id === forTaskId)?.estimated_hours ?? 0, sameLevelScope(forTaskId), forTaskId)
-          : nextWorkingDayAfter(entry.end, holidaySet);
+      const candidate = nextWorkingDayAfter(entry.end, holidaySet);
       if (!latest || candidate > latest) latest = candidate;
     }
     return latest;
@@ -1170,7 +1150,7 @@ export default function WbsPlanning() {
     }
     const allDeps = [...dependsOnIdsFor(taskId), dependsOnId];
     const patch: Partial<TaskRow> = {};
-    const suggestedFull = suggestedStartFor(allDeps, "full_capacity", taskId);
+    const suggestedFull = suggestedStartFor(allDeps, "full_capacity");
     if (suggestedFull) {
       patch.start_date_full = suggestedFull;
       patch.start_full_auto = true; // fresh dependency -- start tracking it live again
@@ -1189,7 +1169,49 @@ export default function WbsPlanning() {
     if (error) {
       await alert(`Couldn't remove dependency: ${error.message}`);
       loadAll();
+      return;
     }
+    // Bugfix (2026-08-27, Sandra -- screenshot: removing Task 3's "Depends
+    // on: Task 2" left Depends On showing "None" but Theoretical Start
+    // STAYED on the old dependency-derived date, still flagged with a
+    // warning icon): start_date_full/start_date_standard are persisted
+    // "floor" columns that addDependency (above) and the dependency
+    // auto-pilot effect (below) only ever push FORWARD while a real
+    // dependency exists -- neither one ever runs for a task with ZERO
+    // dependencies, so nothing ever moved this back down once the
+    // dependency was gone. Mirror addDependency's own one-time-write
+    // shape here: if this task still has other dependencies left,
+    // re-derive from those; otherwise fall back to exactly the same
+    // "natural" no-predecessor default a brand-new task gets seeded with
+    // (addTopLevelTask/addSubtask above) -- the project's own anchor
+    // date for a root task, or its parent's own Start for a sub-task.
+    const remainingDeps = dependsOnIdsFor(taskId).filter((id) => id !== dependsOnId);
+    const t = tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
+    const parent = t.parent_task_id ? tasks.find((x) => x.id === t.parent_task_id) : null;
+    const naturalFull = parent?.start_date_full ? parent.start_date_full.slice(0, 10) : projectAnchor;
+    const naturalStandard = parent?.start_date_standard ? parent.start_date_standard.slice(0, 10) : projectAnchor;
+    const patch: Partial<TaskRow> = {};
+    const nextFull = remainingDeps.length ? suggestedStartFor(remainingDeps, "full_capacity") : naturalFull;
+    const currentFull = t.start_date_full ? t.start_date_full.slice(0, 10) : null;
+    if (nextFull && nextFull !== currentFull) {
+      patch.start_date_full = nextFull;
+      patch.start_full_auto = true;
+    }
+    // Forecasted's Start can be a genuine human override (start_standard_auto
+    // === false) -- only auto-revert it here if it's still on auto-pilot,
+    // same guard the continuous dependency effect below already uses, so
+    // this never clobbers a date Sandra typed in on purpose.
+    if (t.start_standard_auto !== false) {
+      const nextStandard = remainingDeps.length ? suggestedStartFor(remainingDeps, "standard") : naturalStandard;
+      const currentStandard = t.start_date_standard ? t.start_date_standard.slice(0, 10) : null;
+      if (nextStandard && nextStandard !== currentStandard) {
+        patch.start_date_standard = nextStandard;
+        patch.start_standard_auto = true;
+      }
+    }
+    if (Object.keys(patch).length) saveTaskField(taskId, patch);
   }
 
   // Conflict check for the currently active mode: this task's own Start
@@ -1416,7 +1438,7 @@ export default function WbsPlanning() {
         const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
         const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
         if (t[autoField] === false) continue; // manually overridden -- leave it, warning icon covers this
-        const suggested = suggestedStartFor(depIds, mode, t.id);
+        const suggested = suggestedStartFor(depIds, mode);
         const current = t[startField] ? (t[startField] as string).slice(0, 10) : null;
         if (suggested && suggested !== current) {
           saveTaskField(t.id, { [startField]: suggested } as Partial<TaskRow>);
@@ -3292,14 +3314,33 @@ export default function WbsPlanning() {
           </span>
         </td>
         <td style={entry ? style : { ...style, color: "var(--muted)" }}>
-          {/* Phase 19 (2026-08-24): End is now freely typable too, but
-              only once Start has been manually committed -- editing End
-              before Start is touched wouldn't have a fixed point to
-              spread hours from. Typing an End date here is what turns on
-              the even-hours-per-day spread (see computeEntry's "manual"
-              branch); clearing it (native date-input "clear") reverts to
-              the flat 7.5h/day fallback from Start. */}
-          {entry?.isOverridden ? (
+          {/* Phase 19 (2026-08-24): End is freely typable, and typing one
+              here is what turns on the even-hours-per-day spread (see
+              computeEntry's "manual" branch); clearing it (native
+              date-input "clear") reverts to the flat 7.5h/day fallback
+              from Start.
+              Bugfix (2026-08-27, Sandra: "there also seems to be a bug
+              when trying to change the end date in the forecasted
+              timeline while baseline is unlocked... workaround now is to
+              change the start date to a different date, to enable the
+              end date"): this used to only render the InlineDate at all
+              once `entry.isOverridden` was already true -- which only
+              ever became true AFTER Start had been manually committed
+              (the `entry?.isOverridden` gate above), so End looked
+              disabled/inert until Start was touched first, exactly
+              Sandra's workaround. End must be independently editable any
+              time the row itself is (same `canEditWbs`/`!isParent`/
+              `!timelines_locked` governance as Start, no extra gate) --
+              so the InlineDate now always renders when there's an entry
+              to show. Since computeEntry's "touched" branch (the one
+              that actually reads manual_end_date) also requires
+              start_standard_auto === false with a real start_date_standard,
+              committing an End edit here freezes Start at its current
+              live value too (mirroring what a direct Start edit already
+              does to itself) -- that's the "fixed point" the even-hours
+              spread needs, computed symmetrically to the existing,
+              working Start-edit path rather than inventing a new rule. */}
+          {entry ? (
             <span title={entry.avgHoursPerDay != null ? `${entry.avgHoursPerDay}h/day, spread evenly across this window` : "Flat 7.5h/day from Start -- type an End date to spread hours evenly instead"} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
               <InlineDate
                 // Bugfix (2026-08-24, found in post-ship audit): when no
@@ -3310,12 +3351,18 @@ export default function WbsPlanning() {
                 // date behind an empty-looking input. Typing a new value
                 // still only ever writes manual_end_date.
                 value={t.manual_end_date ?? entry.end}
-                editable={canEditWbs && !isParent}
-                onCommit={(v) => saveTaskField(t.id, { manual_end_date: v || null } as Partial<TaskRow>)}
+                editable={canEditWbs && !isParent && !project!.timelines_locked}
+                onCommit={(v) =>
+                  saveTaskField(t.id, {
+                    manual_end_date: v || null,
+                    start_date_standard: entry.start,
+                    start_standard_auto: false,
+                  } as Partial<TaskRow>)
+                }
               />
             </span>
           ) : (
-            <span>{entry ? formatDate(entry.end) : "—"}</span>
+            <span>—</span>
           )}
         </td>
         <td style={entry ? style : { ...style, color: "var(--muted)" }}>
