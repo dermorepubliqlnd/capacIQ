@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, Fragment, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin, CalendarClock } from "lucide-react";
+import { ArrowLeft, Plus, ChevronLeft, ChevronRight, ChevronDown, Info, AlertTriangle, Link2, Trash2, GripVertical, RefreshCw, Clock, ListPlus, TrendingUp, TrendingDown, Calendar, User, Circle, CheckCircle2, Pin } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import RequestStartDateModal from "../components/RequestStartDateModal";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineNumber, InlineSelect, InlineDate } from "../components/InlineCell";
@@ -713,62 +712,16 @@ export default function WbsPlanning() {
   const [revisionHistory, setRevisionHistory] = useState<RevisionRow[]>([]);
   const [revisionChangesById, setRevisionChangesById] = useState<Record<string, RevisionChangeRow[]>>({});
   const [expandedRevisionId, setExpandedRevisionId] = useState<string | null>(null);
-  // Start Date change requests (2026-08-26) -- once a project's baseline
-  // is locked (`project.timelines_locked`), a DB trigger
-  // (`enforce_start_date_lock`) blocks direct writes to
-  // `start_date_standard` (Forecasted's own editable field) the same way
-  // `enforce_due_date_lock` already blocks `current_due_date`. This
-  // mirrors that Extension Request pattern exactly: submitting just
-  // inserts a Pending `extension_requests` row (`request_type:
-  // 'start_date'`) -- the date only moves once a manager approves it via
-  // `decide_extension_request` (updated to branch on request_type).
-  // Sandra's own framing: "disable change of start date when baseline is
-  // locked... but... cases maybe that we have decided to start but would
-  // have to move" -- this is the escape hatch for that case.
-  const [startDateRequestTask, setStartDateRequestTask] = useState<TaskRow | null>(null);
-  const [startDateRequests, setStartDateRequests] = useState<
-    { id: string; task_id: string; requested_new_start_date: string; status: string; created_at: string; task_name?: string }[]
-  >([]);
-  async function loadStartDateRequests(taskList?: TaskRow[]) {
-    const list = taskList ?? tasks;
-    if (!projectId || list.length === 0) {
-      setStartDateRequests([]);
-      return;
-    }
-    const taskIds = list.map((t) => t.id);
-    const { data } = await supabase
-      .from("extension_requests")
-      .select("id,task_id,requested_new_start_date,status,created_at")
-      .eq("request_type", "start_date")
-      .in("task_id", taskIds)
-      .order("created_at", { ascending: false });
-    const rows = (data as { id: string; task_id: string; requested_new_start_date: string; status: string; created_at: string }[]) ?? [];
-    const nameById = new Map(list.map((t) => [t.id, t.name]));
-    setStartDateRequests(rows.map((r) => ({ ...r, task_name: nameById.get(r.task_id) })));
-  }
-  async function submitStartDateChangeRequest(newStartDate: string, reasonCategory: string, reasonNotes: string) {
-    if (!startDateRequestTask) return;
-    const { error } = await supabase.from("extension_requests").insert({
-      task_id: startDateRequestTask.id,
-      requested_by: me?.id,
-      request_type: "start_date",
-      requested_new_start_date: newStartDate,
-      // requested_new_due_date is NOT NULL in the original schema -- reuse
-      // the task's own current due date as a harmless placeholder for
-      // start_date-type rows (decide_extension_request never reads this
-      // column for that request type).
-      requested_new_due_date: startDateRequestTask.current_due_date,
-      reason_category: reasonCategory,
-      reason_notes: reasonNotes,
-    });
-    if (error) {
-      await alert(`Couldn't submit Start Date change request: ${error.message}`);
-      return;
-    }
-    setStartDateRequestTask(null);
-    await loadStartDateRequests();
-    await alert("Start Date change request submitted -- it goes to your project owner (or their manager) for approval.");
-  }
+  // Start Date change requests (2026-08-26) -- removed 2026-08-27 per
+  // Sandra: "We will not change start date in task level individually.
+  // The start date can only be changed in re-baselines." The per-task
+  // request+approval UI (RequestStartDateModal, the clock-icon pin, and
+  // the sidebar history panel) is gone; `enforce_start_date_lock` and the
+  // `extension_requests` rows/RPC branch for request_type='start_date'
+  // are left in place in Postgres (unused, not dropped) -- the DB lock on
+  // start_date_standard once baseline is locked remains the safety net,
+  // it's just no longer escapable from the UI. Start dates now change
+  // only via Re-baseline.
   // Design spec item 7 (Sandra, 2026-07-29): task-list Changes/Notes
   // columns and the Revision Summary panel both read from the SAME
   // latest-applied-revision's change log (decision #1 in
@@ -849,7 +802,6 @@ export default function WbsPlanning() {
       setDependencies([]);
       setTimeEntries([]);
     }
-    loadStartDateRequests((tks as TaskRow[]) ?? []);
 
     const [{ data: revRow }, { data: closureRow }, { data: baselineRow }, { data: baselineReqRow }] = await Promise.all([
       supabase
@@ -3192,8 +3144,9 @@ export default function WbsPlanning() {
                 // baseline is locked, direct edits are blocked at the DB
                 // level (enforce_start_date_lock trigger) -- turn the
                 // field read-only here too so a save attempt doesn't
-                // silently fail against that trigger. The CalendarClock
-                // icon below opens the real path to move it once locked.
+                // silently fail against that trigger. Start dates now only
+                // move via Re-baseline (per-task change requests removed
+                // 2026-08-27).
                 editable={canEditWbs && !isParent && !project!.timelines_locked}
                 onCommit={(v) =>
                   // A manual edit here freezes this task's Manual date --
@@ -3205,26 +3158,6 @@ export default function WbsPlanning() {
               />
             </span>
             {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
-            {project!.timelines_locked && !isParent && canEditWbs && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setStartDateRequestTask(t);
-                }}
-                title="Baseline is locked -- request a Start Date change"
-                style={{
-                  display: "inline-flex",
-                  flexShrink: 0,
-                  border: "none",
-                  background: "none",
-                  cursor: "pointer",
-                  padding: 0,
-                  color: "var(--muted)",
-                }}
-              >
-                <CalendarClock size={12} />
-              </button>
-            )}
             {entry?.isOverridden && (
               <span
                 title={
@@ -3579,14 +3512,6 @@ export default function WbsPlanning() {
   return (
     <div>
       {dialog}
-      {startDateRequestTask && (
-        <RequestStartDateModal
-          taskName={startDateRequestTask.name}
-          currentStartDate={startDateRequestTask.start_date_standard}
-          onClose={() => setStartDateRequestTask(null)}
-          onSubmit={submitStartDateChangeRequest}
-        />
-      )}
       <Link to={`/projects/${projectId}`} className="back-link" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 12.5 }}>
         <ArrowLeft size={13} /> Back to {project.name}
       </Link>
@@ -4020,107 +3945,16 @@ export default function WbsPlanning() {
                   gone dead when re-baselining was disabled (see
                   project_capaciq_rebaseline_disabled memory) and always
                   showed "No changes made yet" even on projects with real,
-                  visible changes. Sandra: "Revisions histroy is not
-                  showing" -- replaced with a real, currently-written log:
-                  this project's own Start Date change requests (see
-                  startDateRequests above). Phase 24 (2026-08-26) revived
+                  visible changes. It was replaced with a "Start Date
+                  Change Requests" log; that per-task request/approval
+                  feature was itself removed 2026-08-27 (Sandra: start
+                  dates only change via Re-baseline now), so this whole
+                  panel is gone too. Phase 24 (2026-08-26) revived
                   re-baselining, so project_revision_changes is written to
                   again on each approved re-baseline (see
                   decide_baseline_request) -- the Revision Summary panel
                   above (latestRevisionChanges) and the dedicated Audit
-                  Trail page will both start populating again for any
-                  project that goes through a re-baseline from here on;
-                  this Start Date Change Requests panel is kept as-is
-                  alongside it, not replaced by it. */}
-              <strong style={{ fontSize: 12.5, color: "var(--navy)" }}>Start Date Change Requests</strong>
-              {startDateRequests.length === 0 ? (
-                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
-                  {project.timelines_locked
-                    ? "None yet -- use the clock icon next to a Start date to request one."
-                    : "None yet -- Start dates are freely editable until the baseline is locked."}
-                </div>
-              ) : (
-                <div style={{ marginTop: 10, position: "relative", paddingLeft: 16 }}>
-                  <div style={{ position: "absolute", left: 3, top: 4, bottom: 4, width: 2, background: "var(--border)" }} />
-                  {startDateRequests.slice(0, 5).map((r, idx, arr) => {
-                    const statusTone =
-                      r.status === "Approved"
-                        ? { bg: "var(--success-bg)", color: "var(--success-text)" }
-                        : r.status === "Rejected"
-                        ? { bg: "var(--hover-bg)", color: "var(--muted)" }
-                        : { bg: "var(--warning-bg)", color: "var(--warning-text)" };
-                    return (
-                      <div key={r.id} style={{ position: "relative", marginBottom: idx === arr.length - 1 ? 0 : 14 }}>
-                        <span
-                          style={{
-                            position: "absolute",
-                            left: -16,
-                            top: 3,
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            background: statusTone.color,
-                          }}
-                        />
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                          <strong style={{ fontSize: 12 }}>{r.task_name ?? "Task"}</strong>
-                          <span
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 600,
-                              textTransform: "uppercase",
-                              padding: "1px 6px",
-                              borderRadius: "var(--radius-btn)",
-                              background: statusTone.bg,
-                              color: statusTone.color,
-                            }}
-                          >
-                            {r.status}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{formatDate(r.created_at.slice(0, 10))}</div>
-                        <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
-                          Requested new Start: {formatDate(r.requested_new_start_date)}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {activeBaseline && (
-                    <div style={{ position: "relative", marginTop: 14 }}>
-                      <span
-                        style={{
-                          position: "absolute",
-                          left: -16,
-                          top: 3,
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: "var(--muted)",
-                        }}
-                      />
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <strong style={{ fontSize: 12 }}>Baseline V{activeBaseline.version_number}</strong>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 600,
-                            textTransform: "uppercase",
-                            padding: "1px 6px",
-                            borderRadius: "var(--radius-btn)",
-                            background: "var(--hover-bg)",
-                            color: "var(--muted)",
-                          }}
-                        >
-                          Locked
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                        {formatDate(activeBaseline.captured_at.slice(0, 10))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+                  Trail page below are the current source of history. */}
               <button
                 className="btn-secondary"
                 style={{ width: "100%", marginTop: 12 }}

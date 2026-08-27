@@ -83,7 +83,15 @@ export default function ExtensionRequests() {
         .order("created_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
     ]);
-    setRequests(((reqData as unknown as ExtensionRequestRow[]) ?? []));
+    // Start Date change requests (2026-08-26) shared this table via
+    // request_type='start_date', but that per-task request/approval
+    // feature was removed 2026-08-27 (Sandra: start dates only change via
+    // Re-baseline now). Filter any such rows out here so this page -- and
+    // its "Extension Requests" name -- stays scoped to due-date changes
+    // only; the underlying rows/column are left in place in Postgres, not
+    // dropped.
+    const dueDateOnly = ((reqData as unknown as ExtensionRequestRow[]) ?? []).filter((r) => r.request_type !== "start_date");
+    setRequests(dueDateOnly);
     setPeople((peopleData as PersonLite[]) ?? []);
     setLoading(false);
   }
@@ -180,15 +188,11 @@ export default function ExtensionRequests() {
                 >
                   <td style={{ color: "var(--muted)" }}>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</td>
                   <td style={{ fontWeight: 600, color: "var(--navy)" }}>
-                    {row.project ? (
+                    {row.project && (
                       <span className="status-pill accent" style={{ fontSize: 9.5, marginRight: 6 }}>
                         Project timeline
                       </span>
-                    ) : row.request_type === "start_date" ? (
-                      <span className="status-pill neutral" style={{ fontSize: 9.5, marginRight: 6 }}>
-                        Start Date
-                      </span>
-                    ) : null}
+                    )}
                     {row.project ? row.project.name : row.task?.name ?? "Untitled task"}
                     {row.is_manager_initiated && (
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "var(--muted)" }}>(manager-initiated)</span>
@@ -204,14 +208,8 @@ export default function ExtensionRequests() {
                       </span>
                     )}
                   </td>
-                  <td>
-                    {row.request_type === "start_date"
-                      ? formatDate(row.task?.start_date_standard)
-                      : formatDate(row.project ? row.project.end_date : row.task?.current_due_date)}
-                  </td>
-                  <td style={{ fontWeight: 600 }}>
-                    {formatDate(row.request_type === "start_date" ? row.requested_new_start_date : row.requested_new_due_date)}
-                  </td>
+                  <td>{formatDate(row.project ? row.project.end_date : row.task?.current_due_date)}</td>
+                  <td style={{ fontWeight: 600 }}>{formatDate(row.requested_new_due_date)}</td>
                   <td>
                     <span className="status-pill neutral" style={{ fontSize: 10 }}>
                       {row.reason_category}
