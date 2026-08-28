@@ -19,7 +19,7 @@ interface TaskLite {
   project_id: string;
   current_due_date: string | null;
   status: string | null;
-  project: { id: string; name: string; owner_id: string | null; timelines_locked: boolean } | null;
+  project: { id: string; name: string; owner_id: string | null; timelines_locked: boolean; wbs_status: string } | null;
 }
 
 interface EntryRow {
@@ -209,7 +209,7 @@ export default function TimeTracking() {
         )
         .order("started_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
-      supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,status,project:projects(id,name,owner_id,timelines_locked)").eq("is_archived", false),
+      supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,status,project:projects(id,name,owner_id,timelines_locked,wbs_status)").eq("is_archived", false),
     ]);
     setEntries(((entryData as unknown as EntryRow[]) ?? []));
     setPeople((peopleData as PersonLite[]) ?? []);
@@ -325,7 +325,11 @@ export default function TimeTracking() {
   // it's already gated the other direction too (marking Done requires
   // logged hours, see [[project_capaciq_wbs_batch_2026_08_26_part2]]), so
   // once it's Done, time tracking against it is finished.
-  const loggableTasks = myTasks.filter((t) => t.project?.timelines_locked && t.status !== "Done");
+  // Phase 26 (2026-08-28): ...and neither should a task whose project has
+  // already been closed -- its Final Scope snapshot is frozen, so hours
+  // logged after close-out would never show up anywhere. Mirrors
+  // enforce_time_entry_baseline_lock's new closed-project branch.
+  const loggableTasks = myTasks.filter((t) => t.project?.timelines_locked && t.project?.wbs_status !== "closed" && t.status !== "Done");
   const loggableProjectOptions = (() => {
     const seen = new Map<string, string>();
     for (const t of loggableTasks) {

@@ -2797,7 +2797,31 @@ export default function WbsPlanning() {
         // snapshot/Audit Trail recording below is unaffected either way.
         if (t.status !== "Done") {
           const patch: Partial<TaskRow> = { start_date: chosen.start, current_due_date: chosen.end };
-          const { error: taskDateError } = await supabase.from("tasks").update(patch).eq("id", t.id);
+          // Bugfix (2026-08-28, Phase 26): on a STARTED project this
+          // write used to fail outright with "current_due_date can only
+          // be changed via an approved extension request" --
+          // enforce_due_date_lock (policies.sql) fires on any
+          // current_due_date change while projects.timelines_locked is
+          // true, and there was no bypass on this path. It only ever
+          // went unnoticed because record_wbs_edit (called further down,
+          // i.e. AFTER this loop) used to clear timelines_locked as a
+          // side effect, so the very first schedule-shifting Save after
+          // Start Project was hard-blocked and every later one slipped
+          // through a flag that should never have been cleared. That
+          // trigger exists to force AD-HOC due-date edits (Projects &
+          // Tasks page) through the Extension Request flow -- the WBS
+          // plan itself is the authoritative scheduling surface, and its
+          // Save is recorded in the Audit Trail. So while the project is
+          // still a draft nothing is locked and the plain update below
+          // is used unchanged; once it's started, the write goes through
+          // wbs_save_task_schedule (phase26_migration.sql), which sets
+          // app.bypass_due_date_lock for exactly these two columns and
+          // is restricted to can_manage_wbs (Full Access / project
+          // owner), so no new bypass is reachable from the Tasks page.
+          const { error: taskDateError } =
+            project.wbs_status === "draft"
+              ? await supabase.from("tasks").update(patch).eq("id", t.id)
+              : await supabase.rpc("wbs_save_task_schedule", { p_task_id: t.id, p_start: chosen.start, p_due: chosen.end });
           if (taskDateError) {
             await alert(`Couldn't save "${t.name}"'s dates: ${taskDateError.message}. Stopping here -- reloading to show what actually saved.`);
             await loadAll();
@@ -2871,7 +2895,11 @@ export default function WbsPlanning() {
       // silent=true so state still refreshes underneath without the
       // full unmount/remount.
       await loadAll(true);
-      await alert("Timelines have been saved. Start the project to lock the timelines.");
+      await alert(
+        project.wbs_status === "draft"
+          ? "Timelines have been saved. Start the project to lock the timelines."
+          : "Timelines have been saved. This project is already started, so the change is tracked as variance against its Baseline (see the Audit Trail)."
+      );
     } finally {
       setSaving(false);
     }

@@ -1069,7 +1069,17 @@ export default function Projects() {
     });
   }
   const canManageTasksIn = (projectId: string) => isFullAccess || isProjectOwner(projectId);
-  const canEditTask = (t: TaskRow) => canManageTasksIn(t.project_id) || t.assignee_id === me?.id;
+  // Closure is final (Sandra, repeatedly: "no re-opening"). Until Phase 26
+  // (2026-08-28) WbsPlanning.tsx's own `canEditWbs = wbs_status !== "closed"`
+  // was the ONLY thing anywhere enforcing that -- nothing on this page,
+  // and no database trigger, looked at wbs_status at all, so a closed
+  // project's tasks stayed fully editable from the Projects & Tasks list
+  // (Status, Actual Completion, validation/reopen, the timer, extension
+  // requests, deletion). Now gated here and, authoritatively, by
+  // enforce_closed_project_lock / delete_tasks_and_dependents /
+  // the phase-22 lock triggers in phase26_migration.sql.
+  const isProjectClosed = (projectId: string) => projects.find((p) => p.id === projectId)?.wbs_status === "closed";
+  const canEditTask = (t: TaskRow) => !isProjectClosed(t.project_id) && (canManageTasksIn(t.project_id) || t.assignee_id === me?.id);
   // Once a task's completion has been validated (owner/manager's
   // independent sign-off, see the "Validated" column below), its editable
   // fields freeze -- Assignee, Status, Effort, Estimated Hours, and
@@ -1106,6 +1116,7 @@ export default function Projects() {
   // is inactive. Approximate here (see nearestActiveManagerClient above);
   // validate_task_completion is the real gate.
   function canValidateTask(t: TaskRow): boolean {
+    if (isProjectClosed(t.project_id)) return false;
     if (canManageTasksIn(t.project_id)) return true;
     if (!t.assignee_id || !me?.id) return false;
     const immediateManager = chainPeople.find((p) => p.id === t.assignee_id)?.reports_to ?? null;
@@ -1126,6 +1137,7 @@ export default function Projects() {
   // reopen_task (SQL) is the authoritative gate; this is the client-side
   // approximation for whether to even show the button.
   function canReopenTask(t: TaskRow): boolean {
+    if (isProjectClosed(t.project_id)) return false;
     if (isFullAccess) return true;
     if (!t.assignee_id || !me?.id) return false;
     const immediateManager = chainPeople.find((p) => p.id === t.assignee_id)?.reports_to ?? null;
@@ -1282,6 +1294,8 @@ export default function Projects() {
 
   function dueDateExtStatus(t: TaskRow): { label: string; tone: string } {
     if (!isProjectLocked(t.project_id)) return { label: "No Extension", tone: "neutral" };
+    // (a closed project keeps showing whatever extension history it
+    // ended with -- only the "Request extension" action below is gated)
     const latest = latestExtensionRequest(t.id);
     if (!latest) return { label: "No Extension", tone: "neutral" };
     if (latest.status === "Pending") return { label: "Requested", tone: "purple" };
@@ -2461,6 +2475,12 @@ export default function Projects() {
   // immediately editable inline via the normal Name cell.
   async function addSubtask(parent: TaskWithDepth) {
     if (parent._depth > 0) return; // only 2 layers total: parent + 1 sub-task level
+    // Phase 26: closure is final -- also enforced by
+    // enforce_closed_project_lock, this is just the friendlier message.
+    if (isProjectClosed(parent.project_id)) {
+      await alert("This project is closed -- its scope is final, so no more tasks can be added to it.");
+      return;
+    }
     const { error } = await supabase.from("tasks").insert({
       project_id: parent.project_id,
       parent_task_id: parent.id,
@@ -3027,7 +3047,13 @@ export default function Projects() {
           // whose project baseline isn't locked yet -- same gate as
           // Status and Extension Requests.
           const baselineBlocksStart = !isProjectLocked(t.project_id) && !isRunningHere;
-          const disabled = timerBusy || (Boolean(running) && !isRunningHere) || doneBlocksStart || baselineBlocksStart;
+          // Phase 26 (2026-08-28): and no new time against a project
+          // whose close-out has already been approved -- the Final Scope
+          // snapshot is frozen, so hours logged after it would never be
+          // reflected anywhere. Mirrors enforce_time_entry_baseline_lock's
+          // new closed-project branch.
+          const closedBlocksStart = isProjectClosed(t.project_id) && !isRunningHere;
+          const disabled = timerBusy || (Boolean(running) && !isRunningHere) || doneBlocksStart || baselineBlocksStart || closedBlocksStart;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               {/* Fixed width (not sized to the text) so the button after it
@@ -3394,6 +3420,11 @@ export default function Projects() {
   async function createBlankTask(projectId: string) {
     if (!projectId) {
       alert("Create a project first before adding tasks.");
+      return;
+    }
+    // Phase 26: see addSubtask above.
+    if (isProjectClosed(projectId)) {
+      await alert("This project is closed -- its scope is final, so no more tasks can be added to it.");
       return;
     }
     // Default to the project's own due date rather than "today" -- a
