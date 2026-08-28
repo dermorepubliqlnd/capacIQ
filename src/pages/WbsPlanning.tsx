@@ -1236,11 +1236,26 @@ export default function WbsPlanning() {
     let worst: { name: string; end: string } | null = null;
     for (const depId of dependsOnIdsFor(t.id)) {
       const depEntry = chainByMode[mode].get(depId);
-      if (!depEntry) continue;
-      if (ownEntry.start <= depEntry.end) {
-        if (!worst || depEntry.end > worst.end) {
-          const depTask = tasks.find((x) => x.id === depId);
-          worst = { name: depTask?.name ?? "a predecessor", end: depEntry.end };
+      // Bugfix (2026-08-28, Sandra: Task 3 manually typed to start the
+      // SAME day Task 2's own Forecasted End falls on, with no warning):
+      // `depEntry` only exists if the dependency itself currently has a
+      // fully computed chain entry under this SAME mode (estimated hours +
+      // assignee + a resolvable schedule) -- a real predecessor can still
+      // have a perfectly real, currently-displayed End date (Done tasks'
+      // current_due_date, or a committed manual_end_date) without one, if
+      // its own chain computation comes back null for any reason. Falling
+      // straight through with `continue` in that case silently skipped the
+      // conflict check entirely, even though the predecessor's End date
+      // was right there in the raw task row the whole time. Fix: fall back
+      // to the dependency's own raw committed End (manual_end_date, then
+      // current_due_date) whenever its chain entry is missing, so a real
+      // on-screen End date is never invisible to this check.
+      const depTask = tasks.find((x) => x.id === depId);
+      const depEnd = depEntry?.end ?? depTask?.manual_end_date?.slice(0, 10) ?? depTask?.current_due_date?.slice(0, 10) ?? null;
+      if (!depEnd) continue;
+      if (ownEntry.start <= depEnd) {
+        if (!worst || depEnd > worst.end) {
+          worst = { name: depTask?.name ?? "a predecessor", end: depEnd };
         }
       }
     }
@@ -3486,6 +3501,26 @@ export default function WbsPlanning() {
     // picking an Owner or extending the schedule (adding/replanning tasks)
     // updates PM-overhead points immediately, same pattern as tasks above.
     const summary = mode !== "actual" && chain ? chainOverallSummary(chain) : null;
+    // Bugfix (2026-08-28, Sandra: "how come my PM overhead on 9/10 is not
+    // reflecting when the tasks list is until sept 10?"): this preview
+    // project row's `end_date` (which projectWorkingDays/previewPmHoursFor
+    // below use to decide which days still owe the owner PM overhead) came
+    // ONLY from chainOverallSummary(chain) -- but that walks chainByMode's
+    // own parent+leaf map, a SEPARATE derivation from `tasks` above (which
+    // is what the heat-map row itself actually renders and what Sandra is
+    // comparing against). The two are supposed to always agree, but
+    // there's no guarantee of that as either derivation evolves -- so
+    // PM-overhead's own end-of-window can silently land a day (or more)
+    // short of the last task day actually visible on screen, exactly this
+    // symptom. Fix: take whichever of the two is LATER, so PM overhead can
+    // never end before the last task day this same render pass is already
+    // showing, regardless of any future drift between the two derivations.
+    const tasksMaxEnd = tasks.reduce<string | null>((max, t) => {
+      const end = t.current_due_date ? t.current_due_date.slice(0, 10) : null;
+      if (!end) return max;
+      return !max || end > max ? end : max;
+    }, null);
+    const previewEnd = [summary?.end ?? null, tasksMaxEnd].filter((d): d is string => !!d).sort().pop() ?? null;
     // Narrowing note: `project` was already confirmed non-null by the
     // early `if (!project) return ...` guard above this whole render --
     // TS just can't see across this nested function's boundary, hence
@@ -3507,7 +3542,7 @@ export default function WbsPlanning() {
             id: projectId ?? "",
             owner_id: proj.owner_id,
             start_date: proj.start_date,
-            end_date: summary?.end ?? proj.start_date,
+            end_date: previewEnd ?? proj.start_date,
           },
     ];
     return { tasks, projects };
@@ -4261,6 +4296,36 @@ export default function WbsPlanning() {
                 setSearch={setUtilPersonSearch}
                 onChange={setUtilPersonFilter}
               />
+              <span style={{ width: 1, height: 20, background: "var(--border)", margin: "0 2px" }} />
+              {/* Expand all / Collapse all (2026-08-28, Sandra): bulk
+                  versions of the per-person "View scenarios" toggle below
+                  -- expands (or collapses) every person's 3 scenario rows
+                  at once instead of clicking each row individually.
+                  Expand-all only expands whoever is CURRENTLY visible
+                  under the person filter, so it can't silently expand
+                  someone hidden from view; Collapse-all always clears the
+                  whole set regardless of the filter, so switching the
+                  filter back never leaves a stray person stuck open. */}
+              <button
+                onClick={() =>
+                  setExpandedUtilPeople(
+                    new Set((utilPersonFilter ? people.filter((p) => utilPersonFilter.has(p.id)) : people).map((p) => p.id))
+                  )
+                }
+                className="timeline-segmented-btn"
+                style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
+                title="Expand every person's scenario rows"
+              >
+                Expand all
+              </button>
+              <button
+                onClick={() => setExpandedUtilPeople(new Set())}
+                className="timeline-segmented-btn"
+                style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
+                title="Collapse every person's scenario rows"
+              >
+                Collapse all
+              </button>
             </div>
             <div ref={utilSnapshotScrollRef} style={{ overflowX: "auto" }}>
               {/* NOTE (2026-08-26): table-layout:fixed + a <colgroup> was
@@ -4387,12 +4452,51 @@ export default function WbsPlanning() {
                                 alignItems: "center",
                                 gap: 4,
                                 overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
                               }}
                             >
                               <ChevronRight size={12} style={{ flexShrink: 0 }} />
-                              {p.name}
+                              {/* Bugfix (2026-08-28, Sandra: "the name column
+                                  cannot be adjusted also seems like a bug when
+                                  I am showing all scenarios... changing the
+                                  width. Especially in Rhen's name"): under
+                                  this table's auto layout, a `width`/`maxWidth`
+                                  on the <td> alone does NOT stop the browser
+                                  from sizing the PERSON column wider than that
+                                  -- auto layout still measures each cell's
+                                  unclipped, unwrapped text as its "preferred"
+                                  contribution to the column's width, and
+                                  `overflow: hidden` only clips PAINT, it
+                                  doesn't shrink that measurement. A long
+                                  un-truncated name (worst case in this
+                                  roster: "Rhenmart Neil Dela Cruz") was
+                                  therefore free to force the column wider
+                                  than utilPersonColW whenever it was the
+                                  widest thing being measured that render --
+                                  and since collapsed vs expanded rows measure
+                                  a DIFFERENT set of cells each time (the
+                                  Scenario column's "Committed (Existing)"
+                                  label only exists once expanded), the
+                                  column's real width could shift between the
+                                  two states. Giving this inner span its own
+                                  explicit pixel width (not just the outer
+                                  flex wrapper) bounds its CONTRIBUTION to
+                                  that measurement to a fixed size regardless
+                                  of the name's real length, so the column
+                                  itself can no longer be pushed wider by it
+                                  -- the name truncates with an ellipsis
+                                  instead, in both states alike. */}
+                              <span
+                                style={{
+                                  display: "inline-block",
+                                  width: Math.max(20, utilPersonColW - 34),
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  verticalAlign: "middle",
+                                }}
+                              >
+                                {p.name}
+                              </span>
                             </span>
                           </td>
                           <td colSpan={utilDays.length + 1} style={{ fontSize: 11, color: "var(--muted)" }}>
@@ -4433,7 +4537,22 @@ export default function WbsPlanning() {
                                     }}
                                   >
                                     <ChevronDown size={12} style={{ flexShrink: 0, marginTop: 1 }} />
-                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
+                                    {/* Same fixed-width bound as the collapsed
+                                        row's name span above (see its
+                                        comment) -- keeps the PERSON column's
+                                        real rendered width identical between
+                                        collapsed and expanded states. */}
+                                    <span
+                                      style={{
+                                        display: "inline-block",
+                                        width: Math.max(20, utilPersonColW - 34),
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      {p.name}
+                                    </span>
                                   </span>
                                 </td>
                               )}
@@ -4454,7 +4573,24 @@ export default function WbsPlanning() {
                               >
                                 <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: UTIL_PREVIEW_COLOR[mode], flexShrink: 0 }} />
-                                  {UTIL_PREVIEW_LABEL[mode]}
+                                  {/* Same fixed-width-bound trick as the
+                                      PERSON column above -- the widest label
+                                      here ("Committed (Existing)") is exactly
+                                      what previously let the SCENARIO column
+                                      grow past its declared 150px under auto
+                                      layout once expanded. */}
+                                  <span
+                                    style={{
+                                      display: "inline-block",
+                                      width: Math.max(20, 150 - 34),
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                      verticalAlign: "middle",
+                                    }}
+                                  >
+                                    {UTIL_PREVIEW_LABEL[mode]}
+                                  </span>
                                 </span>
                               </td>
                               {utilDays.map((d) => {
