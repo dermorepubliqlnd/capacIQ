@@ -72,12 +72,23 @@ function formatValue(v: unknown): string {
     const o = v as Record<string, unknown>;
     const hasDateShape = "start_full" in o || "end_full" in o || "start_standard" in o || "end_standard" in o;
     if (hasDateShape) {
+      // Bugfix (2026-08-31): these preferred `*_full` -- i.e. the
+      // THEORETICAL scenario -- and only fell back to `*_standard`.
+      // Every other date surface in the app reports FORECASTED: Save,
+      // the Baseline snapshot and the Close-out snapshot all run on
+      // activeMode, which has been the hard-coded constant "manual"
+      // (Forecasted) since the mode picker was removed. So the Audit
+      // Trail was the one place quoting a different scenario's dates
+      // than the plan it claims to be logging -- same class of bug as
+      // decide_wbs_closure's `v_mode = 'standard'` comparison
+      // (phase26_migration.sql section 7). Prefer Forecasted, fall back
+      // to Theoretical for old rows that only ever stored the full pair.
       const parts: string[] = [];
-      if (o.start_full || o.start_standard) {
-        parts.push(`Start: ${formatDate(String(o.start_full ?? o.start_standard).slice(0, 10))}`);
+      if (o.start_standard || o.start_full) {
+        parts.push(`Start: ${formatDate(String(o.start_standard ?? o.start_full).slice(0, 10))}`);
       }
-      if (o.end_full || o.end_standard) {
-        parts.push(`End: ${formatDate(String(o.end_full ?? o.end_standard).slice(0, 10))}`);
+      if (o.end_standard || o.end_full) {
+        parts.push(`End: ${formatDate(String(o.end_standard ?? o.end_full).slice(0, 10))}`);
       }
       return parts.length ? parts.join(" · ") : "—";
     }
