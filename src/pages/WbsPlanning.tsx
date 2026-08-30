@@ -2629,7 +2629,39 @@ export default function WbsPlanning() {
   async function flushPendingEdits(): Promise<boolean> {
     const taskEntries = Array.from(pendingTaskPatches.current.entries());
     for (const [taskId, patch] of taskEntries) {
-      const { data, error } = await supabase.from("tasks").update(patch).eq("id", taskId).select().single();
+      // Bugfix (2026-08-31, Phase 27 -- completes Phase 26's Fix 2):
+      // `start_date_standard` (Forecasted's own persisted Start floor) is
+      // guarded server-side by enforce_start_date_lock, which raises as
+      // soon as projects.timelines_locked is true. Phase 26 made that
+      // flag permanent once a project is started and routed saveDraft's
+      // OWN date write through wbs_save_task_schedule -- but this flush
+      // runs FIRST, at the top of the same Save, and the dependency
+      // auto-pilot effect stages a start_date_standard patch for every
+      // task whose predecessor moved. So on any started project with a
+      // dependency chain, Save died here with "this task's Start date is
+      // part of the project's baseline..." before Phase 26's fix was
+      // ever reached. Same reasoning as that fix: WBS Planning is the
+      // authoritative scheduling surface and its Save is recorded in the
+      // Audit Trail, so it goes through wbs_save_task_start
+      // (phase27_migration.sql) -- can_manage_wbs only, this one column
+      // only, closed projects and Done tasks still refused. A draft
+      // locks nothing, so it keeps taking the plain update below.
+      const rest: Partial<TaskRow> = { ...patch };
+      const movesStandardStart = project !== null && project.wbs_status !== "draft" && "start_date_standard" in rest;
+      const nextStandardStart = (rest.start_date_standard ?? null) as string | null;
+      if (movesStandardStart) delete rest.start_date_standard;
+
+      if (movesStandardStart) {
+        const { error } = await supabase.rpc("wbs_save_task_start", { p_task_id: taskId, p_start_standard: nextStandardStart });
+        if (error) {
+          await alert(`Couldn't save: ${error.message}`);
+          loadAll();
+          return false;
+        }
+      }
+
+      if (Object.keys(rest).length === 0) continue;
+      const { data, error } = await supabase.from("tasks").update(rest).eq("id", taskId).select().single();
       if (error) {
         await alert(`Couldn't save: ${error.message}`);
         loadAll();
