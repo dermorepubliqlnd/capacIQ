@@ -186,7 +186,15 @@ export function packFullCapacityQueue(
   // call to this function starts a fresh cursor (used to keep
   // Fixed-Schedule tasks from sharing a cursor with anything else, and
   // with each other).
-  function walk(queue: FullCapacityQueueTask[], startCursor: { date: Date; remaining: number }, guardState: { n: number }) {
+  // Bugfix (2026-08-31, scheduling-engine audit Fix 7): the day-step guard
+  // used to be ONE shared counter across the entire queue, incremented on
+  // every cursor advance (weekend/holiday skips included). Past roughly
+  // 30-40 real tasks it ran out mid-queue and every remaining task silently
+  // collapsed to `start === end === wherever the cursor stopped`, with no
+  // error and no visual cue. `buildForwardSchedule` (capacityScheduler.ts)
+  // has always reset its guard per task; this now matches it -- the guard is
+  // a per-task runaway-loop backstop, not a queue-length budget.
+  function walk(queue: FullCapacityQueueTask[], startCursor: { date: Date; remaining: number }) {
     let cursorDate = startCursor.date;
     let cursorRemaining = startCursor.remaining;
     while (!isWorkingDay(cursorDate, holidays)) {
@@ -208,8 +216,9 @@ export function packFullCapacityQueue(
       let remaining = task.estimatedHours;
       let firstDate: string | null = null;
       let lastDate: string | null = null;
-      while (remaining > 0 && guardState.n < maxDaysGuard) {
-        guardState.n++;
+      let guard = 0;
+      while (remaining > 0 && guard < maxDaysGuard) {
+        guard++;
         if (!isWorkingDay(cursorDate, holidays) || cursorRemaining <= 0) {
           cursorDate = addDays(cursorDate, 1);
           cursorRemaining = dailyHours;
@@ -226,7 +235,6 @@ export function packFullCapacityQueue(
     }
   }
 
-  const guardState = { n: 0 };
   // Fixed-Schedule tasks first, each independently at the full daily
   // ceiling (never shares/crowds a day with anything else) -- same
   // "honest overallocation, never silently deferred" assumption
@@ -234,7 +242,7 @@ export function packFullCapacityQueue(
   const fixed = ordered.filter((t) => t.isFixedSchedule);
   const flexible = ordered.filter((t) => !t.isFixedSchedule);
   for (const t of fixed) {
-    walk([t], { date: parseLocalDate(t.ownStartDateStr), remaining: dailyHours }, guardState);
+    walk([t], { date: parseLocalDate(t.ownStartDateStr), remaining: dailyHours });
   }
 
   if (flexible.length) {
@@ -251,7 +259,7 @@ export function packFullCapacityQueue(
         cursorStart = { date: addDays(parseLocalDate(lastFixedEnd), 1), remaining: dailyHours };
       }
     }
-    walk(flexible, cursorStart, guardState);
+    walk(flexible, cursorStart);
   }
 
   return { starts, ends };

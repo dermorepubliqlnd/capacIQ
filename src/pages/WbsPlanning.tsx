@@ -245,6 +245,41 @@ interface DependencyRow {
 // job on its own, and Assignee becomes a normal per-task field again
 // (same as the rest of the app), not something tied to a scheduling mode.
 type Mode = "full_capacity" | "standard" | "manual";
+
+// Scheduling-engine audit (2026-08-31), Fix 4: a map of PROPOSED Start
+// dates (task id -> "YYYY-MM-DD") layered over the stored ones, so a
+// hypothetical schedule can be run through the SAME engines the live
+// table renders from. `null` = no overrides (the live schedule).
+// Scheduling-engine audit (2026-08-31), Fix 8: PostgREST caps an
+// unbounded select at 1000 rows and returns the truncated set with no
+// error. The cross-project task list and the person_availability /
+// holidays lookups this page's schedulers read are all growing tables --
+// silently losing rows past row 1000 would quietly corrupt every
+// capacity calculation on the page. Page through explicitly instead.
+const SUPABASE_PAGE_SIZE = 1000;
+async function fetchAllRows<T>(run: (from: number, to: number) => PromiseLike<{ data: unknown; error: unknown }>): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; from < 100000; from += SUPABASE_PAGE_SIZE) {
+    const { data } = await run(from, from + SUPABASE_PAGE_SIZE - 1);
+    const rows = (data as T[]) ?? [];
+    out.push(...rows);
+    if (rows.length < SUPABASE_PAGE_SIZE) break;
+  }
+  return out;
+}
+
+type StartOverrides = Map<string, string> | null;
+
+// One memoization scope for a single set of overrides -- both schedulers
+// are lazily built per assignee and cached here, exactly like the two
+// separate per-render Maps that preceded this.
+interface SchedContext {
+  effTasks: SchedTaskRow[];
+  parentIds: Set<string>;
+  theoTasks: FullCapacityQueueTask[];
+  forward: Map<string, ReturnType<typeof buildForwardSchedule>>;
+  theoretical: Map<string, ReturnType<typeof packFullCapacityQueue>>;
+}
 // Phase 21 (2026-08-24): Sandra -- rename "Manual" to "Forecasted"
 // everywhere in the UI (it's the committed/planned schedule, not a
 // manual-entry concept) and standardize display order to Forecasted,
@@ -857,7 +892,7 @@ export default function WbsPlanning() {
     // pass silent=true to skip that full-page loading flash entirely --
     // state still updates underneath, but the page never unmounts.
     if (!silent) setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, { data: avail }, { data: hols }, { data: allTks }, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }] = await Promise.all([
+    const [{ data: proj }, { data: tks }, { data: ppl }, avail, hols, allTks, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status,category,source_id,priority,effort_level").eq("id", projectId).single(),
       supabase
         .from("tasks")
@@ -868,9 +903,18 @@ export default function WbsPlanning() {
         .eq("is_archived", false)
         .order("sort_order"),
       supabase.from("people").select("id,name,daily_capacity_hours,is_active,color").eq("is_active", true).order("name"),
-      supabase.from("person_availability").select("person_id,date,status"),
-      supabase.from("holidays").select("date"),
-      supabase.from("tasks").select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order,work_type_id").eq("is_archived", false),
+      // Paged (audit Fix 8) -- these three feed the capacity schedulers and
+      // would be silently truncated at PostgREST's 1000-row cap otherwise.
+      fetchAllRows<AvailabilityRow>((from, to) => supabase.from("person_availability").select("person_id,date,status").order("date").range(from, to)),
+      fetchAllRows<HolidayRow>((from, to) => supabase.from("holidays").select("date").order("date").range(from, to)),
+      fetchAllRows<UtilTaskRow>((from, to) =>
+        supabase
+          .from("tasks")
+          .select("id,project_id,parent_task_id,assignee_id,status,start_date,current_due_date,estimated_hours,effort,sort_order,work_type_id")
+          .eq("is_archived", false)
+          .order("id")
+          .range(from, to)
+      ),
       supabase.from("projects").select("id,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
       supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
@@ -882,9 +926,9 @@ export default function WbsPlanning() {
     // here. See the activeMode declaration above for why.
     setTasks((tks as TaskRow[]) ?? []);
     setPeople((ppl as PersonRow[]) ?? []);
-    setAvailability((avail as AvailabilityRow[]) ?? []);
-    setHolidays((hols as HolidayRow[]) ?? []);
-    setAllTasks((allTks as UtilTaskRow[]) ?? []);
+    setAvailability(avail);
+    setHolidays(hols);
+    setAllTasks(allTks);
     setAllProjects((allProjs as UtilProjectRow[]) ?? []);
     setWorkTypes((wts as WorkTypeOption[]) ?? []);
     setOutputTypes((ots as OutputTypeOption[]) ?? []);
@@ -1136,20 +1180,72 @@ export default function WbsPlanning() {
     let latest: string | null = null;
     for (const depId of depIds) {
       const entry = chainByMode[mode].get(depId);
-      if (!entry) continue;
-      const candidate = nextWorkingDayAfter(entry.end, holidaySet);
+      // Scheduling-engine audit (2026-08-31), Fix 8: same raw-End fallback
+      // `dependencyConflict` already gained -- a predecessor with no
+      // estimated hours (or any other reason its chain entry comes back
+      // null) still has a real committed End on screen, and skipping it
+      // here meant the warning triangle fired while the successor's Start
+      // never actually moved.
+      const depTask = tasks.find((x) => x.id === depId);
+      const depEnd = entry?.end ?? depTask?.manual_end_date?.slice(0, 10) ?? depTask?.current_due_date?.slice(0, 10) ?? null;
+      if (!depEnd) continue;
+      const candidate = nextWorkingDayAfter(depEnd, holidaySet);
       if (!latest || candidate > latest) latest = candidate;
     }
     return latest;
   }
 
+  // Scheduling-engine audit (2026-08-31), Fix 2 + Fix 3.
+  //
+  // Fix 3 -- cycle protection used to be DIRECT PAIRS ONLY ("does B
+  // already depend on A?"). A -> B -> C -> A was accepted, and there is no
+  // DB guard beyond a self-dependency CHECK, so the reactive dependency
+  // auto-pilot effect below would then push each Start monotonically
+  // forward on every commit and never converge -- React "Maximum update
+  // depth exceeded". This walks the FULL transitive closure instead.
+  function wouldCreateDependencyCycle(taskId: string, dependsOnId: string): boolean {
+    if (taskId === dependsOnId) return true;
+    const seen = new Set<string>();
+    const stack = [dependsOnId];
+    while (stack.length) {
+      const cur = stack.pop() as string;
+      if (cur === taskId) return true;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const d of dependsOnIdsFor(cur)) stack.push(d);
+    }
+    return false;
+  }
+
+  // Fix 2 -- a parent <-> child dependency put two effects into a fight
+  // over the same columns: the parent rollup effect writes
+  // start_date_full/start_date_standard = min(children), while the
+  // dependency auto-pilot effect writes the same columns from
+  // nextWorkingDayAfter(predecessor.end). Each commit re-triggers the
+  // other -> "Maximum update depth exceeded". A parent's span is by
+  // definition the union of its children's, so a dependency between the
+  // two is meaningless anyway; it's refused here and hidden from the
+  // picker (DependsOnPicker's own candidate filter).
+  function isRelatedTask(aId: string, bId: string): boolean {
+    const a = tasks.find((t) => t.id === aId);
+    const b = tasks.find((t) => t.id === bId);
+    if (!a || !b) return false;
+    return a.parent_task_id === b.id || b.parent_task_id === a.id;
+  }
+
   async function addDependency(taskId: string, dependsOnId: string) {
-    // Basic guard against an immediate two-way cycle (A depends on B, which
-    // already depends on A). Longer cycles aren't checked in this v1 --
-    // acceptable given the small task counts these projects run at, but a
-    // real limitation if this ever needs to be bulletproof.
-    if (dependsOnIdsFor(dependsOnId).includes(taskId)) {
-      await alert("Can't add this -- it would create a circular dependency (that task already depends on this one).");
+    // Scheduling-engine audit (2026-08-31), Fix 2/Fix 3 -- see
+    // wouldCreateDependencyCycle / isRelatedTask above for why these two
+    // guards exist (both used to end in a "Maximum update depth exceeded"
+    // page hang rather than a clean refusal).
+    if (isRelatedTask(taskId, dependsOnId)) {
+      await alert(
+        "Can't add this -- a parent task and its own sub-task can't depend on each other. A parent's dates are already derived from its sub-tasks' dates."
+      );
+      return;
+    }
+    if (wouldCreateDependencyCycle(taskId, dependsOnId)) {
+      await alert("Can't add this -- it would create a circular dependency (that task already depends on this one, directly or through a chain).");
       return;
     }
     setDependencies((prev) => [...prev, { task_id: taskId, depends_on_task_id: dependsOnId }]);
@@ -1166,10 +1262,19 @@ export default function WbsPlanning() {
       patch.start_date_full = suggestedFull;
       patch.start_full_auto = true; // fresh dependency -- start tracking it live again
     }
-    const suggestedStandard = suggestedStartFor(allDeps, "standard");
+    const suggestedStandard = suggestedStartFor(allDeps, "manual");
     if (suggestedStandard) {
       patch.start_date_standard = suggestedStandard;
       patch.start_standard_auto = true;
+      // Scheduling-engine audit (2026-08-31), Fix 6 -- `manual_end_date`
+      // was a ghost field: written by the Forecasted End cell, read ONLY
+      // while start_standard_auto === false, and never cleared by
+      // anything. Re-arming auto-pilot here (or in removeDependency
+      // below) left a stale, now-unrelated End sitting in the row, ready
+      // to resurrect the moment a Start was typed again and spread the
+      // task's hours across a nonsense window. Auto-pilot and a committed
+      // manual End are mutually exclusive states, so clear it here.
+      patch.manual_end_date = null;
     }
     if (Object.keys(patch).length) saveTaskField(taskId, patch);
   }
@@ -1215,11 +1320,14 @@ export default function WbsPlanning() {
     // same guard the continuous dependency effect below already uses, so
     // this never clobbers a date Sandra typed in on purpose.
     if (t.start_standard_auto !== false) {
-      const nextStandard = remainingDeps.length ? suggestedStartFor(remainingDeps, "standard") : naturalStandard;
+      const nextStandard = remainingDeps.length ? suggestedStartFor(remainingDeps, "manual") : naturalStandard;
       const currentStandard = t.start_date_standard ? t.start_date_standard.slice(0, 10) : null;
       if (nextStandard && nextStandard !== currentStandard) {
         patch.start_date_standard = nextStandard;
         patch.start_standard_auto = true;
+        // Fix 6 (2026-08-31): re-arming auto-pilot must clear the ghost
+        // manual End -- see addDependency above.
+        if (t.manual_end_date) patch.manual_end_date = null;
       }
     }
     if (Object.keys(patch).length) saveTaskField(taskId, patch);
@@ -1405,7 +1513,7 @@ export default function WbsPlanning() {
       if (minStandard !== (t.start_date_standard ? t.start_date_standard.slice(0, 10) : null)) patch.start_date_standard = minStandard;
       const { id: rolledUpAssignee } = parentAssigneeState(t.id);
       if (rolledUpAssignee !== t.assignee_id) patch.assignee_id = rolledUpAssignee;
-      if (Object.keys(patch).length > 0) saveTaskField(t.id, patch);
+      if (Object.keys(patch).length > 0) stageTaskField(t.id, patch); // derived, not a user edit -- see stageTaskField
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
@@ -1458,6 +1566,15 @@ export default function WbsPlanning() {
       // auto-pilot effect must never stage a patch for one, even if its
       // live-computed suggested Start still drifts from what's stored.
       if (t.status === "Done") continue;
+      // Scheduling-engine audit (2026-08-31), Fix 2: a PARENT's
+      // start_date_full/start_date_standard are owned exclusively by the
+      // rollup effect above (min of its children). If this effect ever
+      // wrote them too -- which it did the moment anyone gave a parent a
+      // "Depends on" link -- the two effects overwrote each other on every
+      // commit and React threw "Maximum update depth exceeded". Parents
+      // are now off-limits here; the picker also refuses to offer a
+      // parent<->child link at all (isRelatedTask / DependsOnPicker).
+      if (hasChildren(t.id)) continue;
       const depIds = dependsOnIdsFor(t.id);
       if (!depIds.length) continue;
       for (const mode of MODES.filter((m) => m !== "standard")) {
@@ -1467,7 +1584,7 @@ export default function WbsPlanning() {
         const suggested = suggestedStartFor(depIds, mode);
         const current = t[startField] ? (t[startField] as string).slice(0, 10) : null;
         if (suggested && suggested !== current) {
-          saveTaskField(t.id, { [startField]: suggested } as Partial<TaskRow>);
+          stageTaskField(t.id, { [startField]: suggested } as Partial<TaskRow>); // derived, not a user edit
         }
       }
     }
@@ -1488,44 +1605,15 @@ export default function WbsPlanning() {
   // dependency-auto-refresh machinery already keeps up to date) breaks
   // that cycle cleanly.
   const fixedWorkTypeIds = new Set(workTypes.filter((w) => w.is_fixed_schedule).map((w) => w.id));
-  const effectiveTasksForSched: SchedTaskRow[] = [
-    ...allTasks
-      .filter((t) => t.project_id !== projectId)
-      .map((t) => ({
-        id: t.id,
-        project_id: t.project_id,
-        parent_task_id: t.parent_task_id ?? null,
-        assignee_id: t.assignee_id,
-        status: t.status,
-        start_date: t.start_date,
-        current_due_date: t.current_due_date,
-        estimated_hours: t.estimated_hours ?? null,
-        sort_order: t.sort_order ?? null,
-        is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
-      })),
-    ...tasks.map((t) => ({
-      id: t.id,
-      project_id: t.project_id,
-      parent_task_id: t.parent_task_id,
-      assignee_id: t.assignee_id,
-      status: t.status,
-      // Bugfix (2026-08-24, Sandra: "why is the capacity based timelines
-      // changing when i change the manual dates?"): start_date_standard
-      // is Manual mode's own private override column now (Phase 12
-      // repurposed it from Capacity-Based's old, since-retired override
-      // slot) -- reading it unconditionally here fed Manual's typed Start
-      // straight into Capacity-Based's own whole-queue walk. Once a task
-      // has been Manually overridden (start_standard_auto === false),
-      // Capacity-Based must fall back to the task's plain start_date
-      // instead, same as it already does for every OTHER project's tasks
-      // above (which never look at start_date_standard at all).
-      start_date: t.start_standard_auto === false ? t.start_date : (t.start_date_standard ?? t.start_date),
-      current_due_date: t.current_due_date,
-      estimated_hours: t.estimated_hours,
-      sort_order: t.sort_order,
-      is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
-    })),
-  ];
+
+  // Scheduling-engine audit (2026-08-31), Fix 4 -- "Refresh dates runs a
+  // different scheduler than the table renders". Both schedulers below are
+  // now reachable with an optional map of PROPOSED Start dates
+  // (`StartOverrides`) layered over the stored ones, so `refreshDates` can
+  // simulate a candidate schedule with the exact same engines the live
+  // table uses instead of maintaining a parallel, subtly-different
+  // implementation of its own (`entryWithOverride`, removed). `null`
+  // overrides = the live, on-screen schedule.
   const effectiveProjectsForSched: SchedProjectRow[] = [
     ...allProjects
       .filter((p) => p.id !== projectId)
@@ -1539,19 +1627,118 @@ export default function WbsPlanning() {
     },
   ];
   const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
-  const schedParentTaskIds = new Set(effectiveTasksForSched.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
   const isCompleteStatusForSched = (status: string | null) => status === "Done";
-  const schedulesByAssignee = new Map<string, ReturnType<typeof buildForwardSchedule>>();
-  function scheduleFor(personId: string): ReturnType<typeof buildForwardSchedule> {
-    let sched = schedulesByAssignee.get(personId);
+
+  function buildEffectiveTasksForSched(overrides: StartOverrides): SchedTaskRow[] {
+    return [
+      ...allTasks
+        .filter((t) => t.project_id !== projectId)
+        .map((t) => ({
+          id: t.id,
+          project_id: t.project_id,
+          parent_task_id: t.parent_task_id ?? null,
+          assignee_id: t.assignee_id,
+          status: t.status,
+          start_date: t.start_date,
+          current_due_date: t.current_due_date,
+          estimated_hours: t.estimated_hours ?? null,
+          sort_order: t.sort_order ?? null,
+          is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
+        })),
+      ...tasks.map((t) => ({
+        id: t.id,
+        project_id: t.project_id,
+        parent_task_id: t.parent_task_id,
+        assignee_id: t.assignee_id,
+        status: t.status,
+        // Bugfix (2026-08-24, Sandra: "why is the capacity based timelines
+        // changing when i change the manual dates?"): start_date_standard
+        // is Forecasted's own private override column now -- once a task
+        // has been manually overridden (start_standard_auto === false) the
+        // queue must fall back to the task's plain start_date, same as it
+        // already does for every OTHER project's tasks above.
+        start_date: overrides?.get(t.id) ?? (t.start_standard_auto === false ? t.start_date : (t.start_date_standard ?? t.start_date)),
+        current_due_date: t.current_due_date,
+        estimated_hours: t.estimated_hours,
+        sort_order: t.sort_order,
+        is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
+      })),
+    ];
+  }
+
+  // Theoretical/Full-Capacity same-person day-packing (2026-08-26,
+  // Sandra: "if Jo still has 4.5 hours left for Aug 5, then this next
+  // task can start on the same day with overflow to the following
+  // day"). Deliberately project-scoped (unlike buildForwardSchedule
+  // below, which is cross-project) -- Theoretical answers "what does
+  // THIS project's own plan look like at a flat full day".
+  //
+  // Scheduling-engine audit (2026-08-31), Fix 1 -- THE QUEUE IS LEAVES,
+  // NOT ROOTS. This used to filter `!t.parent_task_id` (root tasks only:
+  // parents included, sub-tasks excluded), the exact inverse of what
+  // buildForwardSchedule does for Forecasted (`parentTaskIds` drops
+  // parents and schedules leaves). Two consequences, both live bugs:
+  // (a) every sub-task missed the queue entirely and silently fell into
+  // computeEntry's defensive solo flat-rate fallback, so Theoretical
+  // day-packing simply did not exist inside a parent group; (b) a
+  // parent's rolled-up hours (which are just the SUM of its children's)
+  // were consumed by a phantom queue entry that buildChain then threw
+  // away and re-derived from the children -- so a parent's hours were
+  // charged against its assignee's Theoretical day capacity on top of
+  // the children's own, pushing that person's other root tasks later
+  // for no reason visible anywhere on screen. Both modes now schedule
+  // the same set of tasks (leaves) and derive parents identically
+  // (min/max across children, in buildChain).
+  function buildTheoreticalTasksForSched(overrides: StartOverrides): FullCapacityQueueTask[] {
+    const out: FullCapacityQueueTask[] = [];
+    for (const t of tasks) {
+      if (hasChildren(t.id)) continue; // parents are derived from children, never queued
+      if (!t.assignee_id) continue;
+      if (t.status === "Done") continue;
+      if ((t.estimated_hours ?? 0) <= 0) continue;
+      const raw = overrides?.get(t.id) ?? (t.start_date_full ? t.start_date_full.slice(0, 10) : null);
+      if (!raw) continue;
+      const own = raw.slice(0, 10);
+      out.push({
+        id: t.id,
+        estimatedHours: t.estimated_hours ?? 0,
+        ownStartDateStr: own,
+        // Bugfix (2026-08-26, Sandra: Joseph's Task 3/4 still weren't
+        // packing after the first fix): only a task that's ACTUALLY
+        // dependency-linked gets a real floor here -- an ordinary,
+        // unconstrained sibling's stored start_date_full is just whatever
+        // default it happened to get at creation time, not a genuine
+        // constraint, so it must NOT block the live packer from pulling
+        // it earlier. See FullCapacityQueueTask's doc comment.
+        floorDateStr: dependsOnIdsFor(t.id).length > 0 ? own : undefined,
+        sortOrder: t.sort_order ?? null,
+        isFixedSchedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
+      });
+    }
+    return out;
+  }
+
+  function makeSchedContext(overrides: StartOverrides): SchedContext {
+    const effTasks = buildEffectiveTasksForSched(overrides);
+    return {
+      effTasks,
+      parentIds: new Set(effTasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string)),
+      theoTasks: buildTheoreticalTasksForSched(overrides),
+      forward: new Map(),
+      theoretical: new Map(),
+    };
+  }
+
+  function scheduleFor(ctx: SchedContext, personId: string): ReturnType<typeof buildForwardSchedule> {
+    let sched = ctx.forward.get(personId);
     if (!sched) {
       const person = people.find((p) => p.id === personId);
       if (!person) return { perDay: new Map(), taskDueDates: new Map(), taskStartDates: new Map() };
       sched = buildForwardSchedule({
         personId,
         fromDateStr: today,
-        tasks: effectiveTasksForSched,
-        parentTaskIds: schedParentTaskIds,
+        tasks: ctx.effTasks,
+        parentTaskIds: ctx.parentIds,
         isCompleteStatus: isCompleteStatusForSched,
         projects: effectiveProjectsForSched,
         person: { id: person.id, daily_capacity_hours: person.daily_capacity_hours },
@@ -1560,67 +1747,32 @@ export default function WbsPlanning() {
         maxDaysGuard: 365,
         // Bugfix (2026-08-26, Sandra: Task 1 started 08/03 but Forecasted
         // End showed today instead of 08/04): WBS Planning's own
-        // Forecasted/Capacity-Based table should schedule from a task's
-        // REAL Start date even when it's in the past, unlike
-        // Utilization.tsx's "today and future" grid (this scheduler's
-        // other caller, which keeps the old floor-at-today behavior on
-        // purpose). Sandra confirmed it's fine for Forecasted to diverge
-        // from Theoretical's flat math here -- this still runs the full
-        // capacity-aware walk, it just no longer clamps a backdated
-        // start up to today first.
+        // Forecasted table should schedule from a task's REAL Start date
+        // even when it's in the past, unlike Utilization.tsx's "today and
+        // future" grid (this scheduler's other caller, which keeps the old
+        // floor-at-today behavior on purpose).
         floorEffectiveStartAtFromDate: false,
       });
-      schedulesByAssignee.set(personId, sched);
+      ctx.forward.set(personId, sched);
     }
     return sched;
   }
 
-  // Theoretical/Full-Capacity same-person day-packing (2026-08-26,
-  // Sandra: "if Jo still has 4.5 hours left for Aug 5, then this next
-  // task can start on the same day with overflow to the following
-  // day"). Deliberately project-scoped (unlike scheduleFor above, which
-  // is cross-project for Capacity-Based/Utilization) -- Theoretical is
-  // meant to answer "what does THIS project's own plan look like at a
-  // flat full day", not fold in a person's other projects' work too.
-  // See packFullCapacityQueue's own doc comment (taskScheduling.ts) for
-  // why this can't just reuse buildForwardSchedule: that engine treats
-  // every task's own recorded Start as a hard per-task floor (right for
-  // Capacity-Based's "honor what's already been declared" semantics),
-  // which is exactly what stopped Theoretical from ever pulling a later
-  // sibling task earlier to fill an earlier one's same-day leftover
-  // capacity.
-  const theoreticalTasksForSched: FullCapacityQueueTask[] = tasks
-    .filter((t) => !t.parent_task_id && t.assignee_id && t.status !== "Done" && (t.estimated_hours ?? 0) > 0 && t.start_date_full)
-    .map((t) => ({
-      id: t.id,
-      estimatedHours: t.estimated_hours ?? 0,
-      ownStartDateStr: (t.start_date_full as string).slice(0, 10),
-      // Bugfix (2026-08-26, Sandra: Joseph's Task 3/4 still weren't
-      // packing after the first fix): only a task that's ACTUALLY
-      // dependency-linked gets a real floor here -- an ordinary,
-      // unconstrained sibling's stored start_date_full is just whatever
-      // default it happened to get at creation time (e.g. "day after
-      // the previous row"), not a genuine constraint, so it must NOT
-      // block the live packer from pulling it earlier into a
-      // predecessor's same-day leftover capacity. See
-      // FullCapacityQueueTask's own doc comment (taskScheduling.ts).
-      floorDateStr: dependsOnIdsFor(t.id).length > 0 ? (t.start_date_full as string).slice(0, 10) : undefined,
-      sortOrder: t.sort_order ?? null,
-      isFixedSchedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
-    }));
-  const theoreticalSchedulesByAssignee = new Map<string, ReturnType<typeof packFullCapacityQueue>>();
-  function theoreticalScheduleFor(personId: string): ReturnType<typeof packFullCapacityQueue> {
-    let sched = theoreticalSchedulesByAssignee.get(personId);
+  function theoreticalScheduleFor(ctx: SchedContext, personId: string): ReturnType<typeof packFullCapacityQueue> {
+    let sched = ctx.theoretical.get(personId);
     if (!sched) {
       sched = packFullCapacityQueue(
-        theoreticalTasksForSched.filter((t) => tasks.find((x) => x.id === t.id)?.assignee_id === personId),
+        ctx.theoTasks.filter((t) => tasks.find((x) => x.id === t.id)?.assignee_id === personId),
         holidaySet,
         FULL_CAPACITY_DAILY_HOURS
       );
-      theoreticalSchedulesByAssignee.set(personId, sched);
+      ctx.theoretical.set(personId, sched);
     }
     return sched;
   }
+
+  // The one context the on-screen table renders from.
+  const liveSched = makeSchedContext(null);
 
   function nextWorkingDayAfter(dateStr: string, holidays: HolidaySet): string {
     let d = addDays(parseLocalDate(dateStr), 1);
@@ -1639,7 +1791,7 @@ export default function WbsPlanning() {
   // same-project siblings into each other's same-day leftover capacity
   // via theoreticalScheduleFor above, since it's meant to represent the
   // optimistic "every available hour actually gets used" reference.
-  function computeEntry(t: TaskRow, mode: Mode): ChainEntry | null {
+  function computeEntry(t: TaskRow, mode: Mode, ctx: SchedContext): ChainEntry | null {
     // Phase 12 (2026-08-21): Sandra -- "add a table for Manual... the
     // manual timetable would basically reflect Capacity-Based by
     // default, meaning any changes can only be done in Manual... don't
@@ -1662,7 +1814,7 @@ export default function WbsPlanning() {
       const hours = t.estimated_hours;
       if (hours === null || hours === undefined) return null;
       if (!t.assignee_id) return null;
-      const sched = scheduleFor(t.assignee_id);
+      const sched = scheduleFor(ctx, t.assignee_id);
       const schedStart = sched.taskStartDates.get(t.id);
       const schedEnd = sched.taskDueDates.get(t.id);
       // Touched -- the typed Start always wins, walked forward at a flat
@@ -1682,7 +1834,12 @@ export default function WbsPlanning() {
         // evenly across its own start_date/current_due_date window, so
         // once Save writes this End into current_due_date, the 5h/day
         // heat-map shows up automatically.
-        if (t.manual_end_date) {
+        // Fix 6 (2026-08-31): an End that predates the Start is never a
+        // real window -- ignore it and fall through to the flat-rate calc
+        // below rather than reporting a bogus 1-day duration. Belt-and-
+        // braces alongside the two UI guards, since legacy rows written
+        // before those guards existed can still hold one.
+        if (t.manual_end_date && t.manual_end_date.slice(0, 10) >= start) {
           const end = t.manual_end_date.slice(0, 10);
           const durationDays = Math.max(1, workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length);
           return {
@@ -1726,7 +1883,7 @@ export default function WbsPlanning() {
       const hours = t.estimated_hours;
       if (hours === null || hours === undefined) return null;
       if (!t.assignee_id) return null;
-      const sched = scheduleFor(t.assignee_id);
+      const sched = scheduleFor(ctx, t.assignee_id);
       const schedStart = sched.taskStartDates.get(t.id);
       const schedEnd = sched.taskDueDates.get(t.id);
       if (!schedStart || !schedEnd) return null;
@@ -1758,7 +1915,7 @@ export default function WbsPlanning() {
       const r = fullCapacityScenario(hours, start, holidaySet);
       return { start, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
     }
-    const sched = theoreticalScheduleFor(t.assignee_id);
+    const sched = theoreticalScheduleFor(ctx, t.assignee_id);
     const schedStart = sched.starts.get(t.id);
     const schedEnd = sched.ends.get(t.id);
     if (!schedStart || !schedEnd) {
@@ -1776,11 +1933,11 @@ export default function WbsPlanning() {
   // own Start date; a parent task's entry is then derived as the
   // min(start)/max(end) span across its own sub-tasks (never computed
   // from its own Start field directly, same as Est. hrs).
-  function buildChain(mode: Mode): Map<string, ChainEntry | null> {
+  function buildChain(mode: Mode, ctx: SchedContext = liveSched): Map<string, ChainEntry | null> {
     const result = new Map<string, ChainEntry | null>();
     for (const t of orderedTasks) {
       if (t.depth === 0 && hasChildren(t.id)) continue; // parents handled below
-      result.set(t.id, computeEntry(t, mode));
+      result.set(t.id, computeEntry(t, mode, ctx));
     }
     for (const t of orderedTasks) {
       if (t.depth !== 0 || !hasChildren(t.id)) continue;
@@ -2345,242 +2502,122 @@ export default function WbsPlanning() {
   // purely visual -- it doesn't recompute anyone's Start. This button
   // re-seeds Start for every task still on "auto pilot" (not manually
   // overridden) to a fresh, internally-consistent schedule: a task with a
-  // "Depends on" link starts the day after that dependency's (freshly
-  // recomputed) End; a task with no dependency chains after the previous
-  // task in schedule order, same default-seeding math `addTopLevelTask`/
-  // `addSubtask` already use for a brand-new task. Root tasks chain among
-  // other root tasks; a parent's own sub-tasks chain only among their own
-  // siblings (mirrors buildChain's own two-tier structure).
+  // "Depends on" link starts the working day after that dependency's
+  // (freshly recomputed) End; the very first task in schedule order anchors
+  // on the project's own Start date.
+  //
+  // Scheduling-engine audit (2026-08-31), two fixes in one rewrite:
+  //
+  //  * Fix 4 -- Refresh used to run a PARALLEL scheduler of its own
+  //    (`entryWithOverride`, removed: fullCapacityScenario for Theoretical,
+  //    capacityBasedScenario for Forecasted) while the live table renders
+  //    from packFullCapacityQueue / buildForwardSchedule. Downstream starts
+  //    were therefore chained off End dates the page then re-rendered
+  //    differently -- the "Refresh made it worse" pattern. The sweep below
+  //    simulates each candidate schedule with `buildChain(mode,
+  //    makeSchedContext(proposed))`, i.e. literally the same engines the
+  //    table uses, so what Refresh predicts is exactly what renders once
+  //    the patches are written. Single source of truth, no second copy.
+  //
+  //  * Fix 5 -- ordering used to be a topological sort over ROOT GROUPS
+  //    only; inside a group, children were walked in raw row order, so a
+  //    predecessor listed BELOW its dependent was simply absent from the
+  //    `entries` map and that dependency was silently skipped for the whole
+  //    pass. Ordering is now a true topological sort across every leaf
+  //    task, with a row-order fallback so it can never hang.
   async function refreshDates() {
-    // Round 17 bugfix (Sandra): repeated clicks kept pushing tasks further
-    // out. Round 17's first fix just froze any task that was itself a
-    // dependency TARGET (e.g. "New Task Insert", depended on by "Task 3
-    // Sub 1") -- stable, but frozen at whatever stale value it already
-    // had, which is exactly why Task 3's whole branch kept showing
-    // October dates that didn't trace back to anything on screen.
-    //
-    // Round 18 (this fix, Sandra: "check start and end dates... it's not
-    // making sense anymore"): the real problem was re-chaining ROOT tasks
-    // in raw LIST order while a "Depends on" link can point in a
-    // different structural direction than that list order (a task can
-    // depend on something listed AFTER it). Rather than freezing the
-    // predecessor, schedule ROOT-level groups in an order that respects
-    // BOTH constraints: whatever a group's members depend on (via an
-    // explicit "Depends on" link crossing into another group) must be
-    // computed first, before that group itself, regardless of row
-    // position; ties break by the existing row order. Dependency-driven
-    // tasks (a child or root with a real "Depends on" link) then get
-    // their Start recomputed from that predecessor's freshly-computed End
-    // in THIS SAME PASS -- not left frozen -- so Refresh always produces
-    // one coherent, non-circular schedule instead of silently reusing
-    // whatever value happened to be sitting in the DB before.
     const patches = new Map<string, Partial<TaskRow>>();
     function patchFor(id: string): Partial<TaskRow> {
       const existing = patches.get(id) ?? {};
       patches.set(id, existing);
       return existing;
     }
-    // Any task id -> the id of its own top-level root ancestor (itself if
-    // it already is one) -- used to compare a dependency's target against
-    // which ROOT GROUP it structurally belongs to.
-    function rootIdOf(taskId: string): string {
-      const t = orderedTasks.find((x) => x.id === taskId);
-      if (!t) return taskId;
-      return t.depth === 0 ? t.id : t.parent_task_id ?? t.id;
-    }
-    const roots = orderedTasks.filter((x) => x.depth === 0);
-    // Root-level dependency graph: rootId -> set of OTHER root ids it (or
-    // any of its own sub-tasks) has a real "Depends on" link into.
-    const rootDeps = new Map<string, Set<string>>();
-    for (const root of roots) {
-      const members = hasChildren(root.id)
-        ? [root, ...orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id)]
-        : [root];
-      const depSet = new Set<string>();
-      for (const m of members) {
-        for (const depId of dependsOnIdsFor(m.id)) {
-          const depRoot = rootIdOf(depId);
-          if (depRoot !== root.id) depSet.add(depRoot);
-        }
+    // Leaves only -- a parent's Start/End are always DERIVED from its own
+    // sub-tasks (buildChain), never scheduled or written directly, in
+    // either mode (see Fix 1 on buildTheoreticalTasksForSched).
+    const leaves = orderedTasks.filter((t) => !hasChildren(t.id));
+    const leafIds = new Set(leaves.map((t) => t.id));
+    // A "Depends on" link may point at a PARENT row; structurally that
+    // means "after everything in that group", so expand it to the group's
+    // own leaves for ordering purposes.
+    function depLeafIdsOf(taskId: string): string[] {
+      const out: string[] = [];
+      for (const depId of dependsOnIdsFor(taskId)) {
+        if (leafIds.has(depId)) out.push(depId);
+        else for (const c of tasks.filter((x) => x.parent_task_id === depId)) out.push(c.id);
       }
-      rootDeps.set(root.id, depSet);
+      return out;
     }
-    // Topological order over root groups (dependency targets first),
-    // falling back to original row order whenever nothing is blocking (or
-    // to break an unresolved cycle, so this can never hang).
-    const scheduleOrder: typeof roots = [];
+    const scheduleOrder: (TaskRow & { depth: number })[] = [];
     const placed = new Set<string>();
-    while (scheduleOrder.length < roots.length) {
-      let pick = roots.find(
-        (r) => !placed.has(r.id) && [...(rootDeps.get(r.id) ?? [])].every((d) => placed.has(d))
-      );
-      if (!pick) pick = roots.find((r) => !placed.has(r.id));
+    while (scheduleOrder.length < leaves.length) {
+      let pick = leaves.find((t) => !placed.has(t.id) && depLeafIdsOf(t.id).every((d) => placed.has(d) || !leafIds.has(d)));
+      if (!pick) pick = leaves.find((t) => !placed.has(t.id)); // unresolved cycle -- fall back to row order
       if (!pick) break;
       scheduleOrder.push(pick);
       placed.add(pick.id);
     }
+    const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
+
     for (const mode of MODES) {
       const startField = mode === "full_capacity" ? "start_date_full" : "start_date_standard";
       const autoField = mode === "full_capacity" ? "start_full_auto" : "start_standard_auto";
-      function entryWithOverride(t: TaskRow, overrideStart?: string): ChainEntry | null {
-        if (!overrideStart) return computeEntry(t, mode);
-        if (t.estimated_hours === null || t.estimated_hours === undefined) return null;
-        const isFixedSchedule = !!t.work_type_id && workTypes.find((w) => w.id === t.work_type_id)?.is_fixed_schedule;
-        if (mode === "full_capacity" || isFixedSchedule) {
-          // Phase 3 (2026-08-21): a Fixed-Schedule task (e.g. Training
-          // Delivery) is never capacity-gated by competing work, even
-          // under Capacity-Based mode -- same full-day-ceiling assumption
-          // as Full Effort, so its own duration reflects its hours vs a
-          // full day, not whatever's left after other people's queued
-          // work. See capacityScheduler.ts's fixedQueue pass for the
-          // matching change to the whole-queue walk this override
-          // recomputes a hypothetical alternative to.
-          const r = fullCapacityScenario(t.estimated_hours, overrideStart, holidaySet);
-          return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
+      const proposed = new Map<string, string>();
+      let chain = buildChain(mode, makeSchedContext(proposed));
+      let prevEntry: ChainEntry | null = null;
+      for (const t of scheduleOrder) {
+        // Done tasks are historical fact -- Refresh never pushes their
+        // Start to follow a predecessor's new End, same reasoning as the
+        // Done-lock in computeEntry.
+        if (t.status === "Done") {
+          prevEntry = chain.get(t.id) ?? prevEntry;
+          continue;
         }
-        // Capacity-Based override: re-walk from this NEW proposed start
-        // using the assignee's real remaining daily capacity, same idea
-        // as computeEntry's "standard" branch -- but computed fresh for
-        // this hypothetical start rather than reading the precomputed
-        // whole-queue answer, since that precomputed schedule still
-        // reflects this task's OLD (not-yet-saved) start_date_standard.
-        // Adds this task's own already-counted hours back into each
-        // day's free capacity so it doesn't get blocked by its own prior
-        // placement.
-        if (!t.assignee_id) return null;
-        const sched = scheduleFor(t.assignee_id);
-        const remainingHoursOnDate = (dateStr: string) => {
-          const day = sched.perDay.get(dateStr);
-          if (!day) return people.find((p) => p.id === t.assignee_id)?.daily_capacity_hours ?? 0;
-          const own = day.taskHours.get(t.id) ?? 0;
-          return Math.max(0, day.capacity - day.totalHours + own);
-        };
-        const r = capacityBasedScenario(t.estimated_hours, overrideStart, holidaySet, remainingHoursOnDate);
-        return { start: overrideStart, end: r.dueDate, durationDays: r.wholeDays, rawDays: r.rawDays };
-      }
-      // Entries computed so far THIS pass, keyed by task id (root ids and
-      // child ids alike) -- lets a dependency lookup see a predecessor's
-      // brand-new End even when that predecessor is being recomputed in
-      // this very same Refresh click.
-      const entries = new Map<string, ChainEntry>();
-      // Round 19 (Sandra: "Refresh dates does not reset the first task on
-      // the list to follow the start date set in the project details"):
-      // the very first task in the whole schedule had nothing to chain
-      // from (`chainPrev` null), so it always fell back to whatever its
-      // OWN stored Start field already was -- silently ignoring the
-      // project's own Start date field entirely, even though
-      // `addTopLevelTask`/`addSubtask` already treat that field as the
-      // anchor for a brand-new first task. `anchorStart` now plays that
-      // same role inside Refresh: only used the one time there's truly
-      // nothing earlier (first root, or first child of the first root
-      // group) to chain from.
-      const projectAnchor = project?.start_date ? project.start_date.slice(0, 10) : fallbackStartDate;
-      // Bugfix (2026-08-25, Sandra: "Theoretical [full effort] task are
-      // not more than 7.5 hours but... say 4 working days?"): this
-      // branch used to always chain a no-dependency sibling to the NEXT
-      // working day after its predecessor, for BOTH Manual and
-      // Theoretical (full_capacity) modes -- ignoring same-day capacity
-      // left over from the predecessor. Superseded 2026-08-26: Theoretical
-      // now packs same-person, same-project siblings continuously via
-      // theoreticalScheduleFor/packFullCapacityQueue (with real
-      // multi-day splitting, not just a same-day-fits-or-defer-whole
-      // check), so Refresh no longer needs its own copy of that logic --
-      // see the "full_capacity" branch below, which now just anchors the
-      // very first task in a root group and leaves everyone else to the
-      // live packer.
-      function scheduledEntry(t: TaskRow, chainPrev: ChainEntry | null, anchorStart?: string, siblingIdsSoFar: string[] = []): ChainEntry | null {
-        // Done tasks are historical -- Refresh dates should never push
-        // their Start to follow a predecessor's new End, same reasoning
-        // as the Done-lock in computeEntry above.
-        if (t.status === "Done") return computeEntry(t, mode);
-        const depIds = dependsOnIdsFor(t.id);
         const isAuto = t[autoField] !== false;
-        let overrideStart: string | undefined;
-        if (depIds.length && isAuto) {
+        const depIds = dependsOnIdsFor(t.id);
+        let next: string | undefined;
+        if (isAuto && depIds.length) {
           let latest: string | null = null;
           for (const depId of depIds) {
-            const depEntry = entries.get(depId);
-            if (!depEntry) continue;
-            const candidate = nextWorkingDayAfter(depEntry.end, holidaySet);
+            const depEntry = chain.get(depId);
+            // Same raw-End fallback dependencyConflict uses: a predecessor
+            // with no computable chain entry can still have a perfectly
+            // real committed End on screen.
+            const depTask = tasks.find((x) => x.id === depId);
+            const depEnd = depEntry?.end ?? depTask?.manual_end_date?.slice(0, 10) ?? depTask?.current_due_date?.slice(0, 10) ?? null;
+            if (!depEnd) continue;
+            const candidate = nextWorkingDayAfter(depEnd, holidaySet);
             if (!latest || candidate > latest) latest = candidate;
           }
-          if (latest) overrideStart = latest;
-        } else if (!depIds.length && isAuto && mode === "full_capacity") {
-          // Bugfix (2026-08-26): the live Theoretical packer
-          // (computeEntry -> theoreticalScheduleFor, taskScheduling.ts's
-          // packFullCapacityQueue) now handles same-person, same-project
-          // day-packing continuously on every render -- writing a
-          // pre-packed guess here (this used to decide "fits in the
-          // predecessor's own leftover same day, or defer the WHOLE task
-          // to the next day") would fight it, since the live packer
-          // treats whatever's stored in start_date_full as a hard floor
-          // and can't pull a task earlier than a value Refresh just
-          // wrote here. Only the very first task in a root group still
-          // needs an explicit anchor (nothing else to chain from); every
-          // other no-dependency sibling is left alone so the live packer
-          // decides its real placement, same as it already does without
-          // ever clicking Refresh.
-          if (!chainPrev && anchorStart) overrideStart = anchorStart;
-        } else if (!depIds.length && isAuto) {
-          if (mode === "standard") {
-            // Phase 22 bugfix (see [[project_capaciq_scheduler_tiebreak_fix]]):
-            // Refresh dates independently duplicated the same
-            // day-after-predecessor advancement that addTopLevelTask/
-            // addSubtask used to have -- forcing every no-dependency
-            // sibling onto the NEXT calendar day regardless of same-day
-            // capacity left on the predecessor's own day. Capacity-Based
-            // already has a real packing-aware engine (buildForwardSchedule,
-            // via computeEntry/entryWithOverride's "standard" branch
-            // above), so every such sibling anchors to the SAME starting
-            // point instead (the chain's own anchor date, propagated
-            // forward via chainPrev.start rather than chainPrev.end) and
-            // lets that engine's own sort_order tiebreak decide real
-            // placement/order.
-            if (anchorStart) overrideStart = anchorStart;
-            else if (chainPrev) overrideStart = chainPrev.start;
-          } else {
-            if (chainPrev) overrideStart = nextWorkingDayAfter(chainPrev.end, holidaySet);
-            else if (anchorStart) overrideStart = anchorStart;
+          if (latest) next = latest;
+        } else if (isAuto) {
+          if (t.id === scheduleOrder[0]?.id) {
+            // Round 19 (Sandra: "Refresh dates does not reset the first
+            // task on the list to follow the start date set in the project
+            // details") -- only the very first task in schedule order has
+            // nothing earlier to chain from.
+            next = projectAnchor;
+          } else if (mode !== "full_capacity" && prevEntry) {
+            next = nextWorkingDayAfter(prevEntry.end, holidaySet);
           }
+          // Theoretical (full_capacity) deliberately writes NOTHING for an
+          // unconstrained sibling (2026-08-26): the live packer treats
+          // start_date_full as a queue-ordering key and cannot pull a task
+          // earlier than a pre-packed guess written here, so writing one
+          // would fight the very same-day packing this mode exists for.
         }
-        const entry = entryWithOverride(t, overrideStart);
-        if (overrideStart && entry) (patchFor(t.id) as Record<string, unknown>)[startField] = overrideStart;
-        return entry;
+        if (next && proposed.get(t.id) !== next) {
+          proposed.set(t.id, next);
+          // Re-run the REAL engines with this new floor in place so every
+          // later task in the sweep chains off a live, final End date.
+          chain = buildChain(mode, makeSchedContext(proposed));
+        }
+        prevEntry = chain.get(t.id) ?? prevEntry;
       }
-      let lastRootEntry: ChainEntry | null = null;
-      const rootIdsSoFar: string[] = [];
-      for (const root of scheduleOrder) {
-        const isFirstGroup = lastRootEntry === null;
-        if (hasChildren(root.id)) {
-          let lastSiblingEntry: ChainEntry | null = null;
-          const children = orderedTasks.filter((c) => c.depth === 1 && c.parent_task_id === root.id);
-          const childEntries: ChainEntry[] = [];
-          const childIdsSoFar: string[] = [];
-          for (const child of children) {
-            const isFirstChild = lastSiblingEntry === null;
-            const entry = scheduledEntry(child, lastSiblingEntry, isFirstGroup && isFirstChild ? projectAnchor : undefined, childIdsSoFar);
-            if (entry) {
-              entries.set(child.id, entry);
-              lastSiblingEntry = entry;
-              childEntries.push(entry);
-              childIdsSoFar.push(child.id);
-            }
-          }
-          if (childEntries.length) {
-            const start = childEntries.reduce((min, e) => (e.start < min ? e.start : min), childEntries[0].start);
-            const end = childEntries.reduce((max, e) => (e.end > max ? e.end : max), childEntries[0].end);
-            const groupEntry = { start, end, durationDays: 0 };
-            entries.set(root.id, groupEntry);
-            lastRootEntry = groupEntry;
-          }
-        } else {
-          const entry = scheduledEntry(root, lastRootEntry, isFirstGroup ? projectAnchor : undefined, rootIdsSoFar);
-          if (entry) {
-            entries.set(root.id, entry);
-            lastRootEntry = entry;
-            rootIdsSoFar.push(root.id);
-          }
-        }
+      for (const [id, value] of proposed) {
+        const t = tasks.find((x) => x.id === id);
+        const stored = t && t[startField] ? (t[startField] as string).slice(0, 10) : null;
+        if (value !== stored) (patchFor(id) as Record<string, unknown>)[startField] = value;
       }
     }
     if (patches.size === 0) {
@@ -2606,10 +2643,22 @@ export default function WbsPlanning() {
   // not a regression (see [[project_capaciq_wbs_effort_staleness_fix]]
   // for the older, now-superseded instant-write version of this concern).
   function saveTaskField(taskId: string, patch: Partial<TaskRow>) {
+    stageTaskField(taskId, patch);
+    setHasUnsavedChanges(true);
+  }
+
+  // Scheduling-engine audit (2026-08-31), Fix 8: the parent-rollup and
+  // dependency auto-pilot effects both run on mount and both stage patches
+  // whenever the stored value has drifted from the derived one -- so simply
+  // OPENING a project could light up "unsaved changes" (and arm the
+  // leave-without-saving prompt) before the user had touched anything.
+  // These are derived values, not edits: they still stage into
+  // pendingTaskPatches so the next real Save persists them, they just no
+  // longer claim the user has unsaved work of their own.
+  function stageTaskField(taskId: string, patch: Partial<TaskRow>) {
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)));
     const existing = pendingTaskPatches.current.get(taskId) ?? {};
     pendingTaskPatches.current.set(taskId, { ...existing, ...patch });
-    setHasUnsavedChanges(true);
   }
 
   function saveProjectField(patch: Partial<ProjectRow>) {
@@ -3384,13 +3433,27 @@ export default function WbsPlanning() {
                 // itself was removed entirely, so once locked a Start Date
                 // never moves again for the life of the project.
                 editable={canEditWbs && !isParent && !project!.timelines_locked}
-                onCommit={(v) =>
-                  // A manual edit here freezes this task's Manual date --
-                  // it stops mirroring Capacity-Based from now on. Re-adding/
-                  // re-selecting a dependency turns auto-pilot back on, same
-                  // as before (Round 10).
-                  saveTaskField(t.id, { [field]: v, [autoField]: false } as Partial<TaskRow>)
-                }
+                onCommit={(v) => {
+                  // A manual edit here freezes this task's Forecasted date
+                  // -- it stops mirroring the capacity queue from now on.
+                  // Re-adding/re-selecting a dependency turns auto-pilot
+                  // back on, same as before (Round 10).
+                  const patch: Partial<TaskRow> = { [field]: v, [autoField]: false } as Partial<TaskRow>;
+                  // Scheduling-engine audit (2026-08-31), Fix 6: a typed
+                  // End that now sits BEFORE the new Start is not a
+                  // window at all -- workingDaysBetween returns just
+                  // [end], so Duration silently showed "1" and the whole
+                  // task's hours got crammed into a single day with no
+                  // warning. Drop the stale End and fall back to the flat
+                  // 7.5h/day calc from the new Start.
+                  if (v && t.manual_end_date && t.manual_end_date.slice(0, 10) < v.slice(0, 10)) {
+                    patch.manual_end_date = null;
+                    void alert(
+                      `The End date on this row (${formatDate(t.manual_end_date.slice(0, 10))}) is before the Start you just set, so it's been cleared -- End is back to the calculated date. Type a new End if you want the hours spread across a specific window.`
+                    );
+                  }
+                  saveTaskField(t.id, patch);
+                }}
               />
             </span>
             {conflict && <AlertTriangle size={12} style={{ color: "var(--warning-text, #b45309)", flexShrink: 0 }} />}
@@ -3449,13 +3512,22 @@ export default function WbsPlanning() {
                 // still only ever writes manual_end_date.
                 value={t.manual_end_date ?? entry.end}
                 editable={canEditWbs && !isParent && !project!.timelines_locked}
-                onCommit={(v) =>
+                onCommit={(v) => {
+                  // Fix 6 (2026-08-31): guard Start > End. Without this,
+                  // workingDaysBetween(start, end) returns [end] for an
+                  // inverted window, so Duration read "1", the Gantt bar
+                  // clamped to a single day, and the hour spread became
+                  // nonsense -- all silently.
+                  if (v && v.slice(0, 10) < entry.start.slice(0, 10)) {
+                    void alert(`End can't be before Start (${formatDate(entry.start)}). Move the Start date first if this task really needs to begin earlier.`);
+                    return;
+                  }
                   saveTaskField(t.id, {
                     manual_end_date: v || null,
                     start_date_standard: entry.start,
                     start_standard_auto: false,
-                  } as Partial<TaskRow>)
-                }
+                  } as Partial<TaskRow>);
+                }}
               />
             </span>
           ) : (
@@ -5708,7 +5780,15 @@ function DependsOnPicker({
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; openUp: boolean } | null>(null);
-  const candidates = allTasks.filter((t) => t.id !== task.id);
+  // Scheduling-engine audit (2026-08-31), Fix 2: never offer a task's own
+  // parent or its own sub-tasks as dependency candidates. A parent's dates
+  // are DERIVED from its children (the rollup effect owns those columns),
+  // so a parent<->child "Depends on" link made that effect and the
+  // dependency auto-pilot effect overwrite each other every commit, which
+  // React reports as "Maximum update depth exceeded" -- a hard page hang.
+  // (addDependency refuses the same pair server-side of the UI, in case
+  // one already exists in the data.)
+  const candidates = allTasks.filter((t) => t.id !== task.id && t.id !== task.parent_task_id && t.parent_task_id !== task.id);
   const selectedNames = dependsOnIds
     .map((id) => allTasks.find((t) => t.id === id)?.name)
     .filter((n): n is string => !!n);
