@@ -9,6 +9,9 @@
 // keep this module self-contained.
 
 import { addDays, isWorkingDay, parseLocalDate, toISO, type HolidaySet } from "./workingDays";
+// Single source of truth for the PM-overhead rate and for a project's REAL
+// current end date (consolidated 2026-08-31 -- see dailyAllocation.ts).
+import { PROJECT_PM_DAILY_HOURS, pmWindowEnd } from "./dailyAllocation";
 
 // Unifies what used to be two separate PM-overhead mechanisms (Day
 // Planner's manual-entry default of 0.5h/day, and Utilization's old
@@ -24,7 +27,10 @@ import { addDays, isWorkingDay, parseLocalDate, toISO, type HolidaySet } from ".
 // PM assumption was manufacturing overload that was not real work. Still
 // uncapped per Sandra's call to revisit a combined cap only if a
 // multi-project owner still looks overloaded from overhead alone.
-export const PROJECT_PM_DAILY_HOURS = 0.25;
+// Lives in dailyAllocation.ts now (one constant for the grid, the scheduler
+// AND the SQL deletion archive, which used to carry its own stale 0.5).
+// Re-exported here so existing importers keep working unchanged.
+export { PROJECT_PM_DAILY_HOURS };
 
 export interface SchedPersonRow {
   id: string;
@@ -179,9 +185,26 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
   const perDay = new Map<string, ForwardScheduleDay>();
   const fromDate = parseLocalDate(fromDateStr);
 
-  // Owned, currently-active (has a start/end window) projects -- same
+  // Owned, currently-active (has a start date) projects -- same
   // "no dates, no PM time yet" convention as the rest of the app.
-  const ownedProjects = projects.filter((p) => p.owner_id === personId && p.start_date && p.end_date);
+  //
+  // Fix (2026-08-31): the window's END is now derived via pmWindowEnd (the
+  // later of projects.end_date and the project's own latest task due date)
+  // instead of reading the persisted projects.end_date alone. That column is
+  // the frozen COMMITTED envelope once timelines_locked is true -- nothing
+  // re-syncs it from tasks after that -- so a started project whose tasks run
+  // past it silently stopped charging its owner PM overhead partway through
+  // ("PM overhead on 9/10 is not reflecting when the tasks list is until sept
+  // 10"). Same derivation the grid's own even-spread path now uses.
+  //
+  // Closed projects are skipped outright: closure does not mark their tasks
+  // Done (decide_wbs_closure only flips wbs_status), and this scheduler only
+  // ever covers today-and-future, so a closed project would otherwise keep
+  // charging PM overhead against future capacity forever.
+  const ownedProjects = projects
+    .filter((p) => p.owner_id === personId && p.start_date && p.wbs_status !== "closed")
+    .map((p) => ({ id: p.id, start_date: p.start_date as string, end_date: pmWindowEnd(p, tasks) }))
+    .filter((p): p is { id: string; start_date: string; end_date: string } => !!p.end_date);
 
   // Pre-populate every working day in the guard window with PM overhead so
   // task consumption below has a real "remaining capacity" to subtract
@@ -206,11 +229,16 @@ export function buildForwardSchedule(args: ForwardScheduleArgs): ForwardSchedule
     const raw = parseLocalDate(t.start_date ?? t.current_due_date);
     return floorEffectiveStartAtFromDate ? maxDate(raw, fromDate) : raw;
   };
+  // Closed projects' still-open tasks are excluded for the same reason their
+  // PM overhead is (see ownedProjects above): closure does not mark tasks
+  // Done, so they would keep eating a person's future capacity indefinitely.
+  const closedProjectIdSet = new Set(projects.filter((p) => p.wbs_status === "closed").map((p) => p.id));
   const eligible = tasks.filter(
     (t) =>
       t.assignee_id === personId &&
       !parentTaskIds.has(t.id) &&
       !isCompleteStatus(t.status) &&
+      !closedProjectIdSet.has(t.project_id) &&
       (t.estimated_hours ?? 0) > 0
   );
   // Bugfix (2026-08-24, Sandra -- Utlization Conflict Test: "whatever is

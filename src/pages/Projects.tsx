@@ -70,7 +70,6 @@ import {
   TASK_STATUS_GROUPED,
   TASK_STATUS_OPTIONS,
   TASK_EFFORT_OPTIONS,
-  TASK_EFFORT_POINTS,
   TASK_EFFORT_DEFAULT_TONES,
   statusGroupOf,
 } from "../lib/notionOptions";
@@ -407,19 +406,43 @@ const TASK_COMPLETION_FACTOR: Record<string, number> = {
 };
 
 export function actualProgress(projectId: string, allTasks: TaskRow[]): number | null {
-  const projectTasks = allTasks.filter((t) => t.project_id === projectId);
+  // Bugfix (2026-08-31, P1). This used to weight each task by
+  // TASK_EFFORT_POINTS[t.effort]. That map deliberately has no "Very Heavy"
+  // key (it belongs to the retired points model), so a Very Heavy task --
+  // which is simply any task over 24 estimated hours (see
+  // effort_level_thresholds / phase12_migration.sql; effort is DERIVED from
+  // hours, not typed) -- scored weight 0 and was skipped entirely. A project
+  // made only of large tasks therefore had denominator 0, returned null, and
+  // rendered as "Health unavailable" on Projects and in the Dashboard donut:
+  // the biggest projects were exactly the ones with no progress reading.
+  //
+  // Since effort is now derived from estimated_hours anyway, weighting by
+  // estimated_hours directly is both strictly more accurate (a 40h task
+  // counts twice a 20h one, instead of both being "Heavy-ish") and removes
+  // the lookup hole permanently.
+  //
+  // Parent tasks are excluded: a parent's estimated_hours is auto-populated
+  // as the SUM of its sub-tasks', so counting it too double-weighted every
+  // grouped branch.
+  const parentIds = new Set(allTasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
+  const projectTasks = allTasks.filter((t) => t.project_id === projectId && !parentIds.has(t.id));
   if (projectTasks.length === 0) return null;
   let numerator = 0;
   let denominator = 0;
   for (const t of projectTasks) {
-    const weight = t.effort ? TASK_EFFORT_POINTS[t.effort] ?? 0 : 0;
-    if (weight === 0) continue;
+    const weight = t.estimated_hours ?? 0;
+    if (weight <= 0) continue;
     const factor = TASK_COMPLETION_FACTOR[t.status ?? ""] ?? 0;
     numerator += weight * factor;
     denominator += weight;
   }
-  if (denominator === 0) return null;
-  return Math.round((numerator / denominator) * 100);
+  if (denominator > 0) return Math.round((numerator / denominator) * 100);
+  // Fallback: no task in this project has hours scoped yet. Rather than the
+  // old "Health unavailable", fall back to plain equal-weight task counting
+  // -- a status-only reading is still a real reading, and "no estimate yet"
+  // is a scoping gap, not a reason to hide progress entirely.
+  const factorSum = projectTasks.reduce((sum, t) => sum + (TASK_COMPLETION_FACTOR[t.status ?? ""] ?? 0), 0);
+  return Math.round((factorSum / projectTasks.length) * 100);
 }
 
 // Same 5-band read as Health (worst/least-done first) -- "No tasks" sorts
@@ -3368,7 +3391,10 @@ export default function Projects() {
     { key: "project", label: "Project", getValue: (t) => projectName(t.project_id) },
     { key: "assignee", label: "Assignee", getValue: (t) => ownerName(t.assignee_id) },
     { key: "status", label: "Status", getValue: (t) => t.status ?? "" },
-    { key: "effort", label: "Effort", getValue: (t) => (t.effort ? TASK_EFFORT_POINTS[t.effort] ?? null : null) },
+    // Same "Very Heavy" hole as actualProgress had: TASK_EFFORT_POINTS has no
+    // entry for it, so the heaviest tasks sorted as blank. Effort is an
+    // ordered band derived from hours, so sort by that order.
+    { key: "effort", label: "Effort", getValue: (t) => (t.effort ? (TASK_EFFORT_OPTIONS.indexOf(t.effort) + 1 || null) : null) },
     { key: "work_type", label: "Work Type", getValue: (t) => workTypes.find((w) => w.id === t.work_type_id)?.name ?? "" },
     { key: "start_date", label: "Start", getValue: (t) => (t.start_date ? new Date(t.start_date).getTime() : null) },
     { key: "timing", label: "Timing", getValue: (t) => timingRank(timingOf(t).label) },

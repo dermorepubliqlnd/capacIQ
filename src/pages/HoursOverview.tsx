@@ -2,7 +2,21 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
-import { scopedHoursOnDate } from "../lib/scopedHours";
+import { buildHolidaySet } from "../lib/workingDays";
+// Same shared allocation engine Utilization.tsx and WbsPlanning.tsx's
+// Utilization snapshot use -- see src/lib/dailyAllocation.ts. Before this,
+// "Scoped" here was a thinner, drifting copy: no PM overhead, no Time Off,
+// no ownership/assignee history, no deletion archive, and a holiday-blind
+// day spread. It could not agree with Utilization for anyone who owns a
+// project or has a day off.
+import {
+  createAllocationEngine,
+  parentTaskIdsOf,
+  type AssigneeHistoryRow,
+  type OwnerHistoryRow,
+  type UtilProjectRow,
+  type UtilTaskRow,
+} from "../lib/dailyAllocation";
 import UtilPersonFilterButton from "../components/UtilPersonFilterButton";
 
 // Scoped vs Logged (2026-08-25, consolidated same day). Originally shipped
@@ -34,6 +48,10 @@ interface ProjectRow {
   id: string;
   name: string;
   is_archived: boolean;
+  owner_id: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  wbs_status: string | null;
 }
 interface TaskRow {
   id: string;
@@ -60,6 +78,16 @@ interface HolidayRow {
   date: string;
   name: string;
   category: "legal_ph" | "local" | "internal";
+}
+interface AvailabilityRow {
+  person_id: string;
+  date: string;
+  status: "off" | "half_day";
+}
+interface DeletedHourRow {
+  person_id: string;
+  date: string;
+  hours: number;
 }
 
 function toISO(d: Date): string {
@@ -95,6 +123,15 @@ export default function HoursOverview() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [timeEntries, setTimeEntries] = useState<TimeEntryRow[]>([]);
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
+  const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
+  const [ownerHistory, setOwnerHistory] = useState<OwnerHistoryRow[]>([]);
+  const [assigneeHistory, setAssigneeHistory] = useState<AssigneeHistoryRow[]>([]);
+  const [deletedHours, setDeletedHours] = useState<DeletedHourRow[]>([]);
+  // Every person, active or not -- used ONLY to resolve a name in the
+  // Per-task view. `people` (active-only) drives the Day grid's rows, so a
+  // deactivated person's logged time used to render as owner "Unassigned"
+  // there, actively mislabelling real work.
+  const [allPeople, setAllPeople] = useState<PersonRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"grid" | "task">("grid");
   const [expanded, setExpanded] = useState<string[]>([]);
@@ -111,21 +148,39 @@ export default function HoursOverview() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: te }, { data: hol }] = await Promise.all([
-      supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
-      supabase.from("projects").select("id,name,is_archived").eq("is_archived", false),
-      supabase
-        .from("tasks")
-        .select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived")
-        .eq("is_archived", false),
-      supabase.from("time_entries").select("id,task_id,person_id,started_at,duration_minutes,status").in("status", ["confirmed", "approved"]),
-      supabase.from("holidays").select("*"),
-    ]);
+    const [{ data: p }, { data: ap }, { data: pr }, { data: tk }, { data: te }, { data: hol }, { data: av }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] =
+      await Promise.all([
+        supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
+        supabase.from("people").select("id,name,daily_capacity_hours,is_active").order("name"),
+        supabase.from("projects").select("id,name,is_archived,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
+        supabase
+          .from("tasks")
+          .select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived")
+          .eq("is_archived", false),
+        supabase.from("time_entries").select("id,task_id,person_id,started_at,duration_minutes,status").in("status", ["confirmed", "approved"]),
+        supabase.from("holidays").select("*"),
+        supabase.from("person_availability").select("person_id,date,status"),
+        supabase.from("project_owner_history").select("project_id,person_id,effective_from,effective_to"),
+        supabase.from("task_assignee_history").select("task_id,person_id,effective_from,effective_to"),
+        supabase.from("deleted_person_day_hours").select("person_id,date,hours"),
+        supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
+      ]);
     setPeople((p as PersonRow[]) ?? []);
+    setAllPeople((ap as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
     setTasks((tk as TaskRow[]) ?? []);
     setTimeEntries((te as TimeEntryRow[]) ?? []);
     setHolidays((hol as HolidayRow[]) ?? []);
+    setAvailability((av as AvailabilityRow[]) ?? []);
+    // Same global off-switch Utilization.tsx honours (app_settings
+    // .historical_locking_enabled): while off, history is ignored and
+    // attribution falls back to each row's CURRENT owner/assignee. Reading
+    // it here too is what keeps the two pages attributing a transferred
+    // task/project to the SAME person on the same past date.
+    const historicalLockingEnabled = (settings as { historical_locking_enabled?: boolean } | null)?.historical_locking_enabled ?? false;
+    setOwnerHistory(historicalLockingEnabled ? (ownHist as OwnerHistoryRow[]) ?? [] : []);
+    setAssigneeHistory(historicalLockingEnabled ? (assHist as AssigneeHistoryRow[]) ?? [] : []);
+    setDeletedHours((delHrs as DeletedHourRow[]) ?? []);
     setLoading(false);
   }
 
@@ -197,7 +252,33 @@ export default function HoursOverview() {
     return m;
   }, [holidays]);
 
-  const parentTaskIds = useMemo(() => new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string)), [tasks]);
+  const parentTaskIds = useMemo(() => parentTaskIdsOf(tasks), [tasks]);
+  const holidaySet = useMemo(() => buildHolidaySet(holidays.map((h) => h.date)), [holidays]);
+  const today = useMemo(() => toISO(new Date()), []);
+
+  // The one shared allocation engine (identical construction to
+  // Utilization.tsx's). Scoped = exactly what the Utilization page counts
+  // as a person's planned hours on that day: open leaf tasks spread over
+  // real working days, plus PM overhead for every project they own, plus
+  // any archived hours from permanently-deleted work.
+  const engine = useMemo(
+    () =>
+      createAllocationEngine({
+        tasks: tasks as UtilTaskRow[],
+        projects: projects as UtilProjectRow[],
+        holidays: holidaySet,
+        availability,
+        assigneeHistory,
+        ownerHistory,
+        todayStr: today,
+        deletedHours,
+      }),
+    [tasks, projects, holidaySet, availability, assigneeHistory, ownerHistory, today, deletedHours]
+  );
+
+  function isOffDay(personId: string, dateStr: string): boolean {
+    return availability.some((a) => a.person_id === personId && a.date === dateStr && a.status === "off");
+  }
 
   // Scoped side: only open (non-complete), non-parent tasks currently
   // assigned to this person -- same rule Utilization.tsx's own
@@ -205,8 +286,16 @@ export default function HoursOverview() {
   function scopedOpenTasksFor(personId: string): TaskRow[] {
     return tasks.filter((t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
   }
+  function ownedProjectsFor(personId: string): ProjectRow[] {
+    return projects.filter((p) => p.owner_id === personId);
+  }
+  // 2026-08-31: now includes PM overhead and the deletion archive, so this
+  // number is the SAME number Utilization.tsx prints for the same person on
+  // the same day. Both extras get their own visible sub-row in the expanded
+  // breakdown below, so the difference from the raw task sum is explained on
+  // screen rather than unexplained.
   function scopedPersonTotalFor(personId: string, dateStr: string): number {
-    return scopedOpenTasksFor(personId).reduce((sum, t) => sum + scopedHoursOnDate(t, dateStr), 0);
+    return engine.totalFor(personId, dateStr);
   }
   // Logged side: every confirmed/approved entry this person has, bucketed
   // by the literal date it was logged on -- deliberately NOT filtered to
@@ -238,8 +327,8 @@ export default function HoursOverview() {
   function scopedHoursFor(personId: string, taskId: string, dateStr: string): number {
     const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
     if (!t) return 0;
-    if (statusGroupOf(TASK_STATUS_GROUPED, t.status) === "complete") return 0;
-    return scopedHoursOnDate(t, dateStr);
+    if (parentTaskIds.has(t.id)) return 0;
+    return engine.taskHoursOnDate(personId, t as UtilTaskRow, dateStr);
   }
 
   // Combined per-task breakdown for a person's expand row: union of their
@@ -271,7 +360,11 @@ export default function HoursOverview() {
       .filter((t) => !parentTaskIds.has(t.id))
       .map((t) => {
         const proj = projects.find((p) => p.id === t.project_id);
-        const owner = people.find((p) => p.id === t.assignee_id);
+        // Resolve against ALL people, not just active ones -- a deactivated
+        // assignee used to fall through to "Unassigned" here, which reads as
+        // orphaned work when it is actually assigned (just to someone who
+        // has left/been deactivated).
+        const owner = allPeople.find((p) => p.id === t.assignee_id);
         const scoped = t.estimated_hours ?? 0;
         const logged = timeEntries.filter((e) => e.task_id === t.id).reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
         return {
@@ -280,14 +373,14 @@ export default function HoursOverview() {
           projectId: t.project_id,
           project: proj?.name ?? "—",
           ownerId: t.assignee_id,
-          owner: owner?.name ?? "Unassigned",
+          owner: owner ? (owner.is_active ? owner.name : `${owner.name} (inactive)`) : "Unassigned",
           scoped,
           logged,
           variance: logged - scoped,
         };
       })
       .filter((r) => r.scoped > 0 || r.logged > 0);
-  }, [tasks, projects, people, timeEntries, parentTaskIds]);
+  }, [tasks, projects, allPeople, timeEntries, parentTaskIds]);
 
   // 2026-08-26 (Sandra: "allow grouping and filtering by person and by
   // project") -- both single-select dropdowns; kept simple (one active
@@ -552,8 +645,28 @@ export default function HoursOverview() {
                               const dow = d.getDay();
                               const weekend = dow === 0 || dow === 6;
                               const isHoliday = holidayByDate.has(dateStr);
+                              const off = isOffDay(person.id, dateStr);
                               const scoped = scopedPersonTotalFor(person.id, dateStr);
                               const logged = loggedPersonTotalFor(person.id, dateStr);
+                              // 2026-08-31: holiday / Time Off days are now
+                              // labelled the same way Utilization.tsx labels
+                              // them, instead of silently reading as a normal
+                              // empty day -- the two pages disagreed about a
+                              // person's availability on exactly these days.
+                              // (Logged time still wins if any exists: someone
+                              // really did work, and hiding that was the other
+                              // half of the same inconsistency.)
+                              if (scoped === 0 && logged === 0 && !weekend && (isHoliday || off)) {
+                                return (
+                                  <td
+                                    key={i}
+                                    title={isHoliday ? holidayByDate.get(dateStr)?.name : "Time Off"}
+                                    style={{ ...rollupCellStyle(i), background: isHoliday ? "#eef1f5" : "#f1f2f4", color: "var(--muted)", fontSize: 11, fontWeight: 600 }}
+                                  >
+                                    {isHoliday ? "Holiday" : "Off"}
+                                  </td>
+                                );
+                              }
                               const tone = coverageTone(scoped, logged);
                               const colors = toneColors(tone);
                               const bg = scoped === 0 && logged === 0 ? (weekend || isHoliday ? "var(--hover-bg)" : undefined) : colors.bg;
@@ -564,6 +677,93 @@ export default function HoursOverview() {
                               );
                             })}
                           </tr>
+                          {/* PM-overhead sub-rows (2026-08-31). The person
+                              rollup above now includes the same
+                              project-ownership allowance Utilization.tsx
+                              counts, so it has to be visible here too --
+                              otherwise the rollup would simply not equal the
+                              sum of its own sub-rows, which is the exact class
+                              of bug this page already had once (see
+                              scopedHoursFor). Logged side is always "–": time
+                              is logged against tasks, never against PM
+                              overhead. */}
+                          {isExpanded &&
+                            ownedProjectsFor(person.id).map((proj) => {
+                              const pmDays = engine.pmDays(person.id, proj as UtilProjectRow);
+                              if (pmDays.size === 0) return null;
+                              return (
+                                <tr key={`${person.id}-pm-${proj.id}`}>
+                                  <td
+                                    title={`${proj.name} — project management`}
+                                    style={{
+                                      position: "sticky",
+                                      left: 0,
+                                      zIndex: 1,
+                                      background: "var(--surface)",
+                                      padding: "5px 13px 5px 35px",
+                                      fontSize: 11,
+                                      color: "var(--text-secondary)",
+                                      borderBottom: "1px solid var(--border)",
+                                      whiteSpace: "nowrap",
+                                      maxWidth: LABEL_W,
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    {proj.name}
+                                    <span style={{ fontSize: 9.5, fontWeight: 600, color: "var(--muted)", marginLeft: 6 }}>(PM)</span>
+                                  </td>
+                                  {days.map((d, i) => {
+                                    const dateStr = toISO(d);
+                                    const v = engine.pmHoursOnDate(person.id, proj as UtilProjectRow, dateStr);
+                                    return (
+                                      <td key={i} style={subCellStyle(i)}>
+                                        {v > 0 ? (
+                                          <span style={{ fontSize: 10.5, color: "var(--navy)" }}>
+                                            {v.toFixed(2)}
+                                            <span style={{ color: "var(--muted)" }}> / – </span>
+                                          </span>
+                                        ) : null}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          {isExpanded && engine.hasDeletedHistory(person.id) && (
+                            <tr>
+                              <td
+                                title="Hours from tasks/projects that have since been permanently deleted — numbers only, no name retained"
+                                style={{
+                                  position: "sticky",
+                                  left: 0,
+                                  zIndex: 1,
+                                  background: "var(--surface)",
+                                  padding: "5px 13px 5px 35px",
+                                  fontSize: 11,
+                                  color: "var(--muted)",
+                                  fontStyle: "italic",
+                                  borderBottom: "1px solid var(--border)",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                Deleted items
+                              </td>
+                              {days.map((d, i) => {
+                                const v = engine.deletedHoursOnDate(person.id, toISO(d));
+                                return (
+                                  <td key={i} style={subCellStyle(i)}>
+                                    {v > 0 ? (
+                                      <span style={{ fontSize: 10.5, color: "var(--navy)" }}>
+                                        {v.toFixed(2)}
+                                        <span style={{ color: "var(--muted)" }}> / – </span>
+                                      </span>
+                                    ) : null}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          )}
                           {isExpanded &&
                             (items.length === 0 ? (
                               <tr>

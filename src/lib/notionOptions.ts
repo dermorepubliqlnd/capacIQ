@@ -32,18 +32,17 @@ export const PROJECT_EFFORT_LEVEL_OPTIONS = ["Level 1", "Level 2", "Level 3"];
 // this 4th tier for tasks estimated over 24 hours.
 export const TASK_EFFORT_OPTIONS = ["Light", "Moderate", "Heavy", "Very Heavy"];
 
-// NOTE (Phase 12, 2026-08-20): deliberately left untouched/unextended --
-// "Very Heavy" has no points entry here on purpose. This points-based
-// Utilization machinery is explicitly out of scope for the Work
-// Type/Effort Level phase (a later phase rewires Utilization off points
-// onto hours entirely); a Very Heavy task falls back to 0 points via the
-// `TASK_EFFORT_POINTS[t.effort] ?? 0` pattern used everywhere this is
-// read, same as any other effort value this map doesn't recognize.
-export const TASK_EFFORT_POINTS: Record<string, number> = {
-  Light: 0.5,
-  Moderate: 1,
-  Heavy: 2,
-};
+// NOTE (2026-08-31): the old TASK_EFFORT_POINTS map (Light 0.5 / Moderate 1
+// / Heavy 2) lived here and is now DELETED along with the rest of the
+// retired points-based utilization model (utilizationCalc.ts). It had no
+// "Very Heavy" key -- deliberately, since that level arrived after the
+// points model was already being retired -- but two live callers on the
+// Projects page were still reading it as a task WEIGHT
+// (`TASK_EFFORT_POINTS[t.effort] ?? 0`), so every Very Heavy task silently
+// scored 0: it was skipped by actualProgress (a project of large tasks
+// reported "Health unavailable") and sorted as blank under the Effort sort.
+// Effort is derived from estimated_hours (see effort_level_thresholds), so
+// both now use hours / the TASK_EFFORT_OPTIONS band order directly.
 
 // Fallback tones if task_effort_colors hasn't loaded yet (or a level is
 // missing a row) — matches the seeded defaults in the DB. Sandra can

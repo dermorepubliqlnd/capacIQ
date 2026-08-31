@@ -10,18 +10,22 @@ import { formatDate } from "../lib/formatDate";
 import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTracking";
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { fullCapacityScenario, capacityBasedScenario, packFullCapacityQueue, FULL_CAPACITY_DAILY_HOURS, type FullCapacityQueueTask } from "../lib/taskScheduling";
-import { buildForwardSchedule, PROJECT_PM_DAILY_HOURS, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
+import { buildForwardSchedule, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
 import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES, TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
+// One shared allocation engine for all three utilization surfaces -- this
+// snapshot, the Utilization page, and Scoped vs Logged. See
+// src/lib/dailyAllocation.ts. Replaces the old utilizationCalc.ts, which
+// carried its own (superseded, 5-tier) tierOf and its own holiday-blind
+// day-spread.
 import {
-  dailyCapacityFor,
-  tierOf,
-  taskWorkingDays,
-  projectWorkingDays,
-  STANDARD_DAILY_HOURS,
+  createAllocationEngine,
+  dailyCapacityHours,
+  type AllocationEngine,
   type UtilTaskRow,
   type UtilProjectRow,
   type UtilPersonRow,
-} from "../lib/utilizationCalc";
+} from "../lib/dailyAllocation";
+import { displayPct, tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
 import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
 import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
 import { useUnsavedChangesGuard } from "../lib/useUnsavedChangesGuard";
@@ -3591,6 +3595,7 @@ export default function WbsPlanning() {
         ? allTasks.map((t) => ({
             id: t.id,
             project_id: t.project_id,
+            parent_task_id: t.parent_task_id ?? null,
             assignee_id: t.assignee_id,
             status: t.status,
             start_date: t.start_date,
@@ -3599,13 +3604,34 @@ export default function WbsPlanning() {
             estimated_hours: t.estimated_hours,
           }))
         : [
-            ...allTasks.filter((t) => t.project_id !== projectId),
-            // Parent rows (tasks with their own sub-tasks) are excluded here
-            // on purpose -- see parentAssigneeState/the Effort "N/A" cell
-            // above. A parent's own span is just the union of its
-            // children's, so counting it too would double the
-            // points/utilization contribution for whoever it's
-            // (rolled-up-)assigned to.
+            ...allTasks
+              .filter((t) => t.project_id !== projectId)
+              .map((t) => ({
+                id: t.id,
+                project_id: t.project_id,
+                parent_task_id: t.parent_task_id ?? null,
+                assignee_id: t.assignee_id,
+                status: t.status,
+                start_date: t.start_date,
+                current_due_date: t.current_due_date,
+                effort: t.effort,
+                estimated_hours: t.estimated_hours,
+              })),
+            // This project's own depth-0 parent rows are dropped here.
+            // EVERY project's parent rows (including the ones coming from
+            // `allTasks` above, and this project's own in "actual" mode) are
+            // then dropped again, globally, by the shared allocation engine
+            // (createAllocationEngine -> parentTaskIdsOf).
+            //
+            // P0 bugfix (2026-08-31): that global pass is new. This filter
+            // used to be the ONLY parent exclusion in this snapshot, so
+            // parents from every OTHER project -- and, in "actual" mode,
+            // this project's own -- were counted on top of their children.
+            // Parents are auto-populated with estimated_hours = sum(children)
+            // AND inherit the children's assignee, so any 2-level group was
+            // counted TWICE here while Utilization.tsx and HoursOverview.tsx
+            // (which both exclude parents globally) counted it once. That is
+            // why the same person showed ~2x hours/% on this panel.
             ...orderedTasks
               .filter((t) => !(t.depth === 0 && hasChildren(t.id)))
               .map((t) => {
@@ -3613,6 +3639,7 @@ export default function WbsPlanning() {
                 return {
                   id: t.id,
                   project_id: t.project_id,
+                  parent_task_id: t.parent_task_id ?? null,
                   assignee_id: t.assignee_id,
                   status: t.status,
                   start_date: entry?.start ?? t.start_date,
@@ -3635,8 +3662,8 @@ export default function WbsPlanning() {
     const summary = mode !== "actual" && chain ? chainOverallSummary(chain) : null;
     // Bugfix (2026-08-28, Sandra: "how come my PM overhead on 9/10 is not
     // reflecting when the tasks list is until sept 10?"): this preview
-    // project row's `end_date` (which projectWorkingDays/previewPmHoursFor
-    // below use to decide which days still owe the owner PM overhead) came
+    // project row's `end_date` (which the shared engine's projectPmDays
+    // uses to decide which days still owe the owner PM overhead) came
     // ONLY from chainOverallSummary(chain) -- but that walks chainByMode's
     // own parent+leaf map, a SEPARATE derivation from `tasks` above (which
     // is what the heat-map row itself actually renders and what Sandra is
@@ -3692,40 +3719,52 @@ export default function WbsPlanning() {
   // foreseen utilization if ever the tasks will be plotted." Root cause:
   // this snapshot panel was calling utilizationCalc.ts's dailyPointsFor,
   // a leftover from BEFORE the Phase 1/2 hours-based Utilization/Day
-  // Planner refactor (2026-08-20) -- it only reads a task's coarse
-  // `effort` tier (Light/Moderate/Heavy -> a fixed 0.5/1/2 points/day via
-  // TASK_EFFORT_POINTS) and completely ignores estimated_hours, plus its
-  // own separate PM-overhead constant (PROJECT_PM_POINTS_PER_DAY = 0.1pt
-  // ~= 0.75h) that was never updated when the real one
-  // (PROJECT_PM_DAILY_HOURS) got lowered to 0.25h. That's exactly why
-  // Fritzie's row showed a flat 10%/0.8h no matter what hours were typed
-  // on her tasks -- it was PM overhead alone; the task's real hours never
-  // factored in at all.
+  // Planner refactor -- it only read a task's coarse `effort` tier and
+  // ignored estimated_hours entirely, plus it carried its own stale
+  // PM-overhead constant.
   //
-  // Fix: mirror Utilization.tsx's own hours-based even-spread math
-  // (taskHoursOnDate/pmHoursFor/dailyHoursFor) instead -- a task's real
-  // estimated_hours spread evenly across its own (mode-resolved) working
-  // days, plus PROJECT_PM_DAILY_HOURS per owned project per working day.
-  // No history-awareness needed here (same as before) -- this previews
-  // the CURRENT draft plan, not historical truth.
-  function previewTaskHoursOnDate(t: UtilTaskRow, dateStr: string, forPersonId?: string): number {
-    const hours = t.estimated_hours ?? 0;
-    if (hours === 0) return 0;
-    const workingDays = taskWorkingDays(t);
-    if (!workingDays.includes(dateStr)) return 0;
-    if (forPersonId && t.assignee_id !== forPersonId) return 0;
-    return hours / workingDays.length;
-  }
-  function previewPmHoursFor(personId: string, dateStr: string, projects: UtilProjectRow[]): number {
-    const owned = projects.filter((p) => p.owner_id === personId && projectWorkingDays(p).includes(dateStr));
-    return owned.length * PROJECT_PM_DAILY_HOURS;
-  }
-  function previewDailyHoursFor(personId: string, dateStr: string, tasks: UtilTaskRow[], projects: UtilProjectRow[]): number {
-    const taskHours = tasks
-      .filter((t) => t.assignee_id === personId && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete")
-      .reduce((sum, t) => sum + previewTaskHoursOnDate(t, dateStr, personId), 0);
-    return taskHours + previewPmHoursFor(personId, dateStr, projects);
-  }
+  // 2026-08-31: the local hours-based reimplementation that replaced it
+  // (previewTaskHoursOnDate / previewPmHoursFor / previewDailyHoursFor) is
+  // now itself gone -- it was a FOURTH copy of the same math, and it was
+  // holiday-blind, Time-Off-blind, applied no global parent-task exclusion,
+  // and read the stale persisted projects.end_date for the PM window. All
+  // four surfaces now go through createAllocationEngine.
+  //
+  // One engine per preview scenario (each scenario substitutes its own
+  // mode-computed Start/End dates for this project's tasks). No history is
+  // passed: this previews the CURRENT draft plan, not historical truth --
+  // same as before.
+  const utilTodayStr = toISO(new Date());
+  const engineForMode: Record<UtilPreviewMode, AllocationEngine> = {
+    actual: createAllocationEngine({
+      tasks: effectiveForMode.actual.tasks,
+      projects: effectiveForMode.actual.projects,
+      holidays: holidaySet,
+      availability,
+      todayStr: utilTodayStr,
+    }),
+    full_capacity: createAllocationEngine({
+      tasks: effectiveForMode.full_capacity.tasks,
+      projects: effectiveForMode.full_capacity.projects,
+      holidays: holidaySet,
+      availability,
+      todayStr: utilTodayStr,
+    }),
+    standard_suggested: createAllocationEngine({
+      tasks: effectiveForMode.standard_suggested.tasks,
+      projects: effectiveForMode.standard_suggested.projects,
+      holidays: holidaySet,
+      availability,
+      todayStr: utilTodayStr,
+    }),
+    standard_committed: createAllocationEngine({
+      tasks: effectiveForMode.standard_committed.tasks,
+      projects: effectiveForMode.standard_committed.projects,
+      holidays: holidaySet,
+      availability,
+      todayStr: utilTodayStr,
+    }),
+  };
 
   const utilWindowStart = addDays(parseLocalDate(utilAnchorDate), utilWindowOffset * UTIL_WINDOW_DAYS);
   const utilDays: Date[] = Array.from({ length: UTIL_WINDOW_DAYS }, (_, i) => addDays(utilWindowStart, i));
@@ -4640,7 +4679,7 @@ export default function WbsPlanning() {
                     return (
                       <Fragment key={p.id}>
                         {visibleModes.map((mode, mi) => {
-                          const { tasks: modeTasks, projects: modeProjects } = effectiveForMode[mode];
+                          const modeEngine = engineForMode[mode];
                           return (
                             <tr key={mode} style={mi === 0 ? { borderTop: "2px solid var(--border)" } : undefined}>
                               {mi === 0 && (
@@ -4742,37 +4781,30 @@ export default function WbsPlanning() {
                                     </td>
                                   );
                                 }
-                                // Phase 23: hours-based now (see
-                                // previewDailyHoursFor above) -- `points`
-                                // is kept as a name purely so the
-                                // capacity/pct/tier math below (which
-                                // expects a points-shaped ratio) didn't
-                                // need touching, but the VALUE feeding it
-                                // is now a real hours/STANDARD_DAILY_HOURS
-                                // conversion, not the old effort-tier
-                                // lookup.
-                                const hoursTotal = previewDailyHoursFor(p.id, iso, modeTasks, modeProjects);
-                                const points = hoursTotal / STANDARD_DAILY_HOURS;
-                                const capacity = dailyCapacityFor(p as UtilPersonRow, av?.status === "half_day");
-                                const pct = capacity > 0 ? (points / capacity) * 100 : points > 0 ? 999 : 0;
+                                // 2026-08-31: hours-native end to end, and
+                                // identical to Utilization.tsx's own cell
+                                // math (planned hours vs the person's real
+                                // daily capacity hours). The old
+                                // points/STANDARD_DAILY_HOURS round-trip is
+                                // gone -- it was algebraically the same
+                                // ratio but made the two screens look like
+                                // two different calculations, which is
+                                // exactly how they drifted apart.
+                                const plannedHours = modeEngine.totalFor(p.id, iso);
+                                const capacityHours = dailyCapacityHours(p as UtilPersonRow, av?.status === "half_day");
+                                const pct = capacityHours > 0 ? (plannedHours / capacityHours) * 100 : plannedHours > 0 ? 999 : 0;
                                 const tier = tierOf(pct);
-                                // Hours are purely a display conversion of
-                                // the SAME points/capacity already used for
-                                // pct above (x STANDARD_DAILY_HOURS) -- not
-                                // a new calculation.
-                                const plannedHours = points * STANDARD_DAILY_HOURS;
-                                const capacityHours = capacity * STANDARD_DAILY_HOURS;
                                 return (
                                   <td
                                     key={iso}
                                     style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600, lineHeight: 1.35 }}
                                     title={`${p.name} · ${UTIL_PREVIEW_LABEL[mode]} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
                                   >
-                                    {tier.key === "none" ? (
+                                    {tier.key === "unallocated" ? (
                                       "–"
                                     ) : (
                                       <>
-                                        {Math.round(pct)}%
+                                        {displayPct(pct)}%
                                         {utilShowHours && (
                                           <div style={{ fontSize: 8.5, fontWeight: 500, opacity: 0.85 }}>
                                             {plannedHours.toFixed(1)}h / {capacityHours.toFixed(1)}h
@@ -4798,6 +4830,19 @@ export default function WbsPlanning() {
                   )}
                 </tbody>
               </table>
+            </div>
+            {/* Tier legend (2026-08-31). This panel had none at all, so its
+                colours could not be checked against the Utilization page's --
+                and it was in fact running a superseded 5-tier scale. Rendered
+                from the SAME UTIL_LEGEND constant the Utilization page uses,
+                so the two can never describe different boundaries again. */}
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+              {UTIL_LEGEND.map(({ pct, label, tone }) => (
+                <div key={label} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5 }}>
+                  <span className={`status-pill ${tone}`}>{pct}</span>
+                  <span style={{ color: "var(--muted)" }}>{label}</span>
+                </div>
+              ))}
             </div>
           </div>
 

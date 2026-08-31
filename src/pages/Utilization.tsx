@@ -4,13 +4,16 @@ import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { buildHolidaySet } from "../lib/workingDays";
 import {
-  PROJECT_PM_DAILY_HOURS,
   buildForwardSchedule,
   type SchedTaskRow,
   type SchedProjectRow,
   type SchedAvailabilityRow,
 } from "../lib/capacityScheduler";
-import { tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
+// One shared allocation engine for all three utilization surfaces
+// (this page, Scoped vs Logged, and WBS Planning's Utilization snapshot).
+// See src/lib/dailyAllocation.ts for what used to be duplicated here.
+import { createAllocationEngine, dailyCapacityHours, parentTaskIdsOf, type UtilTaskRow } from "../lib/dailyAllocation";
+import { displayPct, tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
 
 interface PersonRow {
   id: string;
@@ -178,40 +181,14 @@ function subWeekCellStyle(wi: number): CSSProperties {
   };
 }
 
-// Every open task's Scoped Hours are spread evenly across its own
-// Mon-Fri working days between start and due date (fallback: the due date
-// itself, if that window is entirely a weekend) -- this is what makes the
-// grid date-aware instead of lumping a task's whole effort into every day.
-// Used for PAST dates only (see capacityScheduler.ts's buildForwardSchedule
-// for today-and-future).
-function taskWorkingDays(t: TaskRow): string[] {
-  const windowStart = parseLocalDate(t.start_date ?? t.current_due_date);
-  const windowEnd = parseLocalDate(t.current_due_date);
-  if (windowEnd < windowStart) return [t.current_due_date];
-  const days: string[] = [];
-  for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) days.push(toISO(d));
-  }
-  return days.length ? days : [t.current_due_date];
-}
-
-// A project's own working-day window, for PM-overhead hours -- unlike
-// tasks there's no due-date fallback: a project with no start/end date set
-// simply doesn't contribute PM hours yet (same "set your dates" nudge used
-// everywhere else in the app).
-function projectWorkingDays(p: ProjectRow): string[] {
-  if (!p.start_date || !p.end_date) return [];
-  const windowStart = parseLocalDate(p.start_date);
-  const windowEnd = parseLocalDate(p.end_date);
-  if (windowEnd < windowStart) return [];
-  const days: string[] = [];
-  for (let d = new Date(windowStart); d <= windowEnd; d = addDays(d, 1)) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) days.push(toISO(d));
-  }
-  return days;
-}
+// NOTE (2026-08-31): the local weekend-only `taskWorkingDays` /
+// `projectWorkingDays` that used to live here are gone. They were
+// holiday-blind and Time-Off-blind, so in the default "Actual" mode any hours
+// that landed on a holiday or a person's Off day were silently deleted from
+// the grid (those cells render "Holiday"/"Off" and never print a value) --
+// one of the concrete "utilization disappeared" mechanisms. Both now come
+// from src/lib/dailyAllocation.ts, shared with Scoped vs Logged and the WBS
+// snapshot so all three spread the same hours over the same days.
 
 export default function Utilization() {
   const [people, setPeople] = useState<PersonRow[]>([]);
@@ -393,47 +370,53 @@ export default function Utilization() {
   // rollup of its children (see WBS Planning's parentAssigneeState / the
   // Effort "N/A" treatment for parents), so counting a parent's own
   // Estimated Hours+Assignee here on top of its children's would
-  // double-count whoever it's assigned to. `parentTaskIds` is every id
-  // that appears as some other task's own parent_task_id.
-  const parentTaskIds = new Set(tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id as string));
+  // double-count whoever it's assigned to. Now computed by the shared
+  // engine (dailyAllocation.ts) so every surface applies the identical
+  // rule -- WBS Planning's snapshot used to apply it to only ONE project's
+  // depth-0 parents, which is why it showed ~2x this page for the same
+  // person on the same day.
+  const parentTaskIds = useMemo(() => parentTaskIdsOf(tasks), [tasks]);
+
+  // The single shared allocation engine. Everything below (rollup cells,
+  // per-task sub-rows, PM sub-rows, weekly aggregation) reads from it, so
+  // Scoped vs Logged and the WBS snapshot -- which build the same engine
+  // from the same tables -- cannot drift from this page's numbers.
+  const engine = useMemo(
+    () =>
+      createAllocationEngine({
+        tasks: tasks as UtilTaskRow[],
+        projects,
+        holidays: holidaySet,
+        availability,
+        assigneeHistory,
+        ownerHistory,
+        todayStr: today,
+        deletedHours,
+      }),
+    [tasks, projects, holidaySet, availability, assigneeHistory, ownerHistory, today, deletedHours]
+  );
+
   // "Ever associated" -- 2026-08-14: a person's expandable sub-rows now
   // list every task/project their history shows they EVER held, not just
   // whoever currently holds it. Each sub-row's own per-date value is then
-  // gated by history too (assigneeMatchesOnDate/ownerMatchesOnDate below),
-  // so a transferred task/project correctly shows nonzero only across the
-  // date range this specific person actually held it -- the old assignee's
-  // sub-row goes to 0 the day it moves on, the new assignee's sub-row
-  // starts contributing from that same day, and the two together always
-  // sum to the task/project's real total (no double-count, no gap). This
-  // history-aware attribution only applies to PAST dates -- see
-  // buildForwardSchedule's own current-assignee-only filtering for today
-  // and future dates.
+  // gated by history too (the engine's assigneeMatchesOnDate/
+  // ownerMatchesOnDate), so a transferred task/project correctly shows
+  // nonzero only across the date range this specific person actually held
+  // it -- the old assignee's sub-row goes to 0 the day it moves on, the new
+  // assignee's sub-row starts contributing from that same day, and the two
+  // together always sum to the task/project's real total.
   function historicalOwnerIds(projectId: string): Set<string> {
     return new Set(ownerHistory.filter((h) => h.project_id === projectId).map((h) => h.person_id));
   }
   function historicalAssigneeIds(taskId: string): Set<string> {
     return new Set(assigneeHistory.filter((h) => h.task_id === taskId).map((h) => h.person_id));
   }
-  function ownerMatchesOnDate(p: ProjectRow, personId: string, dateStr: string): boolean {
-    const rows = ownerHistory.filter((h) => h.project_id === p.id);
-    if (rows.length === 0) return p.owner_id === personId;
-    return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
-  }
-  function assigneeMatchesOnDate(t: TaskRow, personId: string, dateStr: string): boolean {
-    const rows = assigneeHistory.filter((h) => h.task_id === t.id);
-    if (rows.length === 0) return t.assignee_id === personId;
-    return rows.some((h) => h.person_id === personId && h.effective_from <= dateStr && (h.effective_to === null || h.effective_to >= dateStr));
-  }
 
-  // Deletion archive: folds archived hours from permanently-deleted
-  // tasks/projects into a person's daily total, and flags whether they
-  // have any at all (to show the generic "Deleted items" sub-row below --
-  // generic because no task/project name was retained for these).
   function deletedHoursFor(personId: string, dateStr: string): number {
-    return deletedHours.filter((d) => d.person_id === personId && d.date === dateStr).reduce((sum, d) => sum + Number(d.hours), 0);
+    return engine.deletedHoursOnDate(personId, dateStr);
   }
   function hasDeletedHistory(personId: string): boolean {
-    return deletedHours.some((d) => d.person_id === personId);
+    return engine.hasDeletedHistory(personId);
   }
 
   function openTasksFor(personId: string): TaskRow[] {
@@ -448,41 +431,19 @@ export default function Utilization() {
     return projects.filter((p) => p.owner_id === personId || historicalOwnerIds(p.id).has(personId));
   }
 
-  // A task's hours on a specific PAST date for a specific person -- 0 if
-  // that date isn't one of the task's own working days (out of window, or
-  // hours not set yet), OR if history says this person didn't actually
-  // hold the assignment on that specific date (post-transfer split).
-  function taskHoursOnDate(t: TaskRow, dateStr: string, forPersonId?: string): number {
-    const hours = t.estimated_hours ?? 0;
-    if (hours === 0) return 0;
-    const workingDays = taskWorkingDays(t);
-    if (!workingDays.includes(dateStr)) return 0;
-    if (forPersonId && !assigneeMatchesOnDate(t, forPersonId, dateStr)) return 0;
-    return hours / workingDays.length;
+  function taskHoursOnDate(t: TaskRow, dateStr: string, forPersonId: string): number {
+    return engine.taskHoursOnDate(forPersonId, t as UtilTaskRow, dateStr);
   }
-
-  // PM-overhead hours for everything a person owns on a given PAST date.
-  // Phase 2 (2026-08-20): unifies what used to be two separate mechanisms
-  // (Day Planner's manual 0.5h/day default, and this page's old
-  // points-based combined-cap model) into one flat allowance -- each owned
-  // project gets PROJECT_PM_DAILY_HOURS/day on its own working days, with
-  // NO combined cap across projects. "Owns" is evaluated per-date via
-  // history, not the project's current owner_id, so a transferred
-  // project's PM overhead splits correctly across the handoff date instead
-  // of retroactively moving in full.
-  function pmHoursFor(personId: string, dateStr: string): { total: number; perProject: Map<string, number> } {
-    const owned = ownedProjectsFor(personId).filter((p) => ownerMatchesOnDate(p, personId, dateStr) && projectWorkingDays(p).includes(dateStr));
-    const perProject = new Map(owned.map((p) => [p.id, PROJECT_PM_DAILY_HOURS]));
-    return { total: owned.length * PROJECT_PM_DAILY_HOURS, perProject };
+  function pmHoursOnDate(p: ProjectRow, dateStr: string, forPersonId: string): number {
+    return engine.pmHoursOnDate(forPersonId, p, dateStr);
   }
 
   function dailyHoursFor(personId: string, dateStr: string): number {
-    const taskHours = openTasksFor(personId).reduce((sum, t) => sum + taskHoursOnDate(t, dateStr, personId), 0);
-    return taskHours + pmHoursFor(personId, dateStr).total + deletedHoursFor(personId, dateStr);
+    return engine.totalFor(personId, dateStr);
   }
 
   function dailyCapacityFor(person: PersonRow, halfDay: boolean): number {
-    return person.daily_capacity_hours * (halfDay ? 0.5 : 1);
+    return dailyCapacityHours(person, halfDay);
   }
 
   // Phase 2: today-and-future days route through the new capacity-aware
@@ -534,14 +495,25 @@ export default function Utilization() {
   // the even-split calc, today/future dates read the forward schedule.
   function valueForDate(person: PersonRow, dateStr: string): number {
     if (dateStr < today || !smoothed) return dailyHoursFor(person.id, dateStr);
-    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.totalHours ?? 0;
+    // Bugfix (2026-08-31): Capacity-Based used to drop deletedHoursFor for
+    // today/future while Actual included it, so flipping the toggle silently
+    // changed a person's total. Archived hours are real elapsed allocation
+    // either way.
+    return (schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.totalHours ?? 0) + deletedHoursFor(person.id, dateStr);
   }
   function pmValueForDate(person: PersonRow, projectId: string, dateStr: string): number {
-    if (dateStr < today || !smoothed) return pmHoursFor(person.id, dateStr).perProject.get(projectId) ?? 0;
+    if (dateStr < today || !smoothed) {
+      const p = projects.find((x) => x.id === projectId);
+      return p ? pmHoursOnDate(p, dateStr, person.id) : 0;
+    }
     return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.pmHours.get(projectId) ?? 0;
   }
   function taskValueForDate(person: PersonRow, t: TaskRow, dateStr: string): number {
     if (dateStr < today || !smoothed) return taskHoursOnDate(t, dateStr, person.id);
+    // Capacity-Based, today-and-future: the forward scheduler owns the
+    // number, but the deletion archive is not part of it -- it is folded in
+    // at the person-rollup level below (valueForDate), same as Actual, so
+    // the two modes no longer disagree about archived hours.
     return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.taskHours.get(t.id) ?? 0;
   }
 
@@ -910,7 +882,7 @@ export default function Utilization() {
                                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                                     <Icon size={13} />
                                     <span>
-                                      {tier.key === "unallocated" ? "–" : `${Math.round(pct)}%`}
+                                      {tier.key === "unallocated" ? "–" : `${displayPct(pct)}%`}
                                       {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
                                     </span>
                                   </div>
@@ -924,7 +896,7 @@ export default function Utilization() {
                               const title =
                                 stats.workingDaysCount === 0
                                   ? "No working days this week"
-                                  : `${Math.round(stats.avgPct)}% ${tier.label} · Planned ${stats.plannedHours.toFixed(1)}h / ${stats.availableHours.toFixed(1)}h · Peak day ${Math.round(
+                                  : `${displayPct(stats.avgPct)}% ${tier.label} · Planned ${stats.plannedHours.toFixed(1)}h / ${stats.availableHours.toFixed(1)}h · Peak day ${displayPct(
                                       stats.peakPct
                                     )}% · Overloaded days: ${stats.overloadedDays}`;
                               return (
@@ -941,7 +913,7 @@ export default function Utilization() {
                                 >
                                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                                     <Icon size={13} />
-                                    <span>{stats.workingDaysCount === 0 ? "–" : `${Math.round(stats.avgPct)}%`}</span>
+                                    <span>{stats.workingDaysCount === 0 ? "–" : `${displayPct(stats.avgPct)}%`}</span>
                                     <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>
                                       {stats.plannedHours.toFixed(1)}h / {stats.availableHours.toFixed(1)}h
                                     </span>
@@ -973,11 +945,11 @@ export default function Utilization() {
                         ) : (
                           <>
                             {ownedProjects.map((p) => {
-                              const workingDays = projectWorkingDays(p);
+                              const workingDays = engine.pmDays(person.id, p);
                               return (
                                 <tr key={`pm-${p.id}`}>
                                   <td
-                                    title={workingDays.length === 0 ? `${p.name} — set start/due dates to count project-management time` : `${p.name} — project management`}
+                                    title={workingDays.size === 0 ? `${p.name} — set start/due dates to count project-management time` : `${p.name} — project management`}
                                     style={{
                                       position: "sticky",
                                       left: 0,
@@ -1001,7 +973,7 @@ export default function Utilization() {
                                         const dateStr = toISO(d);
                                         const dow = d.getDay();
                                         const blocked = dayBlocked(person.id, dateStr, dow);
-                                        const win = workingDays.includes(dateStr);
+                                        const win = workingDays.has(dateStr);
                                         const value = win ? pmValueForDate(person, p.id, dateStr) : 0;
                                         return (
                                           <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
@@ -1010,7 +982,7 @@ export default function Utilization() {
                                         );
                                       })
                                     : weeks.map((week, wi) => {
-                                        const value = weekSum(week, (dateStr) => (workingDays.includes(dateStr) ? pmValueForDate(person, p.id, dateStr) : 0));
+                                        const value = weekSum(week, (dateStr) => (workingDays.has(dateStr) ? pmValueForDate(person, p.id, dateStr) : 0));
                                         return (
                                           <td key={wi} style={{ ...subWeekCellStyle(wi), fontSize: 12, color: "var(--muted)" }}>
                                             {value > 0 ? value.toFixed(2) : ""}
@@ -1022,7 +994,7 @@ export default function Utilization() {
                             })}
                             {assignedTasks.map((t) => {
                               const proj = projects.find((p) => p.id === t.project_id);
-                              const workingDays = taskWorkingDays(t);
+                              const workingDays = engine.taskDays(person.id, t as UtilTaskRow);
                               return (
                                 <tr key={t.id}>
                                   <td
@@ -1051,7 +1023,7 @@ export default function Utilization() {
                                         const dateStr = toISO(d);
                                         const dow = d.getDay();
                                         const blocked = dayBlocked(person.id, dateStr, dow);
-                                        const win = dateStr >= today ? true : workingDays.includes(dateStr);
+                                        const win = dateStr >= today ? true : workingDays.has(dateStr);
                                         const value = taskValueForDate(person, t, dateStr);
                                         return (
                                           <td key={i} style={{ ...subCellStyle(i), background: blocked ? "var(--hover-bg)" : !win ? "#f7f8fa" : undefined, fontSize: 12, color: "var(--muted)" }}>
