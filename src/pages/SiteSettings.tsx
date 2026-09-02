@@ -44,6 +44,31 @@ interface ProjectSourceRow {
   is_active: boolean;
 }
 
+// Project Category -- admin-configurable lookup (2026-09-03). Mirrors
+// Project Sources' own table/RLS/UI shape exactly. Unlike Source,
+// projects.category stays plain text (no category_id FK) -- see the
+// comment on ProjectCategoryOption in Projects.tsx for why. See
+// supabase/phase34_migration.sql for the table itself (project_categories).
+interface ProjectCategoryRow {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
+// Project Phase -- admin-configurable lookup (2026-09-03), same shape
+// as Project Category. Which Phases are offered under Status "Not
+// Started"/"In Progress" is a separate mapping table
+// (project_status_phase_mapping), edited as a matrix below -- same
+// pattern as the Task Type <-> Output Type mapping. See
+// supabase/phase35_migration.sql.
+interface ProjectPhaseRow {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
 // Output Type -- admin-configurable lookup (Phase 21, 2026-08-24) for
 // Materials Output tracking. Mirrors Project Sources' own table/RLS/UI
 // shape exactly, but keyed off tasks.output_type_id instead of
@@ -85,6 +110,34 @@ export default function SiteSettings() {
   const [editingProjectSourceId, setEditingProjectSourceId] = useState<string | null>(null);
   const [editProjectSourceName, setEditProjectSourceName] = useState("");
 
+  // Project Categories (2026-09-03) -- same list-management state shape as
+  // Project Sources above.
+  const [projectCategories, setProjectCategories] = useState<ProjectCategoryRow[]>([]);
+  const [projectCategoriesLoading, setProjectCategoriesLoading] = useState(true);
+  const [newProjectCategoryName, setNewProjectCategoryName] = useState("");
+  const [projectCategoryBusy, setProjectCategoryBusy] = useState(false);
+  const [editingProjectCategoryId, setEditingProjectCategoryId] = useState<string | null>(null);
+  const [editProjectCategoryName, setEditProjectCategoryName] = useState("");
+
+  // Project Phases (2026-09-03) -- same list-management state shape as
+  // Project Categories above.
+  const [projectPhases, setProjectPhases] = useState<ProjectPhaseRow[]>([]);
+  const [projectPhasesLoading, setProjectPhasesLoading] = useState(true);
+  const [newProjectPhaseName, setNewProjectPhaseName] = useState("");
+  const [projectPhaseBusy, setProjectPhaseBusy] = useState(false);
+  const [editingProjectPhaseId, setEditingProjectPhaseId] = useState<string | null>(null);
+  const [editProjectPhaseName, setEditProjectPhaseName] = useState("");
+  const [draggedProjectPhaseId, setDraggedProjectPhaseId] = useState<string | null>(null);
+
+  // Status <-> Phase conditional mapping (2026-09-03) -- Sandra: "the
+  // phase is conditional/dependent on the project status so make sure I
+  // can make that mapping." Only Not Started/In Progress get a real,
+  // editable subset here -- Completed/Paused/Cancelled follow fixed
+  // rules baked into Projects.tsx (see phaseOptionsForStatus there).
+  const [phaseStatusMapping, setPhaseStatusMapping] = useState<{ status: string; phase_id: string }[]>([]);
+  const [phaseMappingBusy, setPhaseMappingBusy] = useState(false);
+  const PHASE_MAPPABLE_STATUSES = ["Not Started", "In Progress"] as const;
+
   // Output Types (Phase 21, 2026-08-24) -- same list-management state
   // shape as Work Types/Project Sources above, keyed off tasks.
   const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
@@ -117,10 +170,11 @@ export default function SiteSettings() {
   // matrix directly ("add by row or by column then just check"), so
   // Output Type rename/activate/delete/add all happen from inside that
   // matrix's column headers instead of a separate list.
-  const [manageDrawer, setManageDrawer] = useState<"sources" | "work_types" | null>(null);
+  const [manageDrawer, setManageDrawer] = useState<"sources" | "categories" | "phases" | "phase_mapping" | "work_types" | null>(null);
   const [draggedWorkTypeId, setDraggedWorkTypeId] = useState<string | null>(null);
   const [draggedOutputTypeId, setDraggedOutputTypeId] = useState<string | null>(null);
   const [draggedProjectSourceId, setDraggedProjectSourceId] = useState<string | null>(null);
+  const [draggedProjectCategoryId, setDraggedProjectCategoryId] = useState<string | null>(null);
 
   // Global historical-locking switch (Sandra, 2026-08-14): "we're still
   // playing around with the system" -- while off, Utilization/Day Planner
@@ -387,6 +441,215 @@ export default function SiteSettings() {
     loadProjectSources();
   }
 
+
+  async function loadProjectCategories() {
+    setProjectCategoriesLoading(true);
+    const { data } = await supabase.from("project_categories").select("id,name,sort_order,is_active").order("sort_order");
+    setProjectCategories((data as ProjectCategoryRow[]) ?? []);
+    setProjectCategoriesLoading(false);
+  }
+
+  async function addProjectCategory() {
+    const name = newProjectCategoryName.trim();
+    if (!name) return;
+    setProjectCategoryBusy(true);
+    const nextSortOrder = projectCategories.length > 0 ? Math.max(...projectCategories.map((c) => c.sort_order)) + 1 : 1;
+    const { error } = await supabase.from("project_categories").insert({ name, sort_order: nextSortOrder });
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't add: ${error.message}`);
+      return;
+    }
+    setNewProjectCategoryName("");
+    loadProjectCategories();
+  }
+
+  function startEditProjectCategory(c: ProjectCategoryRow) {
+    setEditingProjectCategoryId(c.id);
+    setEditProjectCategoryName(c.name);
+  }
+
+  async function saveProjectCategoryRename(id: string) {
+    const name = editProjectCategoryName.trim();
+    if (!name) return;
+    setProjectCategoryBusy(true);
+    const { error } = await supabase.from("project_categories").update({ name }).eq("id", id);
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't rename: ${error.message}`);
+      return;
+    }
+    setEditingProjectCategoryId(null);
+    loadProjectCategories();
+  }
+
+  async function toggleProjectCategoryActive(c: ProjectCategoryRow) {
+    setProjectCategoryBusy(true);
+    const { error } = await supabase.from("project_categories").update({ is_active: !c.is_active }).eq("id", c.id);
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadProjectCategories();
+  }
+
+  // Delete: only allowed when no project currently references this
+  // Category by name (category is plain text, not a category_id FK --
+  // see ProjectCategoryRow above), same usage-check convention as
+  // deleteProjectSource/deleteWorkType.
+  async function deleteProjectCategory(c: ProjectCategoryRow) {
+    setProjectCategoryBusy(true);
+    const { count, error: countError } = await supabase
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("category", c.name);
+    if (countError) {
+      setProjectCategoryBusy(false);
+      window.alert(`Couldn't check usage: ${countError.message}`);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setProjectCategoryBusy(false);
+      window.alert(
+        `Can't delete -- ${count} project${count === 1 ? "" : "s"} still use this Category. Deactivate it instead, or reassign those projects first.`
+      );
+      return;
+    }
+    if (!window.confirm(`Delete "${c.name}"? This can't be undone.`)) {
+      setProjectCategoryBusy(false);
+      return;
+    }
+    const { error } = await supabase.from("project_categories").delete().eq("id", c.id);
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadProjectCategories();
+  }
+
+
+  async function loadProjectPhases() {
+    setProjectPhasesLoading(true);
+    const { data } = await supabase.from("project_phases").select("id,name,sort_order,is_active").order("sort_order");
+    setProjectPhases((data as ProjectPhaseRow[]) ?? []);
+    setProjectPhasesLoading(false);
+  }
+
+  async function addProjectPhase() {
+    const name = newProjectPhaseName.trim();
+    if (!name) return;
+    setProjectPhaseBusy(true);
+    const nextSortOrder = projectPhases.length > 0 ? Math.max(...projectPhases.map((ph) => ph.sort_order)) + 1 : 1;
+    const { error } = await supabase.from("project_phases").insert({ name, sort_order: nextSortOrder });
+    setProjectPhaseBusy(false);
+    if (error) {
+      window.alert(`Couldn't add: ${error.message}`);
+      return;
+    }
+    setNewProjectPhaseName("");
+    loadProjectPhases();
+  }
+
+  function startEditProjectPhase(ph: ProjectPhaseRow) {
+    setEditingProjectPhaseId(ph.id);
+    setEditProjectPhaseName(ph.name);
+  }
+
+  async function saveProjectPhaseRename(id: string) {
+    const name = editProjectPhaseName.trim();
+    if (!name) return;
+    setProjectPhaseBusy(true);
+    const { error } = await supabase.from("project_phases").update({ name }).eq("id", id);
+    setProjectPhaseBusy(false);
+    if (error) {
+      window.alert(`Couldn't rename: ${error.message}`);
+      return;
+    }
+    setEditingProjectPhaseId(null);
+    loadProjectPhases();
+  }
+
+  async function toggleProjectPhaseActive(ph: ProjectPhaseRow) {
+    setProjectPhaseBusy(true);
+    const { error } = await supabase.from("project_phases").update({ is_active: !ph.is_active }).eq("id", ph.id);
+    setProjectPhaseBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadProjectPhases();
+  }
+
+  // Delete: only allowed when no project currently references this Phase
+  // by name (phase is plain text, same convention as Category).
+  async function deleteProjectPhase(ph: ProjectPhaseRow) {
+    setProjectPhaseBusy(true);
+    const { count, error: countError } = await supabase
+      .from("projects")
+      .select("id", { count: "exact", head: true })
+      .eq("phase", ph.name);
+    if (countError) {
+      setProjectPhaseBusy(false);
+      window.alert(`Couldn't check usage: ${countError.message}`);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setProjectPhaseBusy(false);
+      window.alert(
+        `Can't delete -- ${count} project${count === 1 ? "" : "s"} still use this Phase. Deactivate it instead, or reassign those projects first.`
+      );
+      return;
+    }
+    if (!window.confirm(`Delete "${ph.name}"? This can't be undone.`)) {
+      setProjectPhaseBusy(false);
+      return;
+    }
+    const { error } = await supabase.from("project_phases").delete().eq("id", ph.id);
+    setProjectPhaseBusy(false);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadProjectPhases();
+  }
+
+  async function reorderProjectPhases(orderedIds: string[]) {
+    setProjectPhaseBusy(true);
+    const results = await Promise.all(
+      orderedIds.map((id, idx) => supabase.from("project_phases").update({ sort_order: idx + 1 }).eq("id", id))
+    );
+    setProjectPhaseBusy(false);
+    const err = results.find((r) => r.error)?.error;
+    if (err) {
+      window.alert(`Couldn't reorder: ${err.message}`);
+      return;
+    }
+    loadProjectPhases();
+  }
+
+  async function loadPhaseStatusMapping() {
+    const { data } = await supabase.from("project_status_phase_mapping").select("status,phase_id");
+    setPhaseStatusMapping((data as { status: string; phase_id: string }[]) ?? []);
+  }
+
+  // Toggle one Status <-> Phase pairing -- same toggle-by-existence
+  // pattern as toggleMapping (Task Type <-> Output Type) above.
+  async function togglePhaseStatusMapping(status: string, phaseId: string) {
+    const exists = phaseStatusMapping.some((m) => m.status === status && m.phase_id === phaseId);
+    setPhaseMappingBusy(true);
+    const { error } = exists
+      ? await supabase.from("project_status_phase_mapping").delete().eq("status", status).eq("phase_id", phaseId)
+      : await supabase.from("project_status_phase_mapping").insert({ status, phase_id: phaseId });
+    setPhaseMappingBusy(false);
+    if (error) {
+      window.alert(`Couldn't update mapping: ${error.message}`);
+      return;
+    }
+    loadPhaseStatusMapping();
+  }
+
   async function loadOutputTypes() {
     setOutputTypesLoading(true);
     const { data } = await supabase.from("output_types").select("id,name,sort_order,is_active").order("sort_order");
@@ -562,6 +825,21 @@ export default function SiteSettings() {
     loadProjectSources();
   }
 
+  // Same drag-handle reorder as Project Sources above.
+  async function reorderProjectCategories(orderedIds: string[]) {
+    setProjectCategoryBusy(true);
+    const results = await Promise.all(
+      orderedIds.map((id, idx) => supabase.from("project_categories").update({ sort_order: idx + 1 }).eq("id", id))
+    );
+    setProjectCategoryBusy(false);
+    const err = results.find((r) => r.error)?.error;
+    if (err) {
+      window.alert(`Couldn't reorder: ${err.message}`);
+      return;
+    }
+    loadProjectCategories();
+  }
+
   function listSummary(items: { is_active: boolean }[]): string {
     const active = items.filter((i) => i.is_active).length;
     const inactive = items.length - active;
@@ -572,6 +850,9 @@ export default function SiteSettings() {
     if (me?.access_level === "full") {
       loadWorkTypes();
       loadProjectSources();
+      loadProjectCategories();
+      loadProjectPhases();
+      loadPhaseStatusMapping();
       loadOutputTypes();
       loadMappings();
       loadHistoricalLocking();
@@ -620,6 +901,51 @@ export default function SiteSettings() {
             </tr>
             <tr>
               <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Project Categories</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  What kind of training a project is. Offered on every project's Category field.
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{projectCategoriesLoading ? "…" : listSummary(projectCategories)}</td>
+              <td>
+                <button onClick={() => setManageDrawer("categories")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Project Phases</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Pipeline stage. Offered on every project's Phase field and the Board's default (Phase) grouping.
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{projectPhasesLoading ? "…" : listSummary(projectPhases)}</td>
+              <td>
+                <button onClick={() => setManageDrawer("phases")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Status &rarr; Phase Mapping</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Which Phases are offered when a project's Status is Not Started or In Progress. (Completed is always
+                  "Done"; Paused/Cancelled always offer every active Phase -- those three aren't editable here.)
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                {phaseStatusMapping.length} pairing{phaseStatusMapping.length === 1 ? "" : "s"}
+              </td>
+              <td>
+                <button onClick={() => setManageDrawer("phase_mapping")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
                 <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Task Types</div>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
                   Offered on every task (Projects &amp; WBS Planning). Also sets which Output Types each Task Type allows.
@@ -648,7 +974,7 @@ export default function SiteSettings() {
               top: 0,
               right: 0,
               height: "100vh",
-              width: manageDrawer === "work_types" ? "min(1120px, 94vw)" : 480,
+              width: manageDrawer === "work_types" || manageDrawer === "phase_mapping" ? "min(1120px, 94vw)" : 480,
               maxWidth: "94vw",
               background: "var(--surface, #fff)",
               boxShadow: "-8px 0 24px rgba(0,0,0,0.18)",
@@ -767,6 +1093,322 @@ export default function SiteSettings() {
                       </div>
                     );
                   })}
+                </div>
+              </>
+            ) : manageDrawer === "categories" ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Project Categories</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Drag the grip handle to reorder. Deactivating keeps a category's label on any project that already
+                  has it set -- it just disappears from the picker on new projects. A brand-new category renders with
+                  a generic folder icon and neutral color until it's mapped to a specific one in code.
+                </div>
+
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <input
+                    value={newProjectCategoryName}
+                    onChange={(e) => setNewProjectCategoryName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addProjectCategory();
+                    }}
+                    placeholder="New category name"
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+                  />
+                  <button onClick={addProjectCategory} disabled={projectCategoryBusy || !newProjectCategoryName.trim()} style={addButtonStyle(!newProjectCategoryName.trim())}>
+                    <Plus size={14} />
+                    Add
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  {projectCategoriesLoading && <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
+                  {!projectCategoriesLoading && projectCategories.length === 0 && (
+                    <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
+                  )}
+                  {projectCategories.map((c) => {
+                    const isEditing = editingProjectCategoryId === c.id;
+                    const isDragging = draggedProjectCategoryId === c.id;
+                    return (
+                      <div
+                        key={c.id}
+                        onDragOver={(e) => {
+                          if (!draggedProjectCategoryId || draggedProjectCategoryId === c.id) return;
+                          e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (!draggedProjectCategoryId) return;
+                          const ids = projectCategories.map((x) => x.id);
+                          const without = ids.filter((id) => id !== draggedProjectCategoryId);
+                          without.splice(without.indexOf(c.id), 0, draggedProjectCategoryId);
+                          setDraggedProjectCategoryId(null);
+                          reorderProjectCategories(without);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 10px",
+                          borderBottom: "1px solid var(--border)",
+                          opacity: isDragging ? 0.4 : c.is_active ? 1 : 0.55,
+                        }}
+                      >
+                        <span
+                          draggable
+                          onDragStart={() => setDraggedProjectCategoryId(c.id)}
+                          onDragEnd={() => setDraggedProjectCategoryId(null)}
+                          title="Drag to reorder"
+                          style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                        >
+                          <GripVertical size={14} />
+                        </span>
+                        {isEditing ? (
+                          <input
+                            value={editProjectCategoryName}
+                            onChange={(e) => setEditProjectCategoryName(e.target.value)}
+                            onBlur={() => saveProjectCategoryRename(c.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveProjectCategoryRename(c.id);
+                              if (e.key === "Escape") setEditingProjectCategoryId(null);
+                            }}
+                            autoFocus
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={{ ...inputStyle, marginTop: 0, flex: 1, fontWeight: 600 }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditProjectCategory(c)}
+                            title="Click to rename"
+                            style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)", cursor: "pointer" }}
+                          >
+                            {c.name}
+                          </span>
+                        )}
+                        <span className={`status-pill ${c.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
+                          {c.is_active ? "Active" : "Off"}
+                        </span>
+                        <button onClick={() => toggleProjectCategoryActive(c)} disabled={projectCategoryBusy} title={c.is_active ? "Deactivate" : "Reactivate"} style={iconBtnStyle(c.is_active ? "var(--danger-text)" : "var(--success-text)")}>
+                          {c.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                        </button>
+                        <button onClick={() => deleteProjectCategory(c)} disabled={projectCategoryBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : manageDrawer === "phases" ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Project Phases</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Drag the grip handle to reorder. Deactivating keeps a phase's label on any project that already has
+                  it set -- it just disappears from the picker on new selections. To control which of these show up
+                  under Status "Not Started" vs "In Progress", use the "Status &rarr; Phase Mapping" list instead.
+                </div>
+
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <input
+                    value={newProjectPhaseName}
+                    onChange={(e) => setNewProjectPhaseName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addProjectPhase();
+                    }}
+                    placeholder="New phase name"
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+                  />
+                  <button onClick={addProjectPhase} disabled={projectPhaseBusy || !newProjectPhaseName.trim()} style={addButtonStyle(!newProjectPhaseName.trim())}>
+                    <Plus size={14} />
+                    Add
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  {projectPhasesLoading && <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
+                  {!projectPhasesLoading && projectPhases.length === 0 && (
+                    <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
+                  )}
+                  {projectPhases.map((ph) => {
+                    const isEditing = editingProjectPhaseId === ph.id;
+                    const isDragging = draggedProjectPhaseId === ph.id;
+                    return (
+                      <div
+                        key={ph.id}
+                        onDragOver={(e) => {
+                          if (!draggedProjectPhaseId || draggedProjectPhaseId === ph.id) return;
+                          e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (!draggedProjectPhaseId) return;
+                          const ids = projectPhases.map((x) => x.id);
+                          const without = ids.filter((id) => id !== draggedProjectPhaseId);
+                          without.splice(without.indexOf(ph.id), 0, draggedProjectPhaseId);
+                          setDraggedProjectPhaseId(null);
+                          reorderProjectPhases(without);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 10px",
+                          borderBottom: "1px solid var(--border)",
+                          opacity: isDragging ? 0.4 : ph.is_active ? 1 : 0.55,
+                        }}
+                      >
+                        <span
+                          draggable
+                          onDragStart={() => setDraggedProjectPhaseId(ph.id)}
+                          onDragEnd={() => setDraggedProjectPhaseId(null)}
+                          title="Drag to reorder"
+                          style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                        >
+                          <GripVertical size={14} />
+                        </span>
+                        {isEditing ? (
+                          <input
+                            value={editProjectPhaseName}
+                            onChange={(e) => setEditProjectPhaseName(e.target.value)}
+                            onBlur={() => saveProjectPhaseRename(ph.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveProjectPhaseRename(ph.id);
+                              if (e.key === "Escape") setEditingProjectPhaseId(null);
+                            }}
+                            autoFocus
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={{ ...inputStyle, marginTop: 0, flex: 1, fontWeight: 600 }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditProjectPhase(ph)}
+                            title="Click to rename"
+                            style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)", cursor: "pointer" }}
+                          >
+                            {ph.name}
+                          </span>
+                        )}
+                        <span className={`status-pill ${ph.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
+                          {ph.is_active ? "Active" : "Off"}
+                        </span>
+                        <button onClick={() => toggleProjectPhaseActive(ph)} disabled={projectPhaseBusy} title={ph.is_active ? "Deactivate" : "Reactivate"} style={iconBtnStyle(ph.is_active ? "var(--danger-text)" : "var(--success-text)")}>
+                          {ph.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                        </button>
+                        <button onClick={() => deleteProjectPhase(ph)} disabled={projectPhaseBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : manageDrawer === "phase_mapping" ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Status &rarr; Phase Mapping</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Check a box to offer that Phase when a project's Status is set to that row. To rename, reorder, add,
+                  or deactivate a Phase itself, use "Project Phases" instead -- only active Phases are shown as
+                  columns here.
+                </div>
+
+                <div style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  <table style={{ borderCollapse: "collapse", width: "max-content" }}>
+                    <thead>
+                      <tr>
+                        <th
+                          style={{
+                            position: "sticky",
+                            left: 0,
+                            zIndex: 2,
+                            background: "var(--surface)",
+                            minWidth: 130,
+                            borderBottom: "1px solid var(--border)",
+                            borderRight: "1px solid var(--border)",
+                            padding: "6px 10px",
+                            textAlign: "left",
+                            fontSize: 10.5,
+                            color: "var(--muted)",
+                          }}
+                        >
+                          Status \ Phase
+                        </th>
+                        {projectPhases.filter((ph) => ph.is_active).map((ph) => (
+                          <th
+                            key={ph.id}
+                            style={{
+                              minWidth: 92,
+                              padding: "6px 5px",
+                              borderBottom: "1px solid var(--border)",
+                              borderLeft: "1px solid var(--border)",
+                              fontSize: 10.5,
+                              fontWeight: 600,
+                              color: "var(--navy)",
+                              textAlign: "center",
+                            }}
+                          >
+                            {ph.name}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {PHASE_MAPPABLE_STATUSES.map((status) => (
+                        <tr key={status}>
+                          <td
+                            style={{
+                              position: "sticky",
+                              left: 0,
+                              background: "var(--surface)",
+                              borderRight: "1px solid var(--border)",
+                              borderBottom: "1px solid var(--border)",
+                              padding: "7px 10px",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--navy)",
+                            }}
+                          >
+                            {status}
+                          </td>
+                          {projectPhases.filter((ph) => ph.is_active).map((ph) => {
+                            const checked = phaseStatusMapping.some((m) => m.status === status && m.phase_id === ph.id);
+                            return (
+                              <td
+                                key={ph.id}
+                                style={{ borderLeft: "1px solid var(--border)", borderBottom: "1px solid var(--border)", textAlign: "center", padding: "7px 5px" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={phaseMappingBusy}
+                                  onChange={() => togglePhaseStatusMapping(status, ph.id)}
+                                />
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </>
             ) : (

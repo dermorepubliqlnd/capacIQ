@@ -145,6 +145,13 @@ export default function HoursOverview() {
   const [personFilter, setPersonFilter] = useState<Set<string> | null>(null);
   const [personFilterOpen, setPersonFilterOpen] = useState(false);
   const [personFilterSearch, setPersonFilterSearch] = useState("");
+  // 2026-09-03 (Sandra: retain deactivated people's data, but let me
+  // choose active-only vs show-all in the view). Deactivated people's
+  // logged/scoped hours were never deleted -- this only controls
+  // whether their row/name is DISPLAYED here, same "nothing is ever
+  // silently lost, only hidden by default" convention as everywhere
+  // else in the app.
+  const [showAllPeople, setShowAllPeople] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -244,7 +251,8 @@ export default function HoursOverview() {
     el.scrollLeft = Math.max(0, Math.min(desired, maxScroll));
   }, [days]);
 
-  const visiblePeople = personFilter ? people.filter((p) => personFilter.has(p.id)) : people;
+  const scopedPeople = showAllPeople ? allPeople : people;
+  const visiblePeople = personFilter ? scopedPeople.filter((p) => personFilter.has(p.id)) : scopedPeople;
 
   const holidayByDate = useMemo(() => {
     const m = new Map<string, HolidayRow>();
@@ -527,7 +535,7 @@ export default function HoursOverview() {
               ))}
             </select>
             <UtilPersonFilterButton
-              people={people}
+              people={scopedPeople}
               selected={personFilter}
               open={personFilterOpen}
               setOpen={setPersonFilterOpen}
@@ -535,6 +543,15 @@ export default function HoursOverview() {
               setSearch={setPersonFilterSearch}
               onChange={setPersonFilter}
             />
+            <select
+              value={showAllPeople ? "all" : "active"}
+              onChange={(e) => setShowAllPeople(e.target.value === "all")}
+              title="Deactivated people's past hours are always kept -- this only controls whether they're shown here"
+              style={{ fontSize: 12, padding: "4px 6px" }}
+            >
+              <option value="active">Active people only</option>
+              <option value="all">Show all (incl. deactivated)</option>
+            </select>
             <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours. Click a person to see the task breakdown.</span>
           </div>
 
@@ -605,10 +622,10 @@ export default function HoursOverview() {
                 </tr>
               </thead>
               <tbody>
-                {people.length === 0 ? (
+                {visiblePeople.length === 0 ? (
                   <tr>
                     <td colSpan={1 + days.length} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
-                      No active people found.
+                      {showAllPeople ? "No people found." : "No active people found."}
                     </td>
                   </tr>
                 ) : (
@@ -902,7 +919,7 @@ export default function HoursOverview() {
             <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Person</label>
             <select value={taskFilterPersonId} onChange={(e) => setTaskFilterPersonId(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
               <option value="">All people</option>
-              {people.map((p) => (
+              {scopedPeople.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>

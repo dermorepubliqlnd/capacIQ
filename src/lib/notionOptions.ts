@@ -116,6 +116,12 @@ export const TASK_STATUS_OPTIONS = flatten(TASK_STATUS_GROUPED);
 // -- not a fixed value, and not restricted to just the "in progress"
 // subset (a project can be cancelled before it ever left Backlog/Queued,
 // or even after reaching Done in rare cases).
+// SUPERSEDED 2026-09-03: Phase is now an admin-configurable list
+// (project_phases table) and Status->Phase mapping is now Sandra-
+// editable (project_status_phase_mapping table, Site Settings), not
+// these hardcoded arrays -- see ProjectPhaseOption's comment in
+// Projects.tsx. Kept here only as the migration's one-time seed data
+// reference / historical record; nothing imports these anymore.
 export const PROJECT_PHASE_NOT_STARTED = ["Backlog", "Queued"];
 export const PROJECT_PHASE_IN_PROGRESS = ["Scoping", "Design", "Development", "Evaluation", "Delivery"];
 export const PROJECT_PHASE_COMPLETED = ["Done"];

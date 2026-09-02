@@ -192,6 +192,12 @@ function subWeekCellStyle(wi: number): CSSProperties {
 
 export default function Utilization() {
   const [people, setPeople] = useState<PersonRow[]>([]);
+  // Every person, active or not (2026-09-03) -- deactivated people's
+  // past Utilization data was never deleted, it's just been hidden by
+  // the active-only fetch below by default. showAllPeople lets Sandra
+  // flip to seeing everyone, same toggle as HoursOverview.tsx.
+  const [allPeople, setAllPeople] = useState<PersonRow[]>([]);
+  const [showAllPeople, setShowAllPeople] = useState(false);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
@@ -233,8 +239,9 @@ export default function Utilization() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: p }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: wts }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
+    const [{ data: p }, { data: ap }, { data: pr }, { data: tk }, { data: av }, { data: hol }, { data: wts }, { data: ownHist }, { data: assHist }, { data: delHrs }, { data: settings }] = await Promise.all([
       supabase.from("people").select("id,name,daily_capacity_hours,is_active").eq("is_active", true).order("name"),
+      supabase.from("people").select("id,name,daily_capacity_hours,is_active").order("name"),
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,wbs_status").eq("is_archived", false),
       supabase.from("tasks").select("id,project_id,parent_task_id,name,assignee_id,status,start_date,current_due_date,estimated_hours,is_archived,sort_order,work_type_id").eq("is_archived", false),
       supabase.from("person_availability").select("*"),
@@ -246,6 +253,7 @@ export default function Utilization() {
       supabase.from("app_settings").select("historical_locking_enabled").eq("id", true).single(),
     ]);
     setPeople((p as PersonRow[]) ?? []);
+    setAllPeople((ap as PersonRow[]) ?? []);
     setProjects((pr as ProjectRow[]) ?? []);
     setTasks((tk as TaskRow[]) ?? []);
     setAvailability((av as AvailabilityRow[]) ?? []);
@@ -452,6 +460,7 @@ export default function Utilization() {
   // (maxDaysGuard) so a queued-up task's projected due date resolves even
   // if it falls past the currently-visible week range.
   const isCompleteStatus = (status: string | null) => statusGroupOf(TASK_STATUS_GROUPED, status) === "complete";
+  const scopedPeople = showAllPeople ? allPeople : people;
   const schedulesByPerson = useMemo(() => {
     const fixedWorkTypeIds = new Set(workTypes.filter((w) => w.is_fixed_schedule).map((w) => w.id));
     const schedTasks: SchedTaskRow[] = tasks.map((t) => ({
@@ -469,7 +478,7 @@ export default function Utilization() {
     const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date, wbs_status: p.wbs_status }));
     const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
     const map = new Map<string, ReturnType<typeof buildForwardSchedule>>();
-    people.forEach((person) => {
+    scopedPeople.forEach((person) => {
       map.set(
         person.id,
         buildForwardSchedule({
@@ -488,7 +497,7 @@ export default function Utilization() {
     });
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [people, tasks, projects, availability, holidaySet, today, workTypes]);
+  }, [scopedPeople, tasks, projects, availability, holidaySet, today, workTypes]);
 
   // Single source of truth for a rollup cell's numeric hours value, for
   // BOTH the daily grid and the weekly aggregation below -- past dates use
@@ -622,6 +631,20 @@ export default function Utilization() {
             onChange={(e) => jumpToDate(e.target.value)}
             style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
           />
+        </label>
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          <select
+            value={showAllPeople ? "all" : "active"}
+            onChange={(e) => setShowAllPeople(e.target.value === "all")}
+            title="Deactivated people's past hours are always kept -- this only controls whether they're shown here"
+            style={{ fontSize: 11, fontWeight: 600, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          >
+            <option value="active">Active people only</option>
+            <option value="all">Show all (incl. deactivated)</option>
+          </select>
         </label>
 
         <div style={{ width: 1, height: 18, background: "var(--border)" }} />
@@ -802,14 +825,14 @@ export default function Utilization() {
               )}
             </thead>
             <tbody>
-              {people.length === 0 ? (
+              {scopedPeople.length === 0 ? (
                 <tr>
                   <td colSpan={1 + columnCount} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
-                    No active people found.
+                    {showAllPeople ? "No people found." : "No active people found."}
                   </td>
                 </tr>
               ) : (
-                people.map((person) => {
+                scopedPeople.map((person) => {
                   const isExpanded = expanded.includes(person.id);
                   const ownedProjects = ownedProjectsFor(person.id);
                   const assignedTasks = openTasksFor(person.id);

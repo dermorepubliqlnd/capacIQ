@@ -51,7 +51,6 @@ interface DeletedSpentHourRow {
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { Play, Square } from "lucide-react";
 import {
-  PROJECT_CATEGORY_OPTIONS,
   PROJECT_CATEGORY_TONES,
   PROJECT_EFFORT_LEVEL_OPTIONS,
   PROJECT_EFFORT_LEVEL_TONES,
@@ -60,13 +59,7 @@ import {
   priorityLabel,
   PROJECT_STATUS_OPTIONS,
   PROJECT_STATUS_TONES,
-  PROJECT_PHASE_OPTIONS_BY_STATUS,
   PROJECT_PHASE_TONES,
-  PROJECT_PHASE_ALL,
-  PROJECT_PHASE_NOT_STARTED,
-  PROJECT_PHASE_IN_PROGRESS,
-  PROJECT_PHASE_COMPLETED,
-  nextPhaseForStatus,
   TASK_STATUS_GROUPED,
   TASK_STATUS_OPTIONS,
   TASK_EFFORT_OPTIONS,
@@ -99,6 +92,43 @@ interface WorkTypeOption {
 // (which classifies training TYPE). Fetched unfiltered for the same
 // historical-label reason as WorkTypeOption above.
 interface ProjectSourceOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+// Project Category (2026-09-03) -- admin-configurable lookup, mirrors
+// ProjectSourceOption exactly. Unlike Source, projects.category stays a
+// plain text column (not a category_id FK) -- Category has far more code
+// touchpoints (icon map, tone map, grouping, board columns) than Source,
+// so this keeps the refactor to "where does the option LIST come from"
+// only. A brand-new custom category renders with the generic Folder icon
+// and neutral tone until someone maps it in PROJECT_CATEGORY_ICON_COMPONENTS
+// / PROJECT_CATEGORY_TONES in code -- flagged to Sandra, not blocking.
+interface ProjectCategoryOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
+
+// Project Phase (2026-09-03) -- admin-configurable lookup, mirrors
+// ProjectCategoryOption. Which Phases are OFFERED under which Status
+// (Sandra: "phase is conditional/dependent on status, make sure I can
+// make that mapping") is a separate many-to-many table,
+// project_status_phase_mapping, edited as a matrix in Site Settings --
+// same pattern as the existing Task Type <-> Output Type mapping.
+// Deliberately NOT covered: Status itself (Not Started/In Progress/
+// Completed/Paused/Cancelled) stays a fixed, code-defined set, not
+// admin-renameable -- health scoring, the Design-phase lock guardrail,
+// and a DB CHECK constraint all key off those exact 5 strings, so
+// letting them be renamed/deleted here would silently break those.
+// Completed is always forced to Phase "Done", and Paused/Cancelled
+// always offer the full active Phase list (both pre-existing, deliberate
+// product rules -- see project_capaciq_status_phase_redesign) -- so
+// only Not Started and In Progress have a real, mapping-editable subset.
+interface ProjectPhaseOption {
   id: string;
   name: string;
   is_active: boolean;
@@ -513,12 +543,6 @@ const PROJECT_BOARD_STATUS_COLUMNS: BoardColumnDef[] = PROJECT_STATUS_OPTIONS.ma
   tone: PROJECT_STATUS_TONES[value] ?? "neutral",
 }));
 
-const PROJECT_BOARD_PHASE_COLUMNS: BoardColumnDef[] = [
-  ...PROJECT_PHASE_NOT_STARTED.map((value) => ({ value, label: value, clusterLabel: "Not Started", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
-  ...PROJECT_PHASE_IN_PROGRESS.map((value) => ({ value, label: value, clusterLabel: "In Progress", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
-  ...PROJECT_PHASE_COMPLETED.map((value) => ({ value, label: value, clusterLabel: "Completed", tone: PROJECT_PHASE_TONES[value] ?? "neutral" })),
-];
-
 const TASK_BOARD_COLUMNS: BoardColumnDef[] = TASK_STATUS_GROUPED.flatMap((group) =>
   group.options.map((value) => ({
     value,
@@ -853,6 +877,49 @@ export default function Projects() {
   // picker itself narrows this down to is_active for new selections.
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [projectSources, setProjectSources] = useState<ProjectSourceOption[]>([]);
+  const [projectCategories, setProjectCategories] = useState<ProjectCategoryOption[]>([]);
+  // Active category names, in sort order -- replaces the old hardcoded
+  // PROJECT_CATEGORY_OPTIONS wherever the Category picker/grouping/board
+  // needs its list of choices.
+  const projectCategoryOptions = useMemo(
+    () => projectCategories.filter((c) => c.is_active).map((c) => c.name),
+    [projectCategories]
+  );
+  const [projectPhases, setProjectPhases] = useState<ProjectPhaseOption[]>([]);
+  // status_phase_mapping rows: which Phase ids are offered under "Not
+  // Started" / "In Progress" (the only two Statuses with a real,
+  // Sandra-editable subset -- see ProjectPhaseOption's comment above).
+  const [phaseStatusMapping, setPhaseStatusMapping] = useState<{ status: string; phase_id: string }[]>([]);
+  const activePhaseNames = useMemo(
+    () => projectPhases.filter((ph) => ph.is_active).map((ph) => ph.name),
+    [projectPhases]
+  );
+  // Replaces the old hardcoded PROJECT_PHASE_OPTIONS_BY_STATUS lookup --
+  // Completed/Paused/Cancelled keep their fixed, previously-agreed rules;
+  // Not Started/In Progress read Sandra's own mapping (Site Settings),
+  // always including the project's OWN current phase even if it's since
+  // been unmapped or deactivated, same "never make an existing value
+  // disappear from its own picker" convention as projectSources above.
+  function phaseOptionsForStatus(status: string | null, currentPhase?: string | null): string[] {
+    if (status === "Completed") return ["Done"];
+    if (status === "Paused" || status === "Cancelled" || !status) {
+      return currentPhase && !activePhaseNames.includes(currentPhase) ? [...activePhaseNames, currentPhase] : activePhaseNames;
+    }
+    const mappedIds = new Set(phaseStatusMapping.filter((m) => m.status === status).map((m) => m.phase_id));
+    const mapped = projectPhases.filter((ph) => mappedIds.has(ph.id) && (ph.is_active || ph.name === currentPhase)).map((ph) => ph.name);
+    return currentPhase && !mapped.includes(currentPhase) ? [...mapped, currentPhase] : mapped;
+  }
+  // Replaces the old hardcoded nextPhaseForStatus import from
+  // notionOptions.ts -- same cascade rules, but the Not Started/In
+  // Progress default and "already valid" check now read the live
+  // mapping instead of a fixed array.
+  function nextPhaseForStatusLive(currentPhase: string | null, newStatus: string): string | null {
+    if (newStatus === "Completed") return "Done";
+    if (newStatus === "Paused" || newStatus === "Cancelled") return currentPhase;
+    const options = phaseOptionsForStatus(newStatus, currentPhase);
+    if (currentPhase && options.includes(currentPhase)) return currentPhase;
+    return options[0] ?? currentPhase;
+  }
   // Manager-chain data for the new validation-authority check below
   // (2026-08-20) -- deliberately a SEPARATE, unfiltered fetch (includes
   // inactive people) from `people` above, which stays active-only for
@@ -986,7 +1053,7 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }, { data: projectSourceData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }, { data: projectSourceData }, { data: projectCategoryData }, { data: projectPhaseData }, { data: phaseMappingData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("people").select("id,name").eq("is_active", true).order("name"),
@@ -1009,6 +1076,9 @@ export default function Projects() {
       supabase.from("deleted_project_spent_hours_archive").select("project_id,person_id,hours"),
       supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
       supabase.from("project_sources").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("project_categories").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("project_phases").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("project_status_phase_mapping").select("status,phase_id"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -1022,6 +1092,9 @@ export default function Projects() {
     setDeletedSpentHours((delSpentData as DeletedSpentHourRow[]) ?? []);
     setWorkTypes((workTypeData as WorkTypeOption[]) ?? []);
     setProjectSources((projectSourceData as ProjectSourceOption[]) ?? []);
+    setProjectCategories((projectCategoryData as ProjectCategoryOption[]) ?? []);
+    setProjectPhases((projectPhaseData as ProjectPhaseOption[]) ?? []);
+    setPhaseStatusMapping((phaseMappingData as { status: string; phase_id: string }[]) ?? []);
     const nextNoteCounts: Record<string, number> = {};
     for (const row of (noteData as { project_id: string }[]) ?? []) {
       nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
@@ -1082,7 +1155,7 @@ export default function Projects() {
   // rules) -- always go through this helper on a Status change rather than
   // writing { status } alone, so Phase never drifts out of sync with it.
   function changeProjectStatus(p: ProjectRow, newStatus: string | null) {
-    updateProject(p.id, { status: newStatus, phase: newStatus ? nextPhaseForStatus(p.phase, newStatus) : p.phase });
+    updateProject(p.id, { status: newStatus, phase: newStatus ? nextPhaseForStatusLive(p.phase, newStatus) : p.phase });
   }
 
   function dismissDoneSuggestion(projectId: string) {
@@ -1907,7 +1980,7 @@ export default function Projects() {
             value={p.phase ?? ""}
             editable={canEditProject(p)}
             allowEmpty
-            options={PROJECT_PHASE_OPTIONS_BY_STATUS[p.status ?? ""] ?? PROJECT_PHASE_ALL}
+            options={phaseOptionsForStatus(p.status, p.phase)}
             renderReadOnly={() => (p.phase ? <span className={`status-pill ${PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral"}`}>{p.phase}</span> : "—")}
             onCommit={async (v) => {
               if (v === "Design" && p.phase !== "Design" && !(await guardDesignPhaseLock(p))) return;
@@ -2009,7 +2082,7 @@ export default function Projects() {
             value={p.category ?? ""}
             editable={canEditProject(p)}
             allowEmpty
-            options={PROJECT_CATEGORY_OPTIONS}
+            options={projectCategoryOptions}
             renderReadOnly={() =>
               p.category ? (
                 <span className={`status-pill ${PROJECT_CATEGORY_TONES[p.category] ?? "neutral"}`} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
@@ -2194,7 +2267,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours, projectCategoryOptions, projectPhases, phaseStatusMapping, activePhaseNames]
   );
 
   // Board-view card body. Name always renders first/bold as the card's
@@ -2281,7 +2354,7 @@ export default function Projects() {
       label: "Phase",
       getGroup: (p) => p.phase ?? "No phase",
       getTone: (p) => PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral",
-      allGroups: () => [...PROJECT_PHASE_ALL, "No phase"],
+      allGroups: () => [...activePhaseNames, "No phase"],
     },
     {
       key: "priority",
@@ -2301,8 +2374,8 @@ export default function Projects() {
       label: "Category",
       getGroup: (p) => p.category ?? "Uncategorized",
       getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
-      // PROJECT_CATEGORY_OPTIONS is already alphabetized in notionOptions.ts.
-      allGroups: () => [...PROJECT_CATEGORY_OPTIONS, "Uncategorized"],
+      // projectCategoryOptions is already sort_order-ordered from Site Settings.
+      allGroups: () => [...projectCategoryOptions, "Uncategorized"],
     },
     {
       key: "source",
@@ -2422,7 +2495,7 @@ export default function Projects() {
 
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: priorityLabel(v), tone: priorityTone(v) }));
-    if (groupBy === "category") return PROJECT_CATEGORY_OPTIONS.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
+    if (groupBy === "category") return projectCategoryOptions.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
     if (groupBy === "source")
       return projectSources.filter((s) => s.is_active).map((s) => ({ value: s.id, label: s.name, tone: "neutral" }));
     if (groupBy === "effort_level")
@@ -2430,7 +2503,20 @@ export default function Projects() {
     if (groupBy === "owner") return people.map((person) => ({ value: person.id, label: person.name, tone: "neutral" }));
     if (groupBy === "wbs_status") return WBS_STATUS_BOARD_COLUMNS;
     if (groupBy === "status") return PROJECT_BOARD_STATUS_COLUMNS;
-    return PROJECT_BOARD_PHASE_COLUMNS; // default board grouping is Phase -- the real pipeline view
+    // default board grouping is Phase -- the real pipeline view. Built
+    // live (not a static array) since Phase is now Sandra-editable --
+    // clusters each active phase under whichever Status column(s) its
+    // mapping puts it in ("Done" always clusters under Completed).
+    const notStartedNames = new Set(phaseOptionsForStatus("Not Started"));
+    const inProgressNames = new Set(phaseOptionsForStatus("In Progress"));
+    return projectPhases
+      .filter((ph) => ph.is_active)
+      .map((ph) => ({
+        value: ph.name,
+        label: ph.name,
+        clusterLabel: ph.name === "Done" ? "Completed" : notStartedNames.has(ph.name) ? "Not Started" : inProgressNames.has(ph.name) ? "In Progress" : "In Progress",
+        tone: PROJECT_PHASE_TONES[ph.name] ?? "neutral",
+      }));
   }
 
   function getProjectBoardValue(p: ProjectRow, groupBy: string): string | null {
@@ -2466,7 +2552,7 @@ export default function Projects() {
     { key: "owner", label: "Owner", getValue: (p) => ownerName(p.owner_id) },
     { key: "priority", label: "Priority", getValue: (p) => PROJECT_PRIORITY_OPTIONS.indexOf(p.priority ?? "") },
     { key: "status", label: "Status", getValue: (p) => PROJECT_STATUS_OPTIONS.indexOf(p.status ?? "") },
-    { key: "phase", label: "Phase", getValue: (p) => PROJECT_PHASE_ALL.indexOf(p.phase ?? "") },
+    { key: "phase", label: "Phase", getValue: (p) => activePhaseNames.indexOf(p.phase ?? "") },
     { key: "category", label: "Category", getValue: (p) => p.category ?? "" },
     { key: "source", label: "Source", getValue: (p) => projectSources.find((s) => s.id === p.source_id)?.name ?? "" },
     { key: "effort_level", label: "Complexity", getValue: (p) => PROJECT_EFFORT_LEVEL_OPTIONS.indexOf(p.effort_level ?? "") },
@@ -3784,7 +3870,7 @@ export default function Projects() {
                 // Phase untouched rather than guessing.
                 onPick={(v) => bulkUpdateProjects(v === "Completed" ? { status: v, phase: "Done" } : { status: v || null })}
               />
-              <FieldPickerButton label="Phase" options={PROJECT_PHASE_ALL} onPick={(v) => bulkUpdateProjects({ phase: v || null })} />
+              <FieldPickerButton label="Phase" options={activePhaseNames} onPick={(v) => bulkUpdateProjects({ phase: v || null })} />
               <button className="bulk-bar-delete" onClick={bulkDeleteProjects}>
                 <Archive size={12} />
                 Archive
