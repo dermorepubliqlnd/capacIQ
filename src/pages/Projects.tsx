@@ -1168,7 +1168,14 @@ export default function Projects() {
     return nearestActiveManagerClient(t.assignee_id) === me.id;
   }
 
-  const canCreateProject = isFullAccess;
+  // 2026-09-03 (Sandra): opened up project creation + visibility to
+  // everyone -- Standard-access people were silently blocked from ever
+  // seeing the "Add project" control (canCreateProject required Full
+  // Access) and from seeing projects they weren't owner/assignee/
+  // collaborator on (see can_see_project() in Supabase). Approval
+  // authorities (editing, closing, reopening, extension decisions, etc.)
+  // are untouched -- only *visibility* and *creation* are now open to all.
+  const canCreateProject = true;
   const canCreateTask = isFullAccess || projects.some((p) => p.owner_id === me?.id);
   // Scoping-phase due-date editing: a project's timelines are freely
   // editable (by owner/Full Access/assignee, same as canEditTask) until
@@ -2487,7 +2494,11 @@ export default function Projects() {
   // editing -- Project name and Owner are only ever set from the WBS
   // header now, so there's nothing left to edit inline here anyway.
   async function createBlankProject() {
-    const { data, error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now() }).select("id").single();
+    // Creator becomes owner immediately so they can keep editing/managing
+    // the project afterward (projects_update/canEditProject both key off
+    // owner_id) -- previously only Full Access ever created projects, and
+    // owner_id was left to be set later from the WBS header.
+    const { data, error } = await supabase.from("projects").insert({ name: "Untitled", sort_order: Date.now(), owner_id: me?.id ?? null }).select("id").single();
     if (error || !data) {
       alert(`Couldn't create project: ${error?.message ?? "unknown error"}`);
       return;

@@ -15,17 +15,26 @@ language sql stable security definer as $$
   select access_level from people where auth_user_id = auth.uid()
 $$;
 
+-- 2026-09-03 (Sandra): "everyone should see all projects" -- opened up
+-- to everyone rather than owner/assignee/collaborator-only. Every select
+-- policy across the schema routes through this one function, so widening
+-- it here is enough; approval/edit authorities (projects_update/delete,
+-- tasks_insert/update/delete, extension decisions, etc.) are untouched
+-- and still key off my_access_level()/owner_id/assignee_id directly, not
+-- through this function. The original owner/assignee/collaborator logic
+-- is left commented below in case this is ever reversed.
 create or replace function can_see_project(p_project_id uuid) returns boolean
 language sql stable security definer as $$
-  select
-    my_access_level() = 'full'
-    or exists (select 1 from projects where id = p_project_id and owner_id = my_person_id())
-    or exists (
-      select 1 from tasks t
-      left join task_collaborators tc on tc.task_id = t.id
-      where t.project_id = p_project_id
-        and (t.assignee_id = my_person_id() or tc.person_id = my_person_id())
-    )
+  select true
+  -- select
+  --   my_access_level() = 'full'
+  --   or exists (select 1 from projects where id = p_project_id and owner_id = my_person_id())
+  --   or exists (
+  --     select 1 from tasks t
+  --     left join task_collaborators tc on tc.task_id = t.id
+  --     where t.project_id = p_project_id
+  --       and (t.assignee_id = my_person_id() or tc.person_id = my_person_id())
+  --   )
 $$;
 
 alter table people enable row level security;
@@ -94,8 +103,12 @@ create policy people_update on people for update
 -- Projects/Tasks list pages). Full Access can create/edit anything;
 -- a project owner can edit their own project and add tasks to it;
 -- a task's assignee can update their own task (e.g. status, hours logged).
+-- 2026-09-03 (Sandra): "everyone should be able to create a project" --
+-- creation is no longer Full-Access-only. The creator is set as owner_id
+-- client-side on insert, which is what still gives them edit/manage
+-- rights afterward via projects_update below (unchanged).
 create policy projects_insert on projects for insert
-  with check (my_access_level() = 'full');
+  with check (true);
 
 create policy projects_update on projects for update
   using (my_access_level() = 'full' or owner_id = my_person_id())
