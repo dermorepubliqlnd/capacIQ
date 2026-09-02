@@ -1627,7 +1627,16 @@ export default function WbsPlanning() {
       owner_id: project?.owner_id ?? null,
       start_date: project?.start_date ?? null,
       end_date: project?.end_date ?? null,
-      wbs_status: project?.wbs_status ?? null,
+      // Bugfix (2026-09-02): this project's OWN entry in the list fed to
+      // buildForwardSchedule must never report itself as "closed" here --
+      // that flag is what makes the shared scheduler exclude a person's
+      // future tasks from THEIR OWN project's forward queue once closed,
+      // collapsing the WBS "Effort Comparison (by Duration)" Forecasted
+      // bar down to whichever single task still resolves some other way.
+      // The exclusion is still correct (and untouched) for every OTHER
+      // project in this list, which is what Utilization.tsx relies on to
+      // stop a closed project from claiming future capacity.
+      wbs_status: project?.wbs_status === "closed" ? "baseline_locked" : project?.wbs_status ?? null,
     },
   ];
   const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
