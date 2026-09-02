@@ -221,7 +221,7 @@ function CategoryIcon({ category, size = 13 }: { category: string | null; size?:
   return <Icon size={size} color={TONE_ICON_COLOR[tone] ?? TONE_ICON_COLOR.neutral} style={{ flexShrink: 0 }} />;
 }
 
-const PROJECT_COLUMN_ORDER = ["name", "owner", "priority", "status", "phase", "health", "actual_progress", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "category", "source", "effort_level", "start_date", "end_date", "wbs_status"];
+const PROJECT_COLUMN_ORDER = ["name", "owner", "category", "source", "status", "health", "phase", "priority", "start_date", "end_date", "actual_progress", "wbs_status", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "days_extended", "effort_level"];
 
 // Default hidden-columns set for a brand-new Projects Timeline view (see
 // timelineDefaultHiddenColumns on ViewTabs / initialHiddenColumns on
@@ -247,7 +247,7 @@ const TASK_TIMELINE_DEFAULT_HIDDEN_COLUMNS = ["project", "timing_variance_days",
 // own Calendar view doesn't support grouping either -- confirmed with
 // Sandra, not building it).
 const TASK_CALENDAR_DEFAULT_HIDDEN_COLUMNS = ["status", "timing", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours", "timing_variance_days", "hours_variance", "hours_variance_pct", "work_type"];
-const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "effort", "work_type", "start_date", "current_due_date", "due_date_ext", "validated_completion_date", "validated_by", "actual_completion_date", "estimated_hours", "time_spent_hours"];
+const TASK_COLUMN_ORDER = ["name", "project", "assignee", "status", "timing", "start_date", "current_due_date", "actual_completion_date", "validated_completion_date", "validated_by", "estimated_hours", "time_spent_hours", "effort", "timing_variance_days", "due_date_ext", "work_type", "hours_variance", "hours_variance_pct"];
 
 // "Fun, not corporate" icons for Task Effort (Sandra's request) — a light
 // feather for quick work, a weight plate for a moderate lift, and a flexed
@@ -1702,6 +1702,14 @@ export default function Projects() {
   const projectViews = useTableViews("projects", me?.id, {
     viewType: "table",
     columnOrder: PROJECT_COLUMN_ORDER,
+    // Bump this whenever PROJECT_COLUMN_ORDER above is deliberately
+    // re-ordered (see columnOrderVersion in tableTypes.ts) so everyone's
+    // already-saved "default" view picks up the new order on next load.
+    // 1 = 2026-09-02 re-prioritization (Owner/Category/Source moved up
+    // next to identity; Status/Health/Phase/Priority as the live-triage
+    // cluster; hours/variance and Days Extended pushed toward the end;
+    // Complexity last).
+    columnOrderVersion: 1,
     hiddenColumns: [],
     columnWidths: {},
     groupBy: null,
@@ -3411,6 +3419,12 @@ export default function Projects() {
   const taskViews = useTableViews("tasks", me?.id, {
     viewType: "table",
     columnOrder: TASK_COLUMN_ORDER,
+    // See the matching comment on projectViews' columnOrderVersion above.
+    // 1 = 2026-09-02 re-prioritization (Status bumped up; Scoped/Spent
+    // hours -- the daily workspace -- moved right after identity; Timing/
+    // Effort as the triage cluster; schedule fields next; Work Type and
+    // Hrs Variance/% pushed to the very end as reporting-only).
+    columnOrderVersion: 1,
     hiddenColumns: [],
     columnWidths: {},
     groupBy: "project",

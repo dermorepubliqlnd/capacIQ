@@ -233,6 +233,16 @@ export interface TableView {
   // others, so make it consistent for the rest"). Ignored entirely by
   // Table/Timeline/Calendar, which have their own header/label handling.
   boardShowPropertyLabels?: boolean;
+  // Bumped whenever the app's hand-picked default columnOrder changes (see
+  // PROJECT_COLUMN_ORDER/TASK_COLUMN_ORDER in Projects.tsx) so
+  // useTableViews' load() can refresh an already-saved "default" ("All")
+  // view's column order to match the new baseline, without touching that
+  // view's hiddenColumns/widths/sorts/groupBy, and without ever touching
+  // any OTHER (person-created) view's own deliberate order. Optional/
+  // fallback-safe like the other versioned fields above -- an older saved
+  // view without this field is treated as version 0, so it always
+  // refreshes on the first load after a bump.
+  columnOrderVersion?: number;
 }
 
 // One-line migration for views saved before filterPersonIds existed: if a

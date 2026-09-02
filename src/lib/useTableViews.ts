@@ -15,7 +15,28 @@ function load(storageKey: string, defaultView: DefaultView): TableView[] {
       // Backfill any fields added after a view was first saved (e.g.
       // hiddenGroups, viewType) so older localStorage data doesn't crash
       // newer code.
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((v) => ({ ...defaultView, ...v }));
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((v) => {
+          const merged = { ...defaultView, ...v };
+          // Refresh the "default" ("All") view's column order whenever
+          // PROJECT_COLUMN_ORDER/TASK_COLUMN_ORDER's hand-picked order
+          // changes (Sandra, 2026-09-02: re-prioritized both tables'
+          // default layouts). Without this, a saved "default" view's own
+          // columnOrder (spread in last, above) always wins over the new
+          // code default, so nobody who'd already opened the app would
+          // ever see the update -- it'd sit fixed at whatever order was
+          // in place the first time their browser saved a view. Only the
+          // untouched "default" view id is refreshed; any other
+          // (person-created) view keeps whatever order it was
+          // deliberately given. hiddenColumns/widths/sorts/groupBy are
+          // left alone either way -- this only ever touches columnOrder.
+          if (v.id === "default" && (v.columnOrderVersion ?? 0) < (defaultView.columnOrderVersion ?? 0)) {
+            merged.columnOrder = defaultView.columnOrder;
+            merged.columnOrderVersion = defaultView.columnOrderVersion;
+          }
+          return merged;
+        });
+      }
     }
   } catch {
     // ignore corrupt storage, fall through to default
