@@ -163,6 +163,24 @@ const STATUS_TONE: Record<string, { fill: string; pill: string }> = {
 
 const SOURCE_PALETTE = ["#2e75b6", "#4fd1a5", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4"];
 
+// Fixed per-label chart color for the Project Health donut, given
+// explicitly by Sandra 2026-09-03 (not derived from SOURCE_PALETTE's
+// cycle order, and not the semantic/tone-matched pill color either --
+// this is ONLY the donut's own fill). "At risk" and "Completed" weren't
+// given explicit hexes; they fall back to the two SOURCE_PALETTE colors
+// not otherwise used above (blue/cyan) -- flag to Sandra if she wants
+// something else for either of those two.
+const HEALTH_CHART_COLOR: Record<string, string> = {
+  "Not started": "#eef2f5",
+  "Health unavailable": "#c7cdd6",
+  Paused: "#a855f7",
+  "On track": "#4fd1a5",
+  "Off track": "#f59e0b",
+  Overdue: "#ec4899",
+  "At risk": "#2e75b6",
+  Completed: "#06b6d4",
+};
+
 // -- Small, dependency-free chart primitives ------------------------------
 // No chart library is installed in this app; these two SVG components
 // cover everything the mockup needs (a labeled donut, a two-series
@@ -575,16 +593,17 @@ export default function Dashboard() {
       const key = healthOf(p, tasks, holidayDates).label;
       counts[key] = (counts[key] ?? 0) + 1;
     }
-    // 2026-09-03: Sandra tried the semantic tone-matched fill (matching
-    // Status) and asked to go back to the bright cyclic SOURCE_PALETTE
-    // look instead -- chart color only, the Health PILL (table view +
-    // the Health column list on this page) still comes from
+    // 2026-09-03: fixed per-label hexes Sandra specified (HEALTH_CHART_
+    // COLOR above), not a cyclic-by-index palette -- so a label's color
+    // stays stable across reloads/filters regardless of which labels
+    // happen to be present. Chart color only -- the Health PILL (table
+    // view + the Health column list on this page) still comes from
     // HEALTH_TONE[label]?.pill / healthOf()'s own tone, so "Health
     // unavailable" vs "Not started" stays distinguishable there.
-    return Object.entries(counts).map(([label, value], i) => ({
+    return Object.entries(counts).map(([label, value]) => ({
       label,
       value,
-      color: SOURCE_PALETTE[i % SOURCE_PALETTE.length],
+      color: HEALTH_CHART_COLOR[label] ?? "#8a94a6",
     }));
   }, [filteredProjects, tasks, holidayDates]);
 
