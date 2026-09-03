@@ -1,4 +1,4 @@
-import { Shapes, Rows3, Type as TypeIcon } from "lucide-react";
+import { Circle, Rows3, Type as TypeIcon } from "lucide-react";
 
 export type SymbolTextDisplay = "symbol" | "symbolText" | "text";
 
@@ -30,8 +30,15 @@ export default function SymbolTextBadge({ symbol, text, tone, display }: SymbolT
   );
 }
 
-const DISPLAY_ICONS: Record<SymbolTextDisplay, typeof Shapes> = {
-  symbol: Shapes,
+// 2026-09-03 (Sandra: "there seems to be an alignment issue, it looks
+// like it's not straight") -- lucide's "Shapes" icon (originally used
+// for symbol-only mode) has extra whitespace baked into its own
+// viewBox that makes it sit visibly lower than Rows3/Type inside the
+// same fixed-size button, even though the button's own CSS centers
+// all 3 identically. Swapped for "Circle", a simple icon that centers
+// the same way Rows3/Type already do.
+const DISPLAY_ICONS: Record<SymbolTextDisplay, typeof Circle> = {
+  symbol: Circle,
   symbolText: Rows3,
   text: TypeIcon,
 };
