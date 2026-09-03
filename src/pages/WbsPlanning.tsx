@@ -4206,7 +4206,7 @@ export default function WbsPlanning() {
                 checks. */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Category:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(!!project.category, 130, !canEditWbs)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 130, !canEditWbs)}>
                 <InlineSelect
                   value={project.category ?? ""}
                   editable={canEditWbs}
@@ -4219,7 +4219,7 @@ export default function WbsPlanning() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Source:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(!!project.source_id, 120, !canEditWbs)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 120, !canEditWbs)}>
                 <InlineSelect
                   value={projectSourceOptions.find((s) => s.id === project.source_id)?.name ?? ""}
                   editable={canEditWbs}
@@ -4235,7 +4235,7 @@ export default function WbsPlanning() {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Complexity:</span>
-              <div className="wbs-field-box" style={fieldBoxStyle(!!project.effort_level, 100, !canEditWbs)}>
+              <div className="wbs-field-box" style={fieldBoxStyle(true, 100, !canEditWbs)}>
                 <InlineSelect
                   value={project.effort_level ? effortLevelLabel(project.effort_level) : ""}
                   editable={canEditWbs}
@@ -4270,22 +4270,15 @@ export default function WbsPlanning() {
             <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
               {/* Phase 21 (2026-08-24): Sandra -- "there should no longer
                   be an option to choose which effort will be used, it
-                  will always capture the planned one." The Scoping
-                  Effort picker (InlineSelect over MODES) is gone --
-                  Save always operates on Forecasted (activeMode is now a
-                  fixed constant, see its declaration above), so this is
-                  a plain static label instead of an editable field. */}
+                  will always capture the planned one." Save always
+                  operates on Forecasted (activeMode is now a fixed
+                  constant, see its declaration above).
+                  2026-09-03 (Sandra: "remove scoping effort field, there
+                  is really no other option but to save") -- the
+                  Scoping Effort label/box/tooltip that used to sit next
+                  to Save is gone; Save itself is unchanged (still always
+                  saves the Forecasted schedule). */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Scoping Effort:</span>
-                <div className="wbs-field-box" style={fieldBoxStyle(true, 150, true)}>
-                  <span style={{ fontSize: 12.5, color: SCENARIO_COLOR.forecasted, fontWeight: 600 }}>{MODE_LABEL[activeMode]}</span>
-                </div>
-                <span
-                  title="Save always records this project's Forecasted (planned) schedule -- the mode where a real committed date can be typed. Full and Capacity-Based are reference/comparison views only and can never be saved as the official plan."
-                  style={{ display: "inline-flex", cursor: "help", flexShrink: 0 }}
-                >
-                  <Info size={13} style={{ color: "var(--muted)" }} />
-                </span>
                 {canEditWbs && (
                   <button className="btn-primary" disabled={saving} onClick={saveDraft} style={{ flexShrink: 0 }}>
                     {saving ? "Saving…" : "Save"}
