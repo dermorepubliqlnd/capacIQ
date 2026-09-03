@@ -122,10 +122,17 @@ export const TASK_STATUS_OPTIONS = flatten(TASK_STATUS_GROUPED);
 // these hardcoded arrays -- see ProjectPhaseOption's comment in
 // Projects.tsx. Kept here only as the migration's one-time seed data
 // reference / historical record; nothing imports these anymore.
-export const PROJECT_PHASE_NOT_STARTED = ["Backlog", "Queued"];
+// 2026-09-03 (Sandra: "for not started allow selection of the phase only
+// matching with not started") -- narrowed from ["Backlog", "Queued"] to
+// just Queued, so a Not Started project's Phase dropdown offers a single
+// option instead of two. "Backlog" stays a valid value in PROJECT_PHASE_
+// ALL below (Paused/Cancelled keep the full phase list since their Phase
+// is frozen wherever it was, and an older project may still have Backlog
+// saved) -- it's just no longer offered for new Not Started selections.
+export const PROJECT_PHASE_NOT_STARTED = ["Queued"];
 export const PROJECT_PHASE_IN_PROGRESS = ["Scoping", "Design", "Development", "Evaluation", "Delivery"];
 export const PROJECT_PHASE_COMPLETED = ["Done"];
-export const PROJECT_PHASE_ALL = [...PROJECT_PHASE_NOT_STARTED, ...PROJECT_PHASE_IN_PROGRESS, ...PROJECT_PHASE_COMPLETED];
+export const PROJECT_PHASE_ALL = ["Backlog", ...PROJECT_PHASE_NOT_STARTED, ...PROJECT_PHASE_IN_PROGRESS, ...PROJECT_PHASE_COMPLETED];
 
 export const PROJECT_PHASE_OPTIONS_BY_STATUS: Record<string, string[]> = {
   "Not Started": PROJECT_PHASE_NOT_STARTED,
