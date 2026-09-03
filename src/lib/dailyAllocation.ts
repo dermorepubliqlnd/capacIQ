@@ -283,7 +283,6 @@ export function createAllocationEngine(config: AllocationEngineConfig): Allocati
 
   const parentTaskIds = parentTaskIdsOf(tasks);
   const leafTasks = tasks.filter((t) => !parentTaskIds.has(t.id));
-  const openLeafTasks = leafTasks.filter(isOpenTask);
   const closed = closedProjectIds(projects);
 
   const offByPerson = new Map<string, OffDaySet>();
@@ -329,7 +328,17 @@ export function createAllocationEngine(config: AllocationEngineConfig): Allocati
   function taskHoursOnDateFn(personId: string, task: UtilTaskRow, dateStr: string): number {
     const hours = task.estimated_hours ?? 0;
     if (hours <= 0) return 0;
-    if (!isOpenTask(task)) return 0;
+    // Fix (2026-09-03, Sandra: "utilization is for seeing what work a person
+    // was given on a day -- clearing out Done tasks would erase historicals").
+    // A completed task's PAST days are historical fact and must stay visible
+    // even after the task is marked Done -- only zero it out from TODAY
+    // forward (same cutoff pattern as the closed-project check right below):
+    // a Done task simply won't eat any MORE capacity going forward, but it
+    // genuinely occupied real capacity on the days it actually ran, and that
+    // record shouldn't disappear the moment the task is completed. No
+    // todayStr (a draft preview with no "today" concept) means no cutoff at
+    // all, matching the closed-project check's own fallback below.
+    if (!isOpenTask(task) && todayStr && dateStr >= todayStr) return 0;
     if (todayStr && dateStr >= todayStr && closed.has(task.project_id)) return 0;
     if (!assigneeMatchesOnDate(task, personId, dateStr, assigneeHistory)) return 0;
     const days = taskDays(personId, task);
@@ -349,7 +358,13 @@ export function createAllocationEngine(config: AllocationEngineConfig): Allocati
 
   function allocationFor(personId: string, dateStr: string): DailyAllocation {
     const taskHours = new Map<string, number>();
-    for (const t of openLeafTasks) {
+    // Iterate ALL leaf tasks, not just currently-open ones: a Done task's
+    // historical (past) days must still surface here (see the fix note in
+    // taskHoursOnDateFn above) -- the per-date function itself now applies
+    // the correct open-vs-Done gating per date, so pre-filtering to only
+    // open tasks here would silently re-exclude a Done task's past days
+    // before taskHoursOnDateFn even gets a chance to include them.
+    for (const t of leafTasks) {
       const h = taskHoursOnDateFn(personId, t, dateStr);
       if (h > 0) taskHours.set(t.id, h);
     }
