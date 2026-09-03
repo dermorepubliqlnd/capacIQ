@@ -4764,6 +4764,19 @@ export default function WbsPlanning() {
                               width: utilPersonColW,
                               maxWidth: utilPersonColW,
                               background: "var(--surface)",
+                              // 2026-09-03 (Sandra: numbers still overflowing
+                              // left when scrolling, after the earlier
+                              // per-cell width fix) -- root cause was here,
+                              // not the day cells: this sticky <td> had no
+                              // z-index, unlike its own <th> above (zIndex:
+                              // 1). Sticky position alone doesn't promise a
+                              // paint order above later siblings with the
+                              // same implicit z-index:auto -- day-column
+                              // <td>s scrolled underneath this frozen column
+                              // were winning the paint order (later in DOM)
+                              // and showing through/over it instead of being
+                              // cleanly hidden behind it.
+                              zIndex: 1,
                               overflow: "hidden",
                             }}
                           >
@@ -4846,6 +4859,9 @@ export default function WbsPlanning() {
                                     verticalAlign: "top",
                                     paddingTop: 8,
                                     cursor: "pointer",
+                                    // see the collapsed-row Person <td> comment above --
+                                    // same missing-zIndex bug, same fix.
+                                    zIndex: 1,
                                     overflow: "hidden",
                                   }}
                                   onClick={toggleExpanded}
@@ -4888,6 +4904,9 @@ export default function WbsPlanning() {
                                   color: UTIL_PREVIEW_COLOR[mode],
                                   fontWeight: 600,
                                   whiteSpace: "nowrap",
+                                  // see the Person <td> comments above -- same
+                                  // missing-zIndex bug, same fix.
+                                  zIndex: 1,
                                   overflow: "hidden",
                                   textOverflow: "ellipsis",
                                 }}
