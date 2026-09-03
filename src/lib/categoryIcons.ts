@@ -105,4 +105,8 @@ export const CATEGORY_TONE_ICON_COLOR: Record<string, string> = {
   pink: "#c1447e",
   gold: "#a3790a",
   mint: "#3f9d6e",
+  // Slate: see TONE_STYLES.slate in tableTypes.ts -- kept in sync here so
+  // this map (reused by Dashboard.tsx for donut-chart fill colors, not
+  // just category icons) never falls back to a mismatched color for it.
+  slate: "#5b6472",
 };

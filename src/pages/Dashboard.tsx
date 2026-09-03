@@ -41,6 +41,7 @@ import { colorForPerson } from "../lib/personColors";
 // fetched live from project_categories below instead of the old
 // hardcoded PROJECT_CATEGORY_OPTIONS/PROJECT_CATEGORY_TONES.
 import { healthOf, actualProgress, countWorkingDays, type ProjectRow, type TaskRow } from "./Projects";
+import { CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
 
 interface PersonRow {
   id: string;
@@ -129,23 +130,35 @@ function initialsFor(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// Both maps below are keyed by the SAME tone names the real table pills
+// use (healthOf()'s "tone" for Health, PROJECT_STATUS_TONES for Status --
+// see notionOptions.ts), with "pill" carrying that tone name through and
+// "fill" resolved from the shared CATEGORY_TONE_ICON_COLOR palette (not a
+// second, independently-hand-picked hex per label) so a Dashboard donut
+// slice's color can never drift out of sync with its own table pill again
+// (2026-09-03 fix: Paused/Cancelled fills here used to be swapped
+// relative to PROJECT_STATUS_TONES, and "Health unavailable" used to
+// share "neutral" pixel-for-pixel with "Not started").
 const HEALTH_TONE: Record<string, { fill: string; pill: string }> = {
-  "On track": { fill: "#1e8a5f", pill: "success" },
-  "At risk": { fill: "#b8860b", pill: "warning" },
-  "Off track": { fill: "#c1443c", pill: "danger" },
-  Overdue: { fill: "#c1443c", pill: "danger" },
-  "Not started": { fill: "#8a94a6", pill: "neutral" },
-  Completed: { fill: "#1e8a5f", pill: "success" },
-  Paused: { fill: "#7b4fb0", pill: "purple" },
-  "Health unavailable": { fill: "#8a94a6", pill: "neutral" },
+  "On track": { fill: CATEGORY_TONE_ICON_COLOR.success, pill: "success" },
+  "At risk": { fill: CATEGORY_TONE_ICON_COLOR.warning, pill: "warning" },
+  "Off track": { fill: CATEGORY_TONE_ICON_COLOR.danger, pill: "danger" },
+  Overdue: { fill: CATEGORY_TONE_ICON_COLOR.danger, pill: "danger" },
+  "Not started": { fill: CATEGORY_TONE_ICON_COLOR.neutral, pill: "neutral" },
+  Completed: { fill: CATEGORY_TONE_ICON_COLOR.success, pill: "success" },
+  Paused: { fill: CATEGORY_TONE_ICON_COLOR.purple, pill: "purple" },
+  // Slate, not neutral -- see healthOf() in Projects.tsx.
+  "Health unavailable": { fill: CATEGORY_TONE_ICON_COLOR.slate, pill: "slate" },
 };
 
 const STATUS_TONE: Record<string, { fill: string; pill: string }> = {
-  "Not Started": { fill: "#8a94a6", pill: "neutral" },
-  "In Progress": { fill: "#2e75b6", pill: "accent" },
-  Completed: { fill: "#1e8a5f", pill: "success" },
-  Paused: { fill: "#b8860b", pill: "warning" },
-  Cancelled: { fill: "#7b4fb0", pill: "purple" },
+  "Not Started": { fill: CATEGORY_TONE_ICON_COLOR.neutral, pill: "neutral" },
+  "In Progress": { fill: CATEGORY_TONE_ICON_COLOR.accent, pill: "accent" },
+  Completed: { fill: CATEGORY_TONE_ICON_COLOR.success, pill: "success" },
+  // Matches PROJECT_STATUS_TONES (notionOptions.ts): Paused is purple,
+  // Cancelled is danger -- these two were swapped here before.
+  Paused: { fill: CATEGORY_TONE_ICON_COLOR.purple, pill: "purple" },
+  Cancelled: { fill: CATEGORY_TONE_ICON_COLOR.danger, pill: "danger" },
 };
 
 const SOURCE_PALETTE = ["#2e75b6", "#4fd1a5", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4"];
@@ -635,7 +648,18 @@ export default function Dashboard() {
   // too") -- same counts as categoryRows above, just re-shaped for Donut's
   // {label,value,color} contract with hex colors instead of tone classes.
   const categoryDonut = useMemo(
-    () => categoryRows.map((r, i) => ({ label: r.label, value: r.value, color: SOURCE_PALETTE[i % SOURCE_PALETTE.length] })),
+    () =>
+      categoryRows.map((r) => ({
+        label: r.label,
+        value: r.value,
+        // 2026-09-03 bugfix: this used to cycle through SOURCE_PALETTE by
+        // array index, ignoring each category's real, self-service color
+        // (project_categories.color) -- so this donut's slice colors
+        // never matched the actual Category pill shown everywhere else
+        // (Projects table, Board, Timeline). Now resolved from the same
+        // tone categoryRows itself already computes.
+        color: CATEGORY_TONE_ICON_COLOR[r.tone] ?? CATEGORY_TONE_ICON_COLOR.neutral,
+      })),
     [categoryRows]
   );
 

@@ -399,14 +399,19 @@ export function healthOf(
   p: ProjectRow,
   allTasks: TaskRow[],
   holidayDates: Set<string>
-): { label: string; tone: "success" | "warning" | "danger" | "neutral" | "purple" } {
+): { label: string; tone: "success" | "warning" | "danger" | "neutral" | "purple" | "slate" } {
   if (p.status === "Completed" || p.status === "Cancelled") return { label: p.status, tone: "neutral" };
   if (p.status === "Paused") return { label: "Paused", tone: "purple" };
 
   const actual = actualProgress(p.id, allTasks);
   if (actual === 100) return { label: "Completed", tone: "success" };
 
-  if (!p.start_date || !p.end_date) return { label: "Health unavailable", tone: "neutral" };
+  // "Health unavailable" (missing dates / no applicable tasks / zero
+  // working days) uses "slate" -- a distinct, cooler grey from "Not
+  // started"'s "neutral" -- so the two don't render as an identical grey
+  // pill (Sandra 2026-09-03: ok with both grey, just wants a different
+  // shade/tone so they're tellable apart at a glance).
+  if (!p.start_date || !p.end_date) return { label: "Health unavailable", tone: "slate" };
 
   const today = new Date();
   const start = parseLocalDate(p.start_date);
@@ -414,10 +419,10 @@ export function healthOf(
 
   if (today < start) return { label: "Not started", tone: "neutral" };
   if (today > due) return { label: "Overdue", tone: "danger" };
-  if (actual === null) return { label: "Health unavailable", tone: "neutral" };
+  if (actual === null) return { label: "Health unavailable", tone: "slate" };
 
   const totalWorkingDays = countWorkingDays(start, due, holidayDates);
-  if (totalWorkingDays === 0) return { label: "Health unavailable", tone: "neutral" };
+  if (totalWorkingDays === 0) return { label: "Health unavailable", tone: "slate" };
   const elapsedWorkingDays = countWorkingDays(start, today < due ? today : due, holidayDates);
   const expected = Math.min(100, Math.max(0, (elapsedWorkingDays / totalWorkingDays) * 100));
 

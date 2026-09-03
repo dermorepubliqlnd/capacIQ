@@ -78,6 +78,12 @@ export const TONE_STYLES: Record<string, { bg: string; text: string }> = {
   // "Done" status and 100% Completed) so the two remain visually
   // distinct at a glance.
   mint: { bg: "#eef8f2", text: "#3f9d6e" },
+  // Slate: a distinct, cooler grey from "neutral" -- used to tell apart
+  // two states that are both intentionally grey/neutral-in-spirit but
+  // shouldn't look IDENTICAL (e.g. Project Health's "Health unavailable"
+  // vs "Not started", per Sandra 2026-09-03: "I am ok with it both grey,
+  // just adjust the shade or tone").
+  slate: { bg: "#e4e8ee", text: "#5b6472" },
 };
 
 // 2026-09-03 (Sandra: group-by-Assignee headers should "follow their
