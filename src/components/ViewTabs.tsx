@@ -276,16 +276,25 @@ export default function ViewTabs<T>({
               >
                 {iconPickerOpenId === v.id ? (
                   <>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 6 }}>
                       <button
                         onClick={() => {
                           setIconPickerOpenId(null);
                           setIconSearch("");
                         }}
-                        style={{ padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "var(--muted)" }}
+                        style={{ padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "var(--muted)", width: "auto" }}
                       >
                         ← Back
                       </button>
+                      {v.icon && (
+                        <button
+                          onClick={() => onIconChange(v.id, null)}
+                          title="Reset to this view type's default icon"
+                          style={{ padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "var(--accent)", width: "auto" }}
+                        >
+                          Reset icon
+                        </button>
+                      )}
                     </div>
                     <div style={{ position: "relative", marginBottom: 8 }}>
                       <Search size={12} style={{ position: "absolute", left: 7, top: "50%", transform: "translateY(-50%)", color: "var(--muted)" }} />
