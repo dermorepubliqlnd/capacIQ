@@ -1143,6 +1143,17 @@ export default function Projects() {
   const taskName = (id: string | null) => tasks.find((t) => t.id === id)?.name ?? "—";
   const isProjectOwner = (projectId: string) => projects.find((p) => p.id === projectId)?.owner_id === me?.id;
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
+  // 2026-09-03 (Sandra: "add these 3 new fields in the WBS UI... in the
+  // project list view these are view only and can't be changed [once
+  // locked]. but as long as the WBS is still draft, still allow change
+  // in both WBS UI and project list"). Category/Source/Complexity stay
+  // editable here exactly like every other field while wbs_status is
+  // still "draft" -- once Start Project has been requested/locked, this
+  // list only shows them (WBS Planning's own new Category/Source/
+  // Complexity fields become the only place left to change them, same
+  // as Name/Owner already work). Status/Phase are untouched by this --
+  // they keep using plain canEditProject everywhere.
+  const canEditProjectSetupField = (p: ProjectRow) => canEditProject(p) && p.wbs_status === "draft";
 
   // Should we show the "Mark as Done?" suggestion chip for this project?
   // Deliberately a suggestion, not an auto-set of status -- see the
@@ -2083,7 +2094,7 @@ export default function Projects() {
         render: (p) => (
           <InlineSelect
             value={p.category ?? ""}
-            editable={canEditProject(p)}
+            editable={canEditProjectSetupField(p)}
             allowEmpty
             options={projectCategoryOptions}
             renderReadOnly={() =>
@@ -2114,7 +2125,7 @@ export default function Projects() {
           return (
             <InlineSelect
               value={currentName}
-              editable={canEditProject(p)}
+              editable={canEditProjectSetupField(p)}
               allowEmpty
               options={activeSourceOptions}
               renderReadOnly={() => (currentName ? <span className="status-pill neutral">{currentName}</span> : "—")}
@@ -2134,7 +2145,7 @@ export default function Projects() {
         render: (p) => (
           <InlineSelect
             value={p.effort_level ?? ""}
-            editable={canEditProject(p)}
+            editable={canEditProjectSetupField(p)}
             allowEmpty
             options={PROJECT_EFFORT_LEVEL_OPTIONS}
             renderReadOnly={() =>
@@ -2535,9 +2546,34 @@ export default function Projects() {
 
   function getProjectBoardMoveHandler(groupBy: string): ((p: ProjectRow, newValue: string) => void) | undefined {
     if (groupBy === "priority") return (p, v) => updateProject(p.id, { priority: (v || null) as ProjectRow["priority"] });
-    if (groupBy === "category") return (p, v) => updateProject(p.id, { category: v || null });
-    if (groupBy === "source") return (p, v) => updateProject(p.id, { source_id: v || null });
-    if (groupBy === "effort_level") return (p, v) => updateProject(p.id, { effort_level: v || null });
+    // 2026-09-03: Category/Source/Complexity are WBS-only once a project
+    // leaves Draft (see canEditProjectSetupField above) -- same rule
+    // applies to dragging a card between Board swimlanes grouped by one
+    // of these, not just the Table view's inline cells.
+    if (groupBy === "category")
+      return (p, v) => {
+        if (p.wbs_status !== "draft") {
+          alert(`"${p.name}" has already started -- change its Category from the WBS page instead.`);
+          return;
+        }
+        updateProject(p.id, { category: v || null });
+      };
+    if (groupBy === "source")
+      return (p, v) => {
+        if (p.wbs_status !== "draft") {
+          alert(`"${p.name}" has already started -- change its Source from the WBS page instead.`);
+          return;
+        }
+        updateProject(p.id, { source_id: v || null });
+      };
+    if (groupBy === "effort_level")
+      return (p, v) => {
+        if (p.wbs_status !== "draft") {
+          alert(`"${p.name}" has already started -- change its Complexity from the WBS page instead.`);
+          return;
+        }
+        updateProject(p.id, { effort_level: v || null });
+      };
     // Owner is WBS-only (Round 21) -- dragging a card grouped by Owner used
     // to silently reassign it here too, bypassing that lockdown. No
     // drag-drop handler for this grouping any more (2026-07-29).

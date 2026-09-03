@@ -11,7 +11,7 @@ import { rollupHoursFor, formatHours, type TimeEntryRow } from "../lib/timeTrack
 import { addDays, buildHolidaySet, isWorkingDay, parseLocalDate, toISO, workingDaysBetween, type HolidaySet } from "../lib/workingDays";
 import { fullCapacityScenario, capacityBasedScenario, packFullCapacityQueue, FULL_CAPACITY_DAILY_HOURS, type FullCapacityQueueTask } from "../lib/taskScheduling";
 import { buildForwardSchedule, type SchedTaskRow, type SchedProjectRow, type SchedAvailabilityRow } from "../lib/capacityScheduler";
-import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES, TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
+import { TASK_EFFORT_OPTIONS, TASK_EFFORT_DEFAULT_TONES, TASK_STATUS_GROUPED, statusGroupOf, PROJECT_EFFORT_LEVEL_OPTIONS, effortLevelLabel } from "../lib/notionOptions";
 // One shared allocation engine for all three utilization surfaces -- this
 // snapshot, the Utilization page, and Scoped vs Logged. See
 // src/lib/dailyAllocation.ts. Replaces the old utilizationCalc.ts, which
@@ -504,6 +504,13 @@ export default function WbsPlanning() {
   // whatever a task's own historical assignee_id already points to.
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeOption[]>([]);
+  // Project Category/Source (2026-09-03, Sandra: "add these 3 new fields
+  // in the WBS UI along with name/owner/start date") -- same
+  // fetched-unfiltered-but-active-filtered-for-new-picks convention as
+  // Work Types/Output Types above, and matches how Projects.tsx already
+  // builds its own Category/Source pickers.
+  const [projectCategoryOptions, setProjectCategoryOptions] = useState<{ name: string; is_active: boolean }[]>([]);
+  const [projectSourceOptions, setProjectSourceOptions] = useState<{ id: string; name: string; is_active: boolean }[]>([]);
   // Task Type <-> Output Type conditional mapping (Phase 23, 2026-08-25) --
   // Sandra: "I want the output be conditional based on task type." Filters
   // the Output Type picker below to only what's allowed for the task's
@@ -896,7 +903,7 @@ export default function WbsPlanning() {
     // pass silent=true to skip that full-page loading flash entirely --
     // state still updates underneath, but the page never unmounts.
     if (!silent) setLoading(true);
-    const [{ data: proj }, { data: tks }, { data: ppl }, avail, hols, allTks, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }] = await Promise.all([
+    const [{ data: proj }, { data: tks }, { data: ppl }, avail, hols, allTks, { data: allProjs }, { data: wts }, { data: ots }, { data: wtots }, { data: cats }, { data: srcs }] = await Promise.all([
       supabase.from("projects").select("id,name,owner_id,start_date,end_date,timelines_locked,phase,status,scoping_effort_mode,wbs_status,category,source_id,priority,effort_level").eq("id", projectId).single(),
       supabase
         .from("tasks")
@@ -923,6 +930,8 @@ export default function WbsPlanning() {
       supabase.from("work_types").select("id,name,is_active,sort_order,is_fixed_schedule").order("sort_order"),
       supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
       supabase.from("work_type_output_types").select("work_type_id,output_type_id"),
+      supabase.from("project_categories").select("name,is_active").order("sort_order"),
+      supabase.from("project_sources").select("id,name,is_active").order("sort_order"),
     ]);
     setProject((proj as ProjectRow) ?? null);
     // Phase 21 (2026-08-24): activeMode is now a fixed constant
@@ -937,6 +946,8 @@ export default function WbsPlanning() {
     setWorkTypes((wts as WorkTypeOption[]) ?? []);
     setOutputTypes((ots as OutputTypeOption[]) ?? []);
     setWorkTypeOutputTypes((wtots as { work_type_id: string; output_type_id: string }[]) ?? []);
+    setProjectCategoryOptions((cats as { name: string; is_active: boolean }[]) ?? []);
+    setProjectSourceOptions((srcs as { id: string; name: string; is_active: boolean }[]) ?? []);
 
     // Dependencies are same-project only (v1), so fetched as a follow-up
     // query scoped to this project's own task ids, once they're known --
@@ -2043,6 +2054,23 @@ export default function WbsPlanning() {
       await alert("Add at least one task before requesting a baseline.");
       return;
     }
+    // 2026-09-03 (Sandra: "push that source, category and complexity
+    // level be filled out before locking the baseline") -- same
+    // missing-fields gate style as handleRequestClosure's, just a
+    // smaller field set: she confirmed Status/Phase/Priority can stay
+    // optional until Closure, only these 3 are required to Start
+    // Project. No Full Access override (same as the Output Type gate
+    // right below) -- these are meant to always be set by this point.
+    const missingSetupFields: string[] = [];
+    if (!project.category) missingSetupFields.push("Category");
+    if (!project.source_id) missingSetupFields.push("Source");
+    if (!project.effort_level) missingSetupFields.push("Complexity");
+    if (missingSetupFields.length) {
+      await alert(
+        `Can't start this project yet -- it's still missing: ${missingSetupFields.join(", ")}. Set these above (Project Details) or on the Projects & Tasks list first.`
+      );
+      return;
+    }
     // Sandra, 2026-08-26: "only push to fill in all needed info when
     // requesting for Baseline Approval" -- softIssues() (placeholder task
     // names, missing Effort/Scoped Hours, dependency-date conflicts) used
@@ -2099,6 +2127,23 @@ export default function WbsPlanning() {
 
   async function handleDecideBaselineRequest(approve: boolean) {
     if (!project || !pendingBaselineRequest) return;
+    if (approve) {
+      // Same gate as handleRequestBaseline above -- an approver shouldn't
+      // be able to wave through a Start Project request that's missing
+      // Category/Source/Complexity just because the request itself
+      // slipped through before this gate existed (mirrors the same
+      // belt-and-suspenders pattern used for Closure's request+decide).
+      const missingSetupFields: string[] = [];
+      if (!project.category) missingSetupFields.push("Category");
+      if (!project.source_id) missingSetupFields.push("Source");
+      if (!project.effort_level) missingSetupFields.push("Complexity");
+      if (missingSetupFields.length) {
+        await alert(
+          `Can't approve yet -- this project is still missing: ${missingSetupFields.join(", ")}. Set these above (Project Details) or on the Projects & Tasks list first.`
+        );
+        return;
+      }
+    }
     if (
       !(await confirm({
         title: approve ? "Start Project" : "Reject Start Project Request",
@@ -3783,6 +3828,21 @@ export default function WbsPlanning() {
   }
 
   const owner = people.find((p) => p.id === project.owner_id);
+  // Active names, always including the project's own current value even
+  // if it's since been deactivated -- same "never make an existing value
+  // disappear from its own picker" convention Projects.tsx uses.
+  const categoryPickerOptions = Array.from(
+    new Set([
+      ...projectCategoryOptions.filter((c) => c.is_active).map((c) => c.name),
+      ...(project.category ? [project.category] : []),
+    ])
+  );
+  const sourcePickerOptions = Array.from(
+    new Set([
+      ...projectSourceOptions.filter((s) => s.is_active).map((s) => s.name),
+      ...(project.source_id ? [projectSourceOptions.find((s) => s.id === project.source_id)?.name].filter((n): n is string => !!n) : []),
+    ])
+  );
 
   // Gantt chart (Sandra, 2026-07-24): a visual timeline below the task
   // table, built LAST and deliberately after every scheduling-logic
@@ -4132,6 +4192,62 @@ export default function WbsPlanning() {
               >
                 <Info size={13} style={{ color: "var(--muted)" }} />
               </span>
+            </div>
+            {/* 2026-09-03 (Sandra: "add these 3 new fields in the WBS UI
+                along with name/owner/start date... push that these are
+                filled in before starting project or locking baseline")
+                -- Category/Source/Complexity move here alongside the
+                fields that already lived on this page, staying editable
+                at any wbs_status short of Closed (canEditWbs), same as
+                Name/Owner above. Required (see handleRequestBaseline/
+                handleDecideBaselineRequest's gate) before Start Project,
+                not before Save -- same "gate the milestone, not every
+                keystroke" philosophy as the rest of this page's soft
+                checks. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Category:</span>
+              <div className="wbs-field-box" style={fieldBoxStyle(!!project.category, 130, !canEditWbs)}>
+                <InlineSelect
+                  value={project.category ?? ""}
+                  editable={canEditWbs}
+                  allowEmpty
+                  emptyLabel="No category"
+                  options={categoryPickerOptions}
+                  onCommit={(v) => saveProjectField({ category: v || null })}
+                />
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Source:</span>
+              <div className="wbs-field-box" style={fieldBoxStyle(!!project.source_id, 120, !canEditWbs)}>
+                <InlineSelect
+                  value={projectSourceOptions.find((s) => s.id === project.source_id)?.name ?? ""}
+                  editable={canEditWbs}
+                  allowEmpty
+                  emptyLabel="No source"
+                  options={sourcePickerOptions}
+                  onCommit={(name) => {
+                    const src = projectSourceOptions.find((s) => s.name === name);
+                    saveProjectField({ source_id: src?.id ?? null });
+                  }}
+                />
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)" }}>Complexity:</span>
+              <div className="wbs-field-box" style={fieldBoxStyle(!!project.effort_level, 100, !canEditWbs)}>
+                <InlineSelect
+                  value={project.effort_level ? effortLevelLabel(project.effort_level) : ""}
+                  editable={canEditWbs}
+                  allowEmpty
+                  emptyLabel="Not set"
+                  options={PROJECT_EFFORT_LEVEL_OPTIONS.map((lvl) => effortLevelLabel(lvl))}
+                  onCommit={(label) => {
+                    const lvl = PROJECT_EFFORT_LEVEL_OPTIONS.find((l) => effortLevelLabel(l) === label);
+                    saveProjectField({ effort_level: lvl ?? null });
+                  }}
+                />
+              </div>
             </div>
             {activeBaseline && (
               // Design spec item 2 (Sandra, 2026-07-29): Baseline version
