@@ -49,9 +49,9 @@ interface DeletedSpentHourRow {
   hours: number;
 }
 import { useTimeTracking } from "../lib/TimeTrackingContext";
+import { CATEGORY_ICON_LIBRARY, CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
 import { Play, Square } from "lucide-react";
 import {
-  PROJECT_CATEGORY_TONES,
   PROJECT_EFFORT_LEVEL_OPTIONS,
   PROJECT_EFFORT_LEVEL_TONES,
   effortLevelLabel,
@@ -103,14 +103,18 @@ interface ProjectSourceOption {
 // plain text column (not a category_id FK) -- Category has far more code
 // touchpoints (icon map, tone map, grouping, board columns) than Source,
 // so this keeps the refactor to "where does the option LIST come from"
-// only. A brand-new custom category renders with the generic Folder icon
-// and neutral tone until someone maps it in PROJECT_CATEGORY_ICON_COMPONENTS
-// / PROJECT_CATEGORY_TONES in code -- flagged to Sandra, not blocking.
+// only. Icon + color are self-service as of Phase 36 (2026-09-03) --
+// see categoryIconMap/categoryToneMap below and categoryIcons.ts.
 interface ProjectCategoryOption {
   id: string;
   name: string;
   is_active: boolean;
   sort_order: number;
+  // Self-service icon/color (Phase 36, 2026-09-03) -- keys into
+  // CATEGORY_ICON_LIBRARY / CATEGORY_TONE_ICON_COLOR (categoryIcons.ts),
+  // set from the "Manage Project Categories" picker in Site Settings.
+  icon: string;
+  color: string;
 }
 
 // Project Phase (2026-09-03) -- admin-configurable lookup, mirrors
@@ -222,33 +226,18 @@ type TaskWithDepth = TaskRow & { _depth: number };
 
 // SVG icon per Category (replacing the old flat-color emoji badges) --
 // same icon reused for the Project-name badge and the Category cell/
-// Timeline chip itself, so both stay in sync automatically.
-const PROJECT_CATEGORY_ICON_COMPONENTS: Record<string, typeof Folder> = {
-  "Onboarding": Handshake,
-  "Compliance & Safety": ShieldCheck,
-  "Technical & Systems": Cpu,
-  "Leadership": Crown,
-  "Professional Development": TrendingUp,
-  "Operational Support": Wrench,
-  "L&D Improvments": Sparkles,
-};
-
-// Matches each status-pill tone's own text color (see .status-pill.* in
-// index.css) so an SVG icon dropped next to pill text always matches it.
-const TONE_ICON_COLOR: Record<string, string> = {
-  success: "var(--success-text)",
-  warning: "var(--warning-text)",
-  danger: "var(--danger-text)",
-  neutral: "var(--muted)",
-  accent: "var(--accent)",
-  purple: "#7b4fb0",
-  pink: "#c1447e",
-};
-
-function CategoryIcon({ category, size = 13 }: { category: string | null; size?: number }) {
-  const Icon = (category && PROJECT_CATEGORY_ICON_COMPONENTS[category]) || Folder;
-  const tone = (category && PROJECT_CATEGORY_TONES[category]) || "neutral";
-  return <Icon size={size} color={TONE_ICON_COLOR[tone] ?? TONE_ICON_COLOR.neutral} style={{ flexShrink: 0 }} />;
+// Timeline chip itself, so both stay in sync automatically. Icon/color
+// per category are now self-service (Phase 36, 2026-09-03): each
+// ProjectCategoryOption carries its own `icon`/`color` fields (set from
+// the Site Settings picker), looked up against the fixed palettes in
+// categoryIcons.ts -- CategoryIcon itself just renders whichever
+// icon name + tone it's given, falling back to Folder/neutral for a
+// category with no match (e.g. a name typed directly into `category`
+// that no longer has a row in project_categories).
+function CategoryIcon({ iconName, tone, size = 13 }: { iconName?: string; tone?: string; size?: number }) {
+  const Icon = (iconName && CATEGORY_ICON_LIBRARY[iconName]) || Folder;
+  const color = CATEGORY_TONE_ICON_COLOR[tone ?? "neutral"] ?? CATEGORY_TONE_ICON_COLOR.neutral;
+  return <Icon size={size} color={color} style={{ flexShrink: 0 }} />;
 }
 
 const PROJECT_COLUMN_ORDER = ["name", "owner", "category", "source", "status", "health", "phase", "priority", "start_date", "end_date", "actual_progress", "wbs_status", "estimated_hours", "time_spent_hours", "hours_variance", "hours_variance_pct", "days_extended", "effort_level"];
@@ -885,6 +874,20 @@ export default function Projects() {
     () => projectCategories.filter((c) => c.is_active).map((c) => c.name),
     [projectCategories]
   );
+  // Live icon/color lookups (Phase 36, 2026-09-03) -- replaces the old
+  // hardcoded PROJECT_CATEGORY_ICON_COMPONENTS/PROJECT_CATEGORY_TONES
+  // maps everywhere a category's badge is rendered. Includes inactive
+  // categories too (a project can still carry a since-deactivated
+  // category's name -- it should keep showing its own icon/color, same
+  // "never make an existing value disappear" convention as elsewhere).
+  const categoryIconMap = useMemo(
+    () => Object.fromEntries(projectCategories.map((c) => [c.name, c.icon])),
+    [projectCategories]
+  );
+  const categoryToneMap = useMemo(
+    () => Object.fromEntries(projectCategories.map((c) => [c.name, c.color])),
+    [projectCategories]
+  );
   const [projectPhases, setProjectPhases] = useState<ProjectPhaseOption[]>([]);
   // status_phase_mapping rows: which Phase ids are offered under "Not
   // Started" / "In Progress" (the only two Statuses with a real,
@@ -1076,7 +1079,7 @@ export default function Projects() {
       supabase.from("deleted_project_spent_hours_archive").select("project_id,person_id,hours"),
       supabase.from("work_types").select("id,name,is_active,sort_order").order("sort_order"),
       supabase.from("project_sources").select("id,name,is_active,sort_order").order("sort_order"),
-      supabase.from("project_categories").select("id,name,is_active,sort_order").order("sort_order"),
+      supabase.from("project_categories").select("id,name,is_active,sort_order,icon,color").order("sort_order"),
       supabase.from("project_phases").select("id,name,is_active,sort_order").order("sort_order"),
       supabase.from("project_status_phase_mapping").select("status,phase_id"),
     ]);
@@ -1833,7 +1836,7 @@ export default function Projects() {
         minWidth: 160,
         maxWidth: 420,
         render: (p) => {
-          const tone = (p.category && PROJECT_CATEGORY_TONES[p.category]) || "neutral";
+          const tone = (p.category && categoryToneMap[p.category]) || "neutral";
           // Round 21 (Sandra): the Project name/Owner should no longer be
           // editable from this list at all -- both now live exclusively in
           // the WBS page's own header (already editable there, see
@@ -1843,7 +1846,7 @@ export default function Projects() {
           // two separate, easy-to-confuse affordances.
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className={`project-icon-badge ${tone}`}><CategoryIcon category={p.category} /></span>
+              <span className={`project-icon-badge ${tone}`}><CategoryIcon iconName={p.category ? categoryIconMap[p.category] : undefined} tone={tone} /></span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -2085,8 +2088,8 @@ export default function Projects() {
             options={projectCategoryOptions}
             renderReadOnly={() =>
               p.category ? (
-                <span className={`status-pill ${PROJECT_CATEGORY_TONES[p.category] ?? "neutral"}`} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                  <CategoryIcon category={p.category} size={12} />
+                <span className={`status-pill ${(p.category && categoryToneMap[p.category]) ?? "neutral"}`} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <CategoryIcon iconName={p.category ? categoryIconMap[p.category] : undefined} tone={(p.category && categoryToneMap[p.category]) ?? "neutral"} size={12} />
                   {p.category}
                 </span>
               ) : "—"
@@ -2267,7 +2270,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours, projectCategoryOptions, projectPhases, phaseStatusMapping, activePhaseNames]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours, projectCategoryOptions, categoryIconMap, categoryToneMap, projectPhases, phaseStatusMapping, activePhaseNames]
   );
 
   // Board-view card body. Name always renders first/bold as the card's
@@ -2373,7 +2376,7 @@ export default function Projects() {
       key: "category",
       label: "Category",
       getGroup: (p) => p.category ?? "Uncategorized",
-      getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
+      getTone: (p) => categoryToneMap[p.category ?? ""] ?? "neutral",
       // projectCategoryOptions is already sort_order-ordered from Site Settings.
       allGroups: () => [...projectCategoryOptions, "Uncategorized"],
     },
@@ -2452,7 +2455,7 @@ export default function Projects() {
       key: "category",
       label: "Category",
       getGroup: (p) => p.category ?? "Uncategorized",
-      getTone: (p) => PROJECT_CATEGORY_TONES[p.category ?? ""] ?? "neutral",
+      getTone: (p) => categoryToneMap[p.category ?? ""] ?? "neutral",
       boardGroupable: true,
     },
     {
@@ -2495,7 +2498,7 @@ export default function Projects() {
 
   function getProjectBoardColumns(groupBy: string): BoardColumnDef[] {
     if (groupBy === "priority") return PROJECT_PRIORITY_OPTIONS.map((v) => ({ value: v, label: priorityLabel(v), tone: priorityTone(v) }));
-    if (groupBy === "category") return projectCategoryOptions.map((v) => ({ value: v, label: v, tone: PROJECT_CATEGORY_TONES[v] ?? "neutral" }));
+    if (groupBy === "category") return projectCategoryOptions.map((v) => ({ value: v, label: v, tone: categoryToneMap[v] ?? "neutral" }));
     if (groupBy === "source")
       return projectSources.filter((s) => s.is_active).map((s) => ({ value: s.id, label: s.name, tone: "neutral" }));
     if (groupBy === "effort_level")

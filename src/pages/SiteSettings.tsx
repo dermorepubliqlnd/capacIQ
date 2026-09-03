@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { ShieldCheck, ShieldOff, Pencil, Check, X, Plus, ArrowUp, ArrowDown, Trash2, CalendarClock, CalendarDays, GripVertical, ChevronRight } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
+import { CATEGORY_ICON_LIBRARY, CATEGORY_ICON_NAMES, CATEGORY_TONE_NAMES, CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
 
 function AccessDenied() {
   return (
@@ -54,6 +55,10 @@ interface ProjectCategoryRow {
   name: string;
   sort_order: number;
   is_active: boolean;
+  // Self-service icon/color (Phase 36, 2026-09-03) -- see categoryIcons.ts
+  // for the fixed palettes the picker offers.
+  icon: string;
+  color: string;
 }
 
 // Project Phase -- admin-configurable lookup (2026-09-03), same shape
@@ -118,6 +123,9 @@ export default function SiteSettings() {
   const [projectCategoryBusy, setProjectCategoryBusy] = useState(false);
   const [editingProjectCategoryId, setEditingProjectCategoryId] = useState<string | null>(null);
   const [editProjectCategoryName, setEditProjectCategoryName] = useState("");
+  // Icon/color picker popover (Phase 36, 2026-09-03) -- which category
+  // row's swatch button is currently open; only one at a time.
+  const [categoryIconPickerId, setCategoryIconPickerId] = useState<string | null>(null);
 
   // Project Phases (2026-09-03) -- same list-management state shape as
   // Project Categories above.
@@ -444,9 +452,36 @@ export default function SiteSettings() {
 
   async function loadProjectCategories() {
     setProjectCategoriesLoading(true);
-    const { data } = await supabase.from("project_categories").select("id,name,sort_order,is_active").order("sort_order");
+    const { data } = await supabase.from("project_categories").select("id,name,sort_order,is_active,icon,color").order("sort_order");
     setProjectCategories((data as ProjectCategoryRow[]) ?? []);
     setProjectCategoriesLoading(false);
+  }
+
+  // Self-service icon/color picker (Phase 36, 2026-09-03) -- Sandra:
+  // "let's do self service" after asking why a new category defaulted to
+  // a generic folder icon. Picker grid lives inline in the drawer below;
+  // this just persists whichever CATEGORY_ICON_LIBRARY/CATEGORY_TONE_NAMES
+  // key she picked.
+  async function updateProjectCategoryIcon(c: ProjectCategoryRow, icon: string) {
+    setProjectCategoryBusy(true);
+    const { error } = await supabase.from("project_categories").update({ icon }).eq("id", c.id);
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't update icon: ${error.message}`);
+      return;
+    }
+    loadProjectCategories();
+  }
+
+  async function updateProjectCategoryColor(c: ProjectCategoryRow, color: string) {
+    setProjectCategoryBusy(true);
+    const { error } = await supabase.from("project_categories").update({ color }).eq("id", c.id);
+    setProjectCategoryBusy(false);
+    if (error) {
+      window.alert(`Couldn't update color: ${error.message}`);
+      return;
+    }
+    loadProjectCategories();
   }
 
   async function addProjectCategory() {
@@ -1104,9 +1139,9 @@ export default function SiteSettings() {
                   </button>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
-                  Drag the grip handle to reorder. Deactivating keeps a category's label on any project that already
-                  has it set -- it just disappears from the picker on new projects. A brand-new category renders with
-                  a generic folder icon and neutral color until it's mapped to a specific one in code.
+                  Drag the grip handle to reorder. Click the icon swatch to change a category's icon and color.
+                  Deactivating keeps a category's label on any project that already has it set -- it just disappears
+                  from the picker on new projects.
                 </div>
 
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -1158,6 +1193,7 @@ export default function SiteSettings() {
                           padding: "7px 10px",
                           borderBottom: "1px solid var(--border)",
                           opacity: isDragging ? 0.4 : c.is_active ? 1 : 0.55,
+                          position: "relative",
                         }}
                       >
                         <span
@@ -1169,6 +1205,108 @@ export default function SiteSettings() {
                         >
                           <GripVertical size={14} />
                         </span>
+                        {(() => {
+                          const SwatchIcon = CATEGORY_ICON_LIBRARY[c.icon] ?? CATEGORY_ICON_LIBRARY.Folder;
+                          const swatchColor = CATEGORY_TONE_ICON_COLOR[c.color] ?? CATEGORY_TONE_ICON_COLOR.neutral;
+                          return (
+                            <button
+                              onClick={() => setCategoryIconPickerId(categoryIconPickerId === c.id ? null : c.id)}
+                              title="Change icon and color"
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: 26,
+                                height: 26,
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border)",
+                                background: "var(--bg-subtle, #f5f6f8)",
+                                cursor: "pointer",
+                                flexShrink: 0,
+                              }}
+                            >
+                              <SwatchIcon size={14} color={swatchColor} />
+                            </button>
+                          );
+                        })()}
+                        {categoryIconPickerId === c.id && (
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: 32,
+                              left: 34,
+                              zIndex: 20,
+                              background: "var(--card-bg, #fff)",
+                              border: "1px solid var(--border)",
+                              borderRadius: "var(--radius-sm)",
+                              boxShadow: "0 6px 20px rgba(0,0,0,0.14)",
+                              padding: 10,
+                              width: 260,
+                            }}
+                          >
+                            <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                              Icon
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 4, marginBottom: 10 }}>
+                              {CATEGORY_ICON_NAMES.map((iconName) => {
+                                const IconOption = CATEGORY_ICON_LIBRARY[iconName];
+                                const selected = c.icon === iconName;
+                                return (
+                                  <button
+                                    key={iconName}
+                                    onClick={() => updateProjectCategoryIcon(c, iconName)}
+                                    title={iconName}
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      width: 30,
+                                      height: 30,
+                                      borderRadius: "var(--radius-sm)",
+                                      border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+                                      background: "none",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    <IconOption size={14} color={CATEGORY_TONE_ICON_COLOR[c.color] ?? CATEGORY_TONE_ICON_COLOR.neutral} />
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                              Color
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {CATEGORY_TONE_NAMES.map((toneName) => {
+                                const selected = c.color === toneName;
+                                return (
+                                  <button
+                                    key={toneName}
+                                    onClick={() => updateProjectCategoryColor(c, toneName)}
+                                    title={toneName}
+                                    style={{
+                                      width: 22,
+                                      height: 22,
+                                      borderRadius: "50%",
+                                      border: selected ? "2px solid var(--navy)" : "1px solid var(--border)",
+                                      background: CATEGORY_TONE_ICON_COLOR[toneName],
+                                      cursor: "pointer",
+                                      padding: 0,
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                              <button
+                                onClick={() => setCategoryIconPickerId(null)}
+                                style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+                              >
+                                Done
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         {isEditing ? (
                           <input
                             value={editProjectCategoryName}

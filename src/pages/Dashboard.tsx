@@ -37,7 +37,9 @@ import {
 import { supabase } from "../lib/supabaseClient";
 import { formatDate } from "../lib/formatDate";
 import { colorForPerson } from "../lib/personColors";
-import { PROJECT_CATEGORY_OPTIONS, PROJECT_CATEGORY_TONES } from "../lib/notionOptions";
+// Category list/colors are self-service now (Phase 36, 2026-09-03) --
+// fetched live from project_categories below instead of the old
+// hardcoded PROJECT_CATEGORY_OPTIONS/PROJECT_CATEGORY_TONES.
 import { healthOf, actualProgress, countWorkingDays, type ProjectRow, type TaskRow } from "./Projects";
 
 interface PersonRow {
@@ -50,6 +52,13 @@ interface SourceRow {
   name: string;
   is_active: boolean;
   sort_order: number;
+}
+interface CategoryRow {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+  color: string;
 }
 interface OutputTypeRow {
   id: string;
@@ -424,6 +433,7 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const [extReqs, setExtReqs] = useState<ExtReqLite[]>([]);
@@ -443,6 +453,7 @@ export default function Dashboard() {
         { data: taskData },
         { data: peopleData },
         { data: sourceData },
+        { data: categoryData },
         { data: outputTypeData },
         { data: holidayData },
         { data: extReqData },
@@ -454,6 +465,7 @@ export default function Dashboard() {
         supabase.from("tasks").select("*").eq("is_archived", false),
         supabase.from("people").select("id,name,color").eq("is_active", true),
         supabase.from("project_sources").select("id,name,is_active,sort_order").order("sort_order"),
+        supabase.from("project_categories").select("id,name,is_active,sort_order,color").order("sort_order"),
         supabase.from("output_types").select("id,name,is_active,sort_order").order("sort_order"),
         supabase.from("holidays").select("date"),
         supabase.from("extension_requests").select("id,status"),
@@ -465,6 +477,7 @@ export default function Dashboard() {
       setTasks((taskData as TaskRow[]) ?? []);
       setPeople((peopleData as PersonRow[]) ?? []);
       setSources((sourceData as SourceRow[]) ?? []);
+      setCategories((categoryData as CategoryRow[]) ?? []);
       setOutputTypes((outputTypeData as OutputTypeRow[]) ?? []);
       setHolidayDates(new Set(((holidayData as { date: string }[]) ?? []).map((h) => h.date)));
       setExtReqs((extReqData as ExtReqLite[]) ?? []);
@@ -573,14 +586,22 @@ export default function Dashboard() {
       }
       counts[p.category] = (counts[p.category] ?? 0) + 1;
     }
-    const rows = PROJECT_CATEGORY_OPTIONS.filter((c) => counts[c]).map((c) => ({
+    const toneByName = Object.fromEntries(categories.map((c) => [c.name, c.color]));
+    // 2026-09-03 bugfix: this used to filter against a hardcoded
+    // PROJECT_CATEGORY_OPTIONS list, so any category added after that list
+    // was written (or any custom one Sandra adds herself now that
+    // Categories are self-service) silently vanished from this breakdown
+    // even with real project counts. Iterate the actual counted names
+    // instead -- tone still comes from the live project_categories table,
+    // falling back to neutral for a name with no matching row.
+    const rows = Object.keys(counts).map((c) => ({
       label: c,
       value: counts[c],
-      tone: PROJECT_CATEGORY_TONES[c] ?? "neutral",
+      tone: toneByName[c] ?? "neutral",
     }));
     if (uncategorized) rows.push({ label: "Uncategorized", value: uncategorized, tone: "neutral" });
     return rows.sort((a, b) => b.value - a.value);
-  }, [filteredProjects]);
+  }, [filteredProjects, categories]);
 
   // Category moved from its own row-3 bar list into a 4th row-2 donut
   // (Sandra: "moving the category breakdown into the 2nd row as a donut
