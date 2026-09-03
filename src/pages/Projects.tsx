@@ -1852,8 +1852,11 @@ export default function Projects() {
     // 1 = 2026-09-02 re-prioritization (Owner/Category/Source moved up
     // next to identity; Status/Health/Phase/Priority as the live-triage
     // cluster; hours/variance and Days Extended pushed toward the end;
-    // Complexity last).
-    columnOrderVersion: 1,
+    // Complexity last). 2 = 2026-09-03: new Planning Type column inserted
+    // after Source -- without this bump, anyone with an already-saved
+    // "default" view would never see the new column at all (their stale
+    // columnOrder array simply doesn't contain "planning_type").
+    columnOrderVersion: 2,
     hiddenColumns: [],
     columnWidths: {},
     groupBy: null,
