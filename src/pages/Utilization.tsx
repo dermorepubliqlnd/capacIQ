@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, TrendingUp, Gauge, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, TrendingUp, Gauge, AlertTriangle, Clock } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { buildHolidaySet } from "../lib/workingDays";
 // One shared allocation engine for all three utilization surfaces
@@ -226,6 +226,10 @@ export default function Utilization() {
   const [personFilter, setPersonFilter] = useState<Set<string> | null>(null);
   const [personFilterOpen, setPersonFilterOpen] = useState(false);
   const [personFilterSearch, setPersonFilterSearch] = useState("");
+  // Hours toggle (2026-09-03, Sandra: "allow toggle to view hours too or
+  // hide it" in both Daily and Weekly) -- same pattern/default (on) as the
+  // WBS snapshot's own Hours toggle (WbsPlanning.tsx utilShowHours).
+  const [showHours, setShowHours] = useState(true);
 
   async function loadAll() {
     setLoading(true);
@@ -630,6 +634,18 @@ export default function Utilization() {
           ))}
         </div>
 
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
+        <button
+          onClick={() => setShowHours((v) => !v)}
+          className={`timeline-segmented-btn${showHours ? " active" : ""}`}
+          style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
+          title="Show/hide planned and capacity hours under each percentage"
+        >
+          <Clock size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+          Hours
+        </button>
+
       </div>
 
       <div ref={utilScrollRef} className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>
@@ -849,6 +865,11 @@ export default function Utilization() {
                                       {tier.key === "unallocated" ? "–" : `${displayPct(pct)}%`}
                                       {av?.status === "half_day" && <span style={{ fontSize: 9, marginLeft: 2 }}>½</span>}
                                     </span>
+                                    {showHours && (
+                                      <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>
+                                        {value.toFixed(1)}h / {capacity.toFixed(1)}h
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
                               );
@@ -878,9 +899,11 @@ export default function Utilization() {
                                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                                     <Icon size={13} />
                                     <span>{stats.workingDaysCount === 0 ? "–" : `${displayPct(stats.avgPct)}%`}</span>
-                                    <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>
-                                      {stats.plannedHours.toFixed(1)}h / {stats.availableHours.toFixed(1)}h
-                                    </span>
+                                    {showHours && (
+                                      <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.75 }}>
+                                        {stats.plannedHours.toFixed(1)}h / {stats.availableHours.toFixed(1)}h
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
                               );

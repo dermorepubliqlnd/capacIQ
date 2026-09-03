@@ -157,15 +157,17 @@ export default function AppLayout() {
             Repositioned (2026-09-03, Sandra: "align the collapse/expand
             button along with the filter or group pills") -- top:14 sat
             level with the page H1 title, well above where a list page's
-            toolbar/filter-pills row actually renders (~y100-110 on
-            Projects/Tasks, confirmed live via getBoundingClientRect).
-            top:108 lines the button up with that row instead. */}
+            toolbar/filter-pills row actually renders. First pass (top:108)
+            was still ~6px shy of the pills' true vertical CENTER on
+            Projects/Tasks (measured live: .filter-pill rect top~104,
+            height~44 -> center~126); top:114 centers the 24px button on
+            that same 126 -- (24/2) = 114. */}
         <button
           onClick={toggleCollapsed}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           style={{
             position: "absolute",
-            top: 108,
+            top: 114,
             right: -12,
             width: 24,
             height: 24,

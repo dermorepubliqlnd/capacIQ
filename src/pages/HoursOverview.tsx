@@ -131,7 +131,7 @@ export default function HoursOverview() {
   // there, actively mislabelling real work.
   const [allPeople, setAllPeople] = useState<PersonRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<"grid" | "task">("grid");
+  const [view, setView] = useState<"grid" | "fulfillment" | "task">("grid");
   const [expanded, setExpanded] = useState<string[]>([]);
 
   // 2026-09-03 (Sandra: default to the current month, with date filters
@@ -366,6 +366,37 @@ export default function HoursOverview() {
     return engine.taskHoursOnDate(personId, t as UtilTaskRow, dateStr);
   }
 
+  // --- Scope Fulfillment view (2026-09-03, Sandra) ---------------------
+  // Same Scoped side as Daily Activity (scopedHoursFor/scopedPersonTotalFor
+  // above, unchanged). The LOGGED side is different on purpose: instead of
+  // bucketing a person's real time entries by the day they actually logged
+  // them, a task's TOTAL logged hours (wherever/whenever they were logged)
+  // get spread evenly across the task's own SCOPED days -- the exact same
+  // day-set scopedHoursFor already divides the Scoped hours across (see
+  // engine.taskDays). This answers a different question than Daily
+  // Activity: not "what did this person log on this calendar day" but
+  // "was the work planned FOR this day eventually done, within/below/above
+  // what was scoped for it" -- regardless of which real day the person
+  // happened to sit down and log the time.
+  function totalLoggedHoursForTask(personId: string, taskId: string): number {
+    return timeEntries
+      .filter((e) => e.person_id === personId && e.task_id === taskId)
+      .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
+  }
+  function fulfillmentLoggedHoursFor(personId: string, taskId: string, dateStr: string): number {
+    const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
+    if (!t) return 0;
+    if (parentTaskIds.has(t.id)) return 0;
+    const days = engine.taskDays(personId, t as UtilTaskRow);
+    if (days.size === 0 || !days.has(dateStr)) return 0;
+    const total = totalLoggedHoursForTask(personId, taskId);
+    if (total <= 0) return 0;
+    return total / days.size;
+  }
+  function fulfillmentPersonTotalFor(personId: string, dateStr: string): number {
+    return combinedSubItemsFor(personId).reduce((sum, item) => sum + fulfillmentLoggedHoursFor(personId, item.taskId, dateStr), 0);
+  }
+
   // Combined per-task breakdown for a person's expand row: union of their
   // open scoped-eligible tasks AND any task they've logged time against
   // (even if reassigned, completed, or archived since) -- otherwise a
@@ -503,7 +534,28 @@ export default function HoursOverview() {
             cursor: "pointer",
           }}
         >
-          Day
+          Daily Activity
+        </button>
+        {/* Scope Fulfillment (2026-09-03, Sandra): same calendar-grid shape
+            as Daily Activity, but the Logged side re-attributes a task's
+            TOTAL logged hours back onto the day(s) its hours were SCOPED,
+            instead of the day they were actually logged -- see
+            fulfillmentLoggedHoursFor/fulfillmentPersonTotalFor above. Order
+            requested: Daily Activity, Scope Fulfillment, Per Task. */}
+        <button
+          onClick={() => setView("fulfillment")}
+          style={{
+            padding: "6px 14px",
+            fontSize: 12,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            background: view === "fulfillment" ? "var(--navy)" : "var(--surface)",
+            color: view === "fulfillment" ? "#fff" : "var(--text-secondary)",
+            cursor: "pointer",
+          }}
+        >
+          Scope Fulfillment
         </button>
         <button
           onClick={() => setView("task")}
@@ -522,7 +574,7 @@ export default function HoursOverview() {
         </button>
       </div>
 
-      {view === "grid" ? (
+      {view === "grid" || view === "fulfillment" ? (
         <>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
             {/* 2026-09-03 (Sandra: default to the current month, with date
@@ -694,7 +746,7 @@ export default function HoursOverview() {
                               const isHoliday = holidayByDate.has(dateStr);
                               const off = isOffDay(person.id, dateStr);
                               const scoped = scopedPersonTotalFor(person.id, dateStr);
-                              const logged = loggedPersonTotalFor(person.id, dateStr);
+                              const logged = view === "fulfillment" ? fulfillmentPersonTotalFor(person.id, dateStr) : loggedPersonTotalFor(person.id, dateStr);
                               // 2026-08-31: holiday / Time Off days are now
                               // labelled the same way Utilization.tsx labels
                               // them, instead of silently reading as a normal
@@ -847,7 +899,7 @@ export default function HoursOverview() {
                                   {days.map((d, i) => {
                                     const dateStr = toISO(d);
                                     const scoped = scopedHoursFor(person.id, item.taskId, dateStr);
-                                    const logged = loggedHoursFor(person.id, item.taskId, dateStr);
+                                    const logged = view === "fulfillment" ? fulfillmentLoggedHoursFor(person.id, item.taskId, dateStr) : loggedHoursFor(person.id, item.taskId, dateStr);
                                     return (
                                       <td key={i} style={subCellStyle(i)}>
                                         {scoped > 0 || logged > 0 ? (
@@ -886,7 +938,7 @@ export default function HoursOverview() {
                       {days.map((d, i) => {
                         const dateStr = toISO(d);
                         const scoped = visiblePeople.reduce((sum, p) => sum + scopedPersonTotalFor(p.id, dateStr), 0);
-                        const logged = visiblePeople.reduce((sum, p) => sum + loggedPersonTotalFor(p.id, dateStr), 0);
+                        const logged = visiblePeople.reduce((sum, p) => sum + (view === "fulfillment" ? fulfillmentPersonTotalFor(p.id, dateStr) : loggedPersonTotalFor(p.id, dateStr)), 0);
                         return (
                           <td key={i} style={{ ...rollupCellStyle(i), borderTop: "1px solid var(--border)", fontSize: 11.5, fontWeight: 600, color: "var(--muted)" }}>
                             {scoped > 0 || logged > 0 ? `${scoped.toFixed(1)}/${logged.toFixed(1)}h` : "–"}
@@ -920,7 +972,11 @@ export default function HoursOverview() {
                 </span>
               );
             })}
-            <span>Logged hours always show on the day they were actually worked, even outside a task's scoped window.</span>
+            <span>
+              {view === "fulfillment"
+                ? "Logged hours here are re-attributed to the day(s) each task's hours were scoped -- not the day they were actually logged."
+                : "Logged hours always show on the day they were actually worked, even outside a task's scoped window."}
+            </span>
           </div>
         </>
       ) : (
