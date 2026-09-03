@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { Plus, MoreHorizontal, Pencil, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
+import { Plus, Pencil, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
 import type { GroupOption, TableView, ViewType } from "../lib/tableTypes";
 
 interface ViewTabsProps<T> {
@@ -189,7 +189,29 @@ export default function ViewTabs<T>({
         key={v.id}
         className={`view-tab${active ? " active" : ""}`}
         style={{ color: active ? color : undefined }}
-        onClick={() => onSelect(v.id)}
+        title={active ? "Click again for view options" : undefined}
+        onClick={(e) => {
+          // Sandra, 2026-09-03 ("remove the ellipsis... highlight the
+          // active view... 1st click displays the view, 2nd click on the
+          // active tab shows view settings"): the separate always-visible
+          // "..." button is gone -- the tab itself is now the trigger.
+          // Selecting an inactive tab just switches to it, same as
+          // before; clicking a tab that's ALREADY active (this is the
+          // Notion behavior she's describing) toggles the same
+          // Rename/Duplicate/Color/Delete dropdown that used to live
+          // behind the "..." icon.
+          if (active) {
+            if (menuOpenId === v.id) {
+              setMenuOpenId(null);
+            } else {
+              openPositionedMenu(e, setMenuPos, 170);
+              setMenuOpenId(v.id);
+            }
+          } else {
+            onSelect(v.id);
+            setMenuOpenId(null);
+          }
+        }}
       >
         {editingId === v.id ? (
           <input
@@ -209,21 +231,6 @@ export default function ViewTabs<T>({
             <Icon size={12} className="view-tab-icon" style={{ color }} />
             {v.name}
             {v.showCount && <span className="view-tab-count">{visibleCountFor(v, rows, groupOptions)}</span>}
-            <button
-              className={`view-tab-menu-btn${menuOpenId === v.id ? " menu-open" : ""}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (menuOpenId === v.id) {
-                  setMenuOpenId(null);
-                } else {
-                  openPositionedMenu(e, setMenuPos, 130);
-                  setMenuOpenId(v.id);
-                }
-              }}
-              title="View options"
-            >
-              <MoreHorizontal size={13} />
-            </button>
             {menuOpenId === v.id &&
               createPortal(
               <div

@@ -1,6 +1,6 @@
-import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Pin, PinOff } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
 import { sortRows, sortRowsHierarchical, resolveTone } from "../lib/tableTypes";
 
@@ -180,6 +180,53 @@ export default function DataTable<T>({
     return baseWidths[key] ?? 140;
   }
 
+  // Sandra, 2026-09-03 ("enable column/pane locking -- right click to
+  // select freeze pane"): classic spreadsheet freeze-pane, keyed off
+  // view.frozenUpTo (the last column meant to stay put). frozenUpToIndex
+  // is -1 whenever nothing's frozen, OR the saved key no longer matches a
+  // currently-visible column (hidden/removed since) -- either way nothing
+  // renders sticky, no special-casing needed at the render sites below.
+  const frozenUpToIndex = view.frozenUpTo ? visibleColumns.findIndex((c) => c.key === view.frozenUpTo) : -1;
+  // Left offset (px) for each frozen column's sticky position -- gutter
+  // width first (checkbox/grip column, if this table has one), then each
+  // frozen column's own width accumulated in order. Body <td> and header
+  // <th> share this so the two rows of sticky cells always line up.
+  const frozenLeftByKey = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (frozenUpToIndex < 0) return map;
+    let acc = hasGutter ? gutterWidth : 0;
+    for (let i = 0; i <= frozenUpToIndex; i++) {
+      const key = visibleColumns[i].key;
+      map[key] = acc;
+      acc += displayWidth(key);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frozenUpToIndex, visibleColumns, hasGutter, gutterWidth, baseWidths]);
+
+  // Right-click context menu for freezing/unfreezing -- opened from a
+  // column header's onContextMenu (see the header <th> below), positioned
+  // at the click point like a native OS context menu rather than
+  // reusing IconPopoverButton's anchored-to-trigger layout.
+  const [colContextMenu, setColContextMenu] = useState<{ x: number; y: number; key: string } | null>(null);
+  const colContextMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!colContextMenu) return;
+    function onDocClick(e: MouseEvent) {
+      if (colContextMenuRef.current?.contains(e.target as Node)) return;
+      setColContextMenu(null);
+    }
+    function onEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setColContextMenu(null);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [colContextMenu]);
+
   // table-layout:fixed only makes columns keep their literal pixel widths
   // when the <table> itself has an explicit total width -- left as "auto"
   // (or 100%), the browser instead treats each column's width as a mere
@@ -287,10 +334,27 @@ export default function DataTable<T>({
         {hasGutter && (
           // Select-all was removed from the header (Sandra: not needed) --
           // individual row checkboxes still work below, this is just an
-          // empty spacer cell kept for gutter-column alignment.
-          <th style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth, padding: 0 }} />
+          // empty spacer cell kept for gutter-column alignment. Sticks to
+          // the left edge too whenever any real column is frozen, since
+          // it physically sits in front of them.
+          <th
+            className={frozenUpToIndex >= 0 ? "data-table-frozen-cell" : undefined}
+            style={{
+              width: gutterWidth,
+              minWidth: gutterWidth,
+              maxWidth: gutterWidth,
+              padding: 0,
+              position: frozenUpToIndex >= 0 ? "sticky" : undefined,
+              left: frozenUpToIndex >= 0 ? 0 : undefined,
+              zIndex: frozenUpToIndex >= 0 ? 3 : undefined,
+            }}
+          />
         )}
-        {visibleColumns.map((c) => (
+        {visibleColumns.map((c) => {
+          const frozenLeft = frozenLeftByKey[c.key];
+          const isFrozen = frozenLeft !== undefined;
+          const isLastFrozen = frozenUpToIndex >= 0 && c.key === visibleColumns[frozenUpToIndex]?.key;
+          return (
           <th
             key={c.key}
             draggable
@@ -303,8 +367,16 @@ export default function DataTable<T>({
             }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => handleDrop(c.key)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setColContextMenu({ x: e.clientX, y: e.clientY, key: c.key });
+            }}
+            className={isFrozen ? "data-table-frozen-cell" : undefined}
             style={{
-              position: "relative",
+              position: isFrozen ? "sticky" : "relative",
+              left: isFrozen ? frozenLeft : undefined,
+              zIndex: isFrozen ? 2 : undefined,
+              boxShadow: isLastFrozen ? "2px 0 6px -2px rgba(0,0,0,0.18)" : undefined,
               width: displayWidth(c.key),
               maxWidth: displayWidth(c.key),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
@@ -312,7 +384,7 @@ export default function DataTable<T>({
               userSelect: "none",
               opacity: dragKey === c.key ? 0.4 : 1,
             }}
-            title="Drag to reorder"
+            title="Drag to reorder · right-click to freeze"
           >
             <span
               style={{
@@ -336,7 +408,8 @@ export default function DataTable<T>({
               style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 8, cursor: "col-resize", zIndex: 1 }}
             />
           </th>
-        ))}
+          );
+        })}
       </tr>
     </thead>
   );
@@ -375,7 +448,18 @@ export default function DataTable<T>({
         }
       >
         {hasGutter && (
-          <td className="row-gutter-cell" style={{ width: gutterWidth, minWidth: gutterWidth, maxWidth: gutterWidth }} onClick={(e) => e.stopPropagation()}>
+          <td
+            className={`row-gutter-cell${frozenUpToIndex >= 0 ? " data-table-frozen-cell" : ""}`}
+            style={{
+              width: gutterWidth,
+              minWidth: gutterWidth,
+              maxWidth: gutterWidth,
+              position: frozenUpToIndex >= 0 ? "sticky" : undefined,
+              left: frozenUpToIndex >= 0 ? 0 : undefined,
+              zIndex: frozenUpToIndex >= 0 ? 2 : undefined,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="row-gutter-inner" style={{ paddingLeft: gutterPadding }}>
               {orderable && (
                 <span
@@ -426,10 +510,19 @@ export default function DataTable<T>({
             </div>
           </td>
         )}
-        {visibleColumns.map((c) => (
+        {visibleColumns.map((c) => {
+          const frozenLeft = frozenLeftByKey[c.key];
+          const isFrozen = frozenLeft !== undefined;
+          const isLastFrozen = frozenUpToIndex >= 0 && c.key === visibleColumns[frozenUpToIndex]?.key;
+          return (
           <td
             key={c.key}
+            className={isFrozen ? "data-table-frozen-cell" : undefined}
             style={{
+              position: isFrozen ? "sticky" : undefined,
+              left: isFrozen ? frozenLeft : undefined,
+              zIndex: isFrozen ? 1 : undefined,
+              boxShadow: isLastFrozen ? "2px 0 6px -2px rgba(0,0,0,0.18)" : undefined,
               width: displayWidth(c.key),
               maxWidth: displayWidth(c.key),
               minWidth: c.minWidth ?? MIN_COL_WIDTH,
@@ -440,7 +533,8 @@ export default function DataTable<T>({
           >
             {c.render(row)}
           </td>
-        ))}
+          );
+        })}
       </tr>
     );
   }
@@ -558,6 +652,38 @@ export default function DataTable<T>({
           )}
         </table>
       </div>
+      {colContextMenu &&
+        createPortal(
+          <div
+            ref={colContextMenuRef}
+            className="toolbar-popover"
+            style={{ position: "fixed", top: colContextMenu.y, left: colContextMenu.x, width: 190, padding: 4 }}
+          >
+            <button
+              className="data-table-context-menu-item"
+              onClick={() => {
+                onViewChange({ frozenUpTo: colContextMenu.key });
+                setColContextMenu(null);
+              }}
+            >
+              <Pin size={12} />
+              Freeze up to here
+            </button>
+            {view.frozenUpTo && (
+              <button
+                className="data-table-context-menu-item"
+                onClick={() => {
+                  onViewChange({ frozenUpTo: null });
+                  setColContextMenu(null);
+                }}
+              >
+                <PinOff size={12} />
+                Unfreeze columns
+              </button>
+            )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

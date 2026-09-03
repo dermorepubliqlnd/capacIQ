@@ -117,6 +117,36 @@ table { font-family: var(--font); font-size: var(--font-table); border-collapse:
    labels with vertical rules, only the rows below them). */
 .data-table td:last-child { border-right: none; }
 
+/* Sandra, 2026-09-03 ("enable column/pane locking -- right click to
+   select freeze pane"): frozen header/body cells (DataTable.tsx, keyed
+   off view.frozenUpTo) need an opaque background so scrolled-past content
+   doesn't show through underneath them -- but NOT via inline style, since
+   that would out-rank the existing hover/selected/grouped background
+   rules below and make a frozen column stop highlighting with the rest
+   of its row. Base color here, then each state that already tints a row
+   gets its own higher-specificity override so frozen cells track it. */
+.data-table-frozen-cell { background: var(--surface); }
+.data-table thead tr.is-grouped th.data-table-frozen-cell { background: var(--hover-bg); }
+.data-table-dense tbody tr:hover td.data-table-frozen-cell { background: var(--bg); }
+.data-table-dense .data-table-group-row:hover td.data-table-frozen-cell { background: var(--hover-bg); }
+tr.row-selected td.data-table-frozen-cell { background: var(--hover-bg); }
+.data-table-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+.data-table-context-menu-item:hover { background: var(--hover-bg); }
+
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; }
 
 .metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
@@ -378,13 +408,14 @@ input, select { font-family: var(--font); }
 /* Notion-style view tabs above a data table: flat icon + label list, no
    boxes/borders -- active view is just bolder/darker text, like Notion's own
    view-tab bar. */
-.view-tabs { display: flex; align-items: center; gap: 18px; padding: 4px 2px; flex-wrap: nowrap; overflow: visible; min-width: 0; }
+.view-tabs { display: flex; align-items: center; gap: 2px; padding: 4px 2px; flex-wrap: nowrap; overflow: visible; min-width: 0; }
 .view-tab {
   position: relative;
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 0;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   font-weight: 500;
   color: var(--muted);
@@ -394,31 +425,20 @@ input, select { font-family: var(--font); }
   white-space: nowrap;
   flex-shrink: 0;
 }
-.view-tab:hover { color: var(--navy); }
+.view-tab:hover { color: var(--navy); background: var(--hover-bg); }
+/* Sandra, 2026-09-03 ("highlight the active view... in Notion the current
+   view has a light gray highlight"): the active tab used to be marked by
+   text color/weight alone -- now also gets the same light-gray fill as
+   the :hover state, staying visible even when the mouse moves away. The
+   separate "..." menu button this used to gate (view-tab-menu-btn) is
+   gone -- clicking an already-active tab now opens that dropdown
+   directly (see ViewTabs.tsx renderTab). */
 .view-tab.active {
   color: var(--navy);
   font-weight: 600;
+  background: var(--hover-bg);
 }
 .view-tab-icon { flex-shrink: 0; opacity: 0.8; }
-.view-tab-menu-btn {
-  display: flex;
-  align-items: center;
-  /* Quality audit (2026-08-20 review, UX #8): this used to be opacity: 0
-     -- invisible until hover, with no default-state affordance at all,
-     so someone wouldn't even know a rename/duplicate/delete/color menu
-     existed here. A faint always-visible dot at rest, full opacity on
-     hover/active-tab/menu-open, keeps the tab bar quiet without hiding
-     the affordance entirely. */
-  opacity: 0.35;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 2px;
-  border-radius: var(--radius-sm);
-}
-.view-tab:hover .view-tab-menu-btn, .view-tab-menu-btn.menu-open, .view-tab.active .view-tab-menu-btn { opacity: 1; }
-.view-tab-menu-btn:hover { background: var(--border); }
 .view-tab-dropdown {
   position: absolute;
   top: calc(100% + 4px);

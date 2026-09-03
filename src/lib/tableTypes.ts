@@ -268,6 +268,16 @@ export interface TableView {
   // view without this field is treated as version 0, so it always
   // refreshes on the first load after a bump.
   columnOrderVersion?: number;
+  // Sandra, 2026-09-03 ("enable column/pane locking in the table view --
+  // right click to select freeze pane"): Table-view-only freeze-pane, in
+  // the classic spreadsheet sense -- every visible column from the start
+  // of the row up to and including this key renders position:sticky so
+  // it stays put while the rest of the row scrolls horizontally. Right-
+  // click a column header (DataTable.tsx) to set/clear this. Optional/
+  // fallback-safe like the fields above; null and undefined both mean "no
+  // freeze". If the named column later gets hidden or removed, DataTable
+  // just finds no match and quietly renders unfrozen rather than erroring.
+  frozenUpTo?: string | null;
 }
 
 // One-line migration for views saved before filterPersonIds existed: if a

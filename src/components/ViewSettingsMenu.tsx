@@ -533,7 +533,21 @@ export default function ViewSettingsMenu<T>({
           // the header itself stay in sync with each other.
           const ordered = [...columnOrder.filter((k) => known.includes(k)), ...known.filter((k) => !columnOrder.includes(k))];
           const query = propertySearch.trim().toLowerCase();
-          const isLocked = (c: ColumnDef<T>) => Boolean(c.alwaysVisible) || Boolean(propertyLockInfo?.[c.key]);
+          // Sandra, 2026-09-03 ("Spent hrs can't be moved via the toolbar,
+          // but CAN via dragging the column header directly -- remove the
+          // lock in the toolbar"): `alwaysVisible` columns (computed
+          // rollups like Spent hrs that can never be hidden) used to also
+          // be treated as drag-locked here, which is why the Properties
+          // popover disagreed with the table header on whether the column
+          // could be reordered. Split into two independent checks:
+          // isHideLocked (still true for alwaysVisible -- the eye toggle
+          // stays disabled, since hiding a computed column makes no sense)
+          // and isDragLocked (only true for an explicit propertyLockInfo
+          // entry or nonReorderableKeys -- i.e. a column that's genuinely
+          // pinned to a structural position, like Name-as-title on
+          // Timeline/Calendar). alwaysVisible alone no longer blocks drag.
+          const isHideLocked = (c: ColumnDef<T>) => Boolean(c.alwaysVisible) || Boolean(propertyLockInfo?.[c.key]);
+          const isDragLocked = (c: ColumnDef<T>) => Boolean(propertyLockInfo?.[c.key]) || (nonReorderableKeys?.includes(c.key) ?? false);
           const isVisible = (c: ColumnDef<T>) => {
             const lock = propertyLockInfo?.[c.key];
             return lock ? lock.forcedVisible : c.alwaysVisible ? true : !hiddenColumns.includes(c.key);
@@ -554,11 +568,11 @@ export default function ViewSettingsMenu<T>({
             .sort((a, b) => searchText(a).localeCompare(searchText(b)));
 
           function setColumnVisible(c: ColumnDef<T>, visible: boolean) {
-            if (isLocked(c)) return;
+            if (isHideLocked(c)) return;
             onHiddenColumnsChange(visible ? hiddenColumns.filter((k) => k !== c.key) : [...hiddenColumns, c.key]);
           }
           function hideAll() {
-            const keys = shown.filter((c) => !isLocked(c)).map((c) => c.key);
+            const keys = shown.filter((c) => !isHideLocked(c)).map((c) => c.key);
             onHiddenColumnsChange(Array.from(new Set([...hiddenColumns, ...keys])));
           }
           function showAll() {
@@ -573,18 +587,18 @@ export default function ViewSettingsMenu<T>({
           }
 
           function renderRow(c: ColumnDef<T>) {
-            const locked = isLocked(c);
-            const reorderLocked = nonReorderableKeys?.includes(c.key) ?? false;
+            const hideLocked = isHideLocked(c);
+            const dragLocked = isDragLocked(c);
             const visible = isVisible(c);
             const lock = propertyLockInfo?.[c.key];
             const lockTooltip =
               lock?.reason ??
-              (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined) ??
-              (reorderLocked ? "Always shown first on the card -- position can't be changed" : undefined);
+              (nonReorderableKeys?.includes(c.key) ? "Always shown first on the card -- position can't be changed" : undefined) ??
+              (c.alwaysVisible ? "Always shown -- this is a computed value, not a free-typed one" : undefined);
             return (
               <div
                 key={c.key}
-                draggable={!locked && !reorderLocked}
+                draggable={!dragLocked}
                 onDragStart={(e) => {
                   e.stopPropagation();
                   setDraggedPropertyKey(c.key);
@@ -602,23 +616,23 @@ export default function ViewSettingsMenu<T>({
                   gap: 6,
                   fontSize: 12,
                   padding: "3px 2px",
-                  color: locked ? "var(--muted)" : "var(--text)",
+                  color: hideLocked ? "var(--muted)" : "var(--text)",
                 }}
               >
-                <span style={{ display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked || reorderLocked ? "default" : "grab" }}>
+                <span style={{ display: "flex", flexShrink: 0, color: "var(--muted)", cursor: dragLocked ? "default" : "grab" }}>
                   <GripVertical size={12} />
                 </span>
                 <span
                   onClick={() => setColumnVisible(c, !visible)}
-                  style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: locked ? "default" : "pointer" }}
+                  style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: hideLocked ? "default" : "pointer" }}
                 >
                   {c.plainLabel ?? c.label}
                 </span>
                 <button
                   onClick={() => setColumnVisible(c, !visible)}
-                  disabled={locked}
+                  disabled={hideLocked}
                   title={visible ? "Hide property" : "Show property"}
-                  style={{ background: "none", border: "none", padding: 2, display: "flex", flexShrink: 0, color: "var(--muted)", cursor: locked ? "default" : "pointer" }}
+                  style={{ background: "none", border: "none", padding: 2, display: "flex", flexShrink: 0, color: "var(--muted)", cursor: hideLocked ? "default" : "pointer" }}
                 >
                   {visible ? <Eye size={13} /> : <EyeOff size={13} />}
                 </button>
@@ -681,7 +695,7 @@ export default function ViewSettingsMenu<T>({
                 }}
               >
                 <span>Shown in table</span>
-                {shown.some((c) => !isLocked(c)) && (
+                {shown.some((c) => !isHideLocked(c)) && (
                   <button
                     onClick={hideAll}
                     style={{ background: "none", border: "none", color: "var(--accent)", fontSize: 10.5, fontWeight: 600, cursor: "pointer", textTransform: "none", letterSpacing: 0, padding: 0 }}
