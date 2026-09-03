@@ -42,6 +42,10 @@ import { colorForPerson } from "../lib/personColors";
 // hardcoded PROJECT_CATEGORY_OPTIONS/PROJECT_CATEGORY_TONES.
 import { healthOf, actualProgress, countWorkingDays, type ProjectRow, type TaskRow } from "./Projects";
 import { CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
+// Complexity (effort_level) is a fixed 3-tier enum (not a self-service
+// lookup like Source/Category/Phase), so its options/tones come straight
+// from notionOptions.ts, same as the Complexity column on Projects.tsx.
+import { PROJECT_EFFORT_LEVEL_OPTIONS, PROJECT_EFFORT_LEVEL_TONES } from "../lib/notionOptions";
 
 interface PersonRow {
   id: string;
@@ -55,6 +59,17 @@ interface SourceRow {
   sort_order: number;
 }
 interface PlanningTypeRow {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
+// Project Phase (admin-configurable lookup, project_phases table) --
+// mirrors SourceRow/PlanningTypeRow. Unlike Source/Planning Type, a
+// project's `phase` column stores the phase NAME directly (same
+// text-column shape as `category`, not an FK id) -- see ProjectPhaseOption
+// in Projects.tsx.
+interface PhaseRow {
   id: string;
   name: string;
   is_active: boolean;
@@ -399,6 +414,28 @@ function MaterialsOutputBarList({ rows, total }: { rows: { label: string; closed
   );
 }
 
+// Section header / text divider (2026-09-04, Sandra: "add a text divider
+// or header") -- separates the "Active Projects" stat-strip block from
+// the "Year-to-Date" breakdown block below it. Deliberately simpler/more
+// prominent than a card title (fontSize 12.5/weight 600) so it reads as a
+// page-level section label, not another card.
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 14.5,
+        fontWeight: 700,
+        color: "var(--navy)",
+        marginBottom: 10,
+        paddingBottom: 6,
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function StatCard({
   icon,
   tone,
@@ -487,6 +524,7 @@ export default function Dashboard() {
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [planningTypes, setPlanningTypes] = useState<PlanningTypeRow[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [phases, setPhases] = useState<PhaseRow[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
   const [extReqs, setExtReqs] = useState<ExtReqLite[]>([]);
@@ -514,6 +552,7 @@ export default function Dashboard() {
         { data: closeoutData },
         { data: allStartsData },
         { data: planningTypeData },
+        { data: phaseData },
       ] = await Promise.all([
         supabase.from("projects").select("*").eq("is_archived", false),
         supabase.from("tasks").select("*").eq("is_archived", false),
@@ -527,6 +566,7 @@ export default function Dashboard() {
         supabase.from("project_closeouts").select("closed_at"),
         supabase.from("projects").select("start_date"),
         supabase.from("project_planning_types").select("id,name,is_active,sort_order").order("sort_order"),
+        supabase.from("project_phases").select("id,name,is_active,sort_order").order("sort_order"),
       ]);
       setProjects((projectData as ProjectRow[]) ?? []);
       setTasks((taskData as TaskRow[]) ?? []);
@@ -540,6 +580,7 @@ export default function Dashboard() {
       setCloseouts((closeoutData as CloseoutLite[]) ?? []);
       setAllProjectStarts((allStartsData as ProjectStartLite[]) ?? []);
       setPlanningTypes((planningTypeData as PlanningTypeRow[]) ?? []);
+      setPhases((phaseData as PhaseRow[]) ?? []);
       setLoading(false);
     })();
   }, []);
@@ -717,6 +758,69 @@ export default function Dashboard() {
     [categoryRows]
   );
 
+  // Row 3 "Active Projects" donuts (2026-09-04, Sandra: "3rd row add
+  // doughnut too ... Active projects statuses, active project health,
+  // active projects phase, and complexity of active only") -- all four
+  // scoped to isActiveProject (Baseline Locked), same scoping Active
+  // Project Health already used, so their totals always match the
+  // Active KPI card above.
+  const activeStatusDonut = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of filteredProjects.filter(isActiveProject)) {
+      const key = p.status ?? "Not Started";
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return Object.entries(counts).map(([label, value]) => ({
+      label,
+      value,
+      color: STATUS_CHART_COLOR[label] ?? "#8a94a6",
+    }));
+  }, [filteredProjects]);
+
+  const activePhaseDonut = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let unset = 0;
+    for (const p of filteredProjects.filter(isActiveProject)) {
+      if (!p.phase) {
+        unset++;
+        continue;
+      }
+      counts[p.phase] = (counts[p.phase] ?? 0) + 1;
+    }
+    // `phase` is a plain text column (like `category`), not an FK id, so
+    // group by name directly -- ordered by the live project_phases
+    // sort_order so the legend/slice order stays stable as phases are
+    // added or reordered in Site Settings.
+    const segs = phases
+      .filter((ph) => counts[ph.name])
+      .map((ph, i) => ({ label: ph.name, value: counts[ph.name] ?? 0, color: SOURCE_PALETTE[i % SOURCE_PALETTE.length] }));
+    if (unset) segs.push({ label: "Not set", value: unset, color: "#c7cdd6" });
+    return segs;
+  }, [filteredProjects, phases]);
+
+  const activeComplexityDonut = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let unset = 0;
+    for (const p of filteredProjects.filter(isActiveProject)) {
+      if (!p.effort_level) {
+        unset++;
+        continue;
+      }
+      counts[p.effort_level] = (counts[p.effort_level] ?? 0) + 1;
+    }
+    // Complexity is a fixed 3-tier enum (Level 1/2/3), not self-service --
+    // colored via the same tone names as the Complexity pill on
+    // Projects.tsx (PROJECT_EFFORT_LEVEL_TONES), resolved through the
+    // shared CATEGORY_TONE_ICON_COLOR palette like HEALTH_TONE does.
+    const segs = PROJECT_EFFORT_LEVEL_OPTIONS.filter((lvl) => counts[lvl]).map((lvl) => ({
+      label: lvl,
+      value: counts[lvl] ?? 0,
+      color: CATEGORY_TONE_ICON_COLOR[PROJECT_EFFORT_LEVEL_TONES[lvl] ?? "neutral"] ?? "#8a94a6",
+    }));
+    if (unset) segs.push({ label: "Not set", value: unset, color: "#c7cdd6" });
+    return segs;
+  }, [filteredProjects]);
+
   // Materials Output (Phase 21, 2026-08-24; stacked-bar redesign
   // 2026-08-24): takes over By Category's old row-3 slot. Sums
   // tasks.output_count grouped by Output Type, scoped to tasks belonging
@@ -878,37 +982,46 @@ export default function Dashboard() {
         </select>
       </div>
 
-      {/* Top stat strip */}
+      {/* Section header (2026-09-04, Sandra: "add a text divider or
+          header to put Active Projects") -- covers the top stat strip. */}
+      <SectionHeader>Active Projects</SectionHeader>
+
+      {/* Row 1: top stat strip. "Paused"/"Off Track" (2026-09-04, renamed
+          from "On Hold"/"At Risk") are just label text -- On Hold's count
+          is still `status === "Paused"` and Off Track's is still the
+          combined "At risk" + "Off track" HEALTH count (unchanged from
+          before this rename); flag to Sandra if Off Track should instead
+          count ONLY the "Off track" health label now that "At risk" is
+          also a distinct, separately-shown health value in the new Row 3
+          Active Project Health donut. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
         <StatCard icon={<Folder size={26} />} tone="accent" label="Total Projects" value={stats.total} />
         <StatCard icon={<Activity size={26} />} tone="accent" label="Active" value={stats.active} />
         <StatCard icon={<CheckCircle2 size={26} />} tone="teal" label="Completed" value={stats.completed} />
-        <StatCard icon={<PauseCircle size={26} />} tone="warning" label="On Hold" value={stats.onHold} />
-        <StatCard icon={<AlertTriangle size={26} />} tone="warning" label="At Risk" value={stats.atRisk} />
+        <StatCard icon={<PauseCircle size={26} />} tone="warning" label="Paused" value={stats.onHold} />
+        <StatCard icon={<AlertTriangle size={26} />} tone="warning" label="Off Track" value={stats.atRisk} />
         <StatCard icon={<Clock3 size={26} />} tone="danger" label="Overdue" value={stats.overdue} />
         <StatCard icon={<Package size={26} />} tone="neutral" label="Materials Output" value={materialsOutputTotal} />
       </div>
 
-      {/* Row 2: 4 donuts (Category moved in here, per Sandra: "moving the
-          category breakdown into the 2nd row as a donut too") */}
+      {/* Section header for the YTD breakdown row below (2026-09-04,
+          Sandra: "2nd row ... this will be YTDs"). Note: this labels the
+          row -- the donuts themselves still respect the Period filter
+          above (All/Month/Quarter/Year), they aren't force-recomputed to
+          calendar-YTD regardless of that filter; flag to Sandra if she
+          wants this row to always be Jan 1-today regardless of the
+          Period dropdown. */}
+      <SectionHeader>Year-to-Date</SectionHeader>
+
+      {/* Row 2: 4 donuts -- Active Project Health moved out to Row 3
+          (2026-09-04) alongside the other three new "Active only" donuts,
+          so this row is now Status/Source/Category/Planning Type only. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10, marginBottom: 16 }}>
         <div className="card">
           <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Project Status</div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Donut segments={statusDonut} centerLabel="Total" centerValue={stats.total} />
             <DonutLegend segments={statusDonut} total={stats.total} />
-          </div>
-        </div>
-        <div className="card">
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Health</div>
-          {/* 2026-09-03: "Active" is a specific, defined term here now --
-              Baseline Locked only (see isActiveProject) -- spelled out so
-              it's never ambiguous with Total Projects or Status's own
-              "In Progress" count again. */}
-          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <Donut segments={healthDonut} centerLabel="Active" centerValue={stats.active} />
-            <DonutLegend segments={healthDonut} total={stats.active} />
           </div>
         </div>
         <div className="card">
@@ -934,7 +1047,51 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Row 3: Materials Output (took over By Category's old bar-list
+      {/* Row 3 (new, 2026-09-04, Sandra: "3rd row add doughnut too ...
+          Active projects statuses, active project health, active
+          projects phase, and complexity of active only") -- all 4 donuts
+          scoped to isActiveProject (Baseline Locked), matching Active
+          Project Health's existing scope. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10, marginBottom: 16 }}>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Status</div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={activeStatusDonut} centerLabel="Active" centerValue={stats.active} />
+            <DonutLegend segments={activeStatusDonut} total={stats.active} />
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Health</div>
+          {/* 2026-09-03: "Active" is a specific, defined term here now --
+              Baseline Locked only (see isActiveProject) -- spelled out so
+              it's never ambiguous with Total Projects or Status's own
+              "In Progress" count again. */}
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={healthDonut} centerLabel="Active" centerValue={stats.active} />
+            <DonutLegend segments={healthDonut} total={stats.active} />
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Phase</div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={activePhaseDonut} centerLabel="Active" centerValue={stats.active} />
+            <DonutLegend segments={activePhaseDonut} total={stats.active} />
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Complexity</div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={activeComplexityDonut} centerLabel="Active" centerValue={stats.active} />
+            <DonutLegend segments={activeComplexityDonut} total={stats.active} />
+          </div>
+        </div>
+      </div>
+
+      {/* Row 4: Materials Output (took over By Category's old bar-list
           slot) + Portfolio Movement */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
         <div className="card">
