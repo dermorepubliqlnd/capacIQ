@@ -815,7 +815,17 @@ export default function WbsPlanning() {
   // only while Hours is actually shown -- 40px comfortably fits the
   // percentage alone, but not ~10 characters of hours text too. See the
   // matching <td>/<th> comments below.
-  const utilDayColW = utilShowHours ? 56 : 40;
+  //
+  // First pass used 56px and it STILL clipped -- measured live: the
+  // widest real hour string ("10.3h/7.5h" @ 8.5px font) needs ~40px of
+  // content width, but this table's default .data-table td padding is
+  // 10px each side (20px total), so a 56px cell only left ~36px to work
+  // with. Fixed two ways together: a slightly wider column (50px) AND an
+  // explicit tight padding override on these specific cells (see below)
+  // instead of inheriting the table's normal padding, which is sized for
+  // much wider columns elsewhere in the app.
+  const utilDayColW = utilShowHours ? 50 : 40;
+  const utilDayColPadding = "1px 2px";
   // Phase 21 (2026-08-24): replaces the single Full-Effort-only toggle
   // with the centralized 3-scenario checkbox set -- same state now
   // drives BOTH the Utilization snapshot rows below and the Timeline
@@ -4699,6 +4709,7 @@ export default function WbsPlanning() {
                           style={{
                             width: utilDayColW,
                             minWidth: utilDayColW,
+                            padding: utilDayColPadding,
                             fontSize: 10,
                             textAlign: "center",
                             color: weekend || holiday ? "var(--muted)" : undefined,
@@ -4920,6 +4931,7 @@ export default function WbsPlanning() {
                                       style={{
                                         width: utilDayColW,
                                         maxWidth: utilDayColW,
+                                        padding: utilDayColPadding,
                                         overflow: "hidden",
                                         textAlign: "center",
                                         fontSize: 10,
@@ -4966,6 +4978,7 @@ export default function WbsPlanning() {
                                       // column stays compact and more days fit on screen.
                                       width: utilDayColW,
                                       maxWidth: utilDayColW,
+                                      padding: utilDayColPadding,
                                       overflow: "hidden",
                                       textAlign: "center",
                                       fontSize: 10.5,
