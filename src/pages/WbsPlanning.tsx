@@ -1937,11 +1937,14 @@ export default function WbsPlanning() {
     // edit, so there's no override concept to worry about here either.
     const start = t.start_date_full ? t.start_date_full.slice(0, 10) : null;
     if (!start) return null;
-    if (t.status === "Done" && t.current_due_date) {
-      const end = t.current_due_date.slice(0, 10);
-      const durationDays = workingDaysBetween(parseLocalDate(start), parseLocalDate(end), holidaySet).length;
-      return { start, end, durationDays };
-    }
+    // Fix (2026-09-03, Sandra): Theoretical is a fixed hypothetical model
+    // ("how long would this take at full capacity"), NOT a tracker of what
+    // actually happened -- unlike Forecasted/Capacity-Based above, it must
+    // NOT collapse to a task's real actual dates once marked Done. Doing so
+    // was silently changing a task's Theoretical duration after completion
+    // (e.g. 1 day -> 3 days), which then showed up as a bogus "+Nd" Changes
+    // vs Baseline tag with no real schedule change behind it. Theoretical
+    // now always computes its own hypothetical duration, Done or not.
     const hours = t.estimated_hours;
     if (hours === null || hours === undefined) return null;
     // Bugfix (2026-08-26, Sandra): an unassigned task has no one to
