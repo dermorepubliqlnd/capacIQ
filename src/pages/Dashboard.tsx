@@ -181,6 +181,21 @@ const HEALTH_CHART_COLOR: Record<string, string> = {
   Completed: "#06b6d4",
 };
 
+// Fixed per-label chart color for the Project Status donut, given
+// explicitly by Sandra 2026-09-03 (same pattern as HEALTH_CHART_COLOR
+// above). Real Status values are Not Started/In Progress/Completed/
+// Paused/Cancelled (PROJECT_STATUS_OPTIONS, notionOptions.ts) -- Sandra's
+// list named "Overdue" instead of "Cancelled", which isn't an actual
+// Status value, so that hex (#ec4899) is applied to Cancelled here
+// instead. Flag to Sandra if that substitution isn't what she meant.
+const STATUS_CHART_COLOR: Record<string, string> = {
+  "Not Started": "#eef2f5",
+  "In Progress": "#2e75b6",
+  Completed: "#4fd1a5",
+  Paused: "#a855f7",
+  Cancelled: "#ec4899",
+};
+
 // -- Small, dependency-free chart primitives ------------------------------
 // No chart library is installed in this app; these two SVG components
 // cover everything the mockup needs (a labeled donut, a two-series
@@ -580,10 +595,14 @@ export default function Dashboard() {
       const key = p.status ?? "Not Started";
       counts[key] = (counts[key] ?? 0) + 1;
     }
+    // 2026-09-03: fixed per-label hexes Sandra specified (STATUS_CHART_
+    // COLOR above), matching the same "stable per-label, not cyclic"
+    // approach as healthDonut. Chart color only -- the Status PILL
+    // (table view) still comes from PROJECT_STATUS_TONES, unaffected.
     return Object.entries(counts).map(([label, value]) => ({
       label,
       value,
-      color: STATUS_TONE[label]?.fill ?? "#8a94a6",
+      color: STATUS_CHART_COLOR[label] ?? "#8a94a6",
     }));
   }, [filteredProjects]);
 
