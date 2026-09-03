@@ -2091,7 +2091,16 @@ export default function WbsPlanning() {
     // deliberately has no equivalent check anywhere, since it's expected
     // to often still be a guess/placeholder until the project's real work
     // is actually done.
-    const missingOutputType = orderedTasks.filter((t) => !t.output_type_id);
+    // 2026-09-03 (Sandra): parent/grouping rows are exempt -- a parent's
+    // own Output Type never drives anything downstream (its Output Count
+    // is locked/blank by design, and the Dashboard's Materials Output
+    // breakdown only sums rows with a positive count), so requiring one
+    // here was pure friction with no reporting payoff. Same treatment as
+    // Work Type, which parents already skip. Leaf tasks (including every
+    // sub-task) still require Output Type, and different sub-tasks under
+    // one parent can each carry a different Output Type -- nothing rolls
+    // up or is inherited.
+    const missingOutputType = orderedTasks.filter((t) => !t.output_type_id && !(t.depth === 0 && hasChildren(t.id)));
     if (missingOutputType.length) {
       await alert(
         `Can't request a baseline yet -- ${missingOutputType.length} task(s) still need an Output Type picked. Output Count can stay blank for now; it only needs to be accurate by the time this project is closed.`
