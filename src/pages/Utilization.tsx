@@ -6,6 +6,7 @@ import { buildHolidaySet } from "../lib/workingDays";
 // (this page, Scoped vs Logged, and WBS Planning's Utilization snapshot).
 // See src/lib/dailyAllocation.ts for what used to be duplicated here.
 import { createAllocationEngine, dailyCapacityHours, parentTaskIdsOf, type UtilTaskRow } from "../lib/dailyAllocation";
+import UtilPersonFilterButton from "../components/UtilPersonFilterButton";
 import { displayPct, tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
 
 interface PersonRow {
@@ -218,6 +219,13 @@ export default function Utilization() {
   });
   const [expanded, setExpanded] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
+  // Person filter (2026-09-03, Sandra: "add a name filter so we can just
+  // select who we want to view") -- reuses the same searchable multi-select
+  // already shipped on Scoped vs Logged (HoursOverview.tsx) and the WBS
+  // snapshot (WbsPlanning.tsx), so all three surfaces behave identically.
+  const [personFilter, setPersonFilter] = useState<Set<string> | null>(null);
+  const [personFilterOpen, setPersonFilterOpen] = useState(false);
+  const [personFilterSearch, setPersonFilterSearch] = useState("");
 
   async function loadAll() {
     setLoading(true);
@@ -462,6 +470,7 @@ export default function Utilization() {
   // the shared engine, so no separate archived-hours handling is needed
   // here anymore either.
   const scopedPeople = showAllPeople ? allPeople : people;
+  const visiblePeople = personFilter ? scopedPeople.filter((p) => personFilter.has(p.id)) : scopedPeople;
 
   // Single source of truth for a rollup cell's numeric hours value, for
   // BOTH the daily grid and the weekly aggregation below.
@@ -574,6 +583,18 @@ export default function Utilization() {
 
         <div style={{ width: 1, height: 18, background: "var(--border)" }} />
 
+        <UtilPersonFilterButton
+          people={scopedPeople}
+          selected={personFilter}
+          open={personFilterOpen}
+          setOpen={setPersonFilterOpen}
+          search={personFilterSearch}
+          setSearch={setPersonFilterSearch}
+          onChange={setPersonFilter}
+        />
+
+        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
+
         <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
           <select
             value={showAllPeople ? "all" : "active"}
@@ -663,7 +684,16 @@ export default function Utilization() {
                         }}
                       >
                         {week[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })} –{" "}
-                        {week[6].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {/* Fix (2026-09-03, Sandra: "weekly view comes out blank"):
+                            hardcoded week[6] assumed every week chunk is a full 7
+                            days, but `weeks` is just days.length sliced into 7s --
+                            the trailing week of a range whose day count isn't a
+                            multiple of 7 (e.g. "This month" on a 30-day month is
+                            4 full weeks + a 2-day remainder) is shorter than 7,
+                            so week[6] was undefined and .toLocaleDateString()
+                            threw, crashing the whole page to blank. Use the
+                            week's own last day instead. */}
+                        {week[week.length - 1].toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                       </th>
                     ))}
               </tr>
@@ -736,14 +766,14 @@ export default function Utilization() {
               )}
             </thead>
             <tbody>
-              {scopedPeople.length === 0 ? (
+              {visiblePeople.length === 0 ? (
                 <tr>
                   <td colSpan={1 + columnCount} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
-                    {showAllPeople ? "No people found." : "No active people found."}
+                    {personFilter && personFilter.size === 0 ? "No people selected." : showAllPeople ? "No people found." : "No active people found."}
                   </td>
                 </tr>
               ) : (
-                scopedPeople.map((person) => {
+                visiblePeople.map((person) => {
                   const isExpanded = expanded.includes(person.id);
                   const ownedProjects = ownedProjectsFor(person.id);
                   const assignedTasks = openTasksFor(person.id);
