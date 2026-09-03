@@ -50,7 +50,6 @@ interface DeletedSpentHourRow {
 }
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { CATEGORY_ICON_LIBRARY, CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
-import { colorForPerson } from "../lib/personColors";
 import { Play, Square } from "lucide-react";
 import {
   PROJECT_EFFORT_LEVEL_OPTIONS,
@@ -3425,12 +3424,11 @@ export default function Projects() {
       label: "Assignee",
       getGroup: (t) => ownerName(t.assignee_id),
       // 2026-09-03 (Sandra: "if grouped by assignee then follow their
-      // assigned colors but a subtle one too") -- reuses the exact same
-      // colorForPerson each person already has everywhere else (Gantt
-      // bars, avatars); resolveTone (tableTypes.ts) turns that hex into
-      // a light-tint background + full-color text pairing instead of
-      // the flat gray every other grouping falls back to.
-      getTone: (t) => colorForPerson(people.find((p) => p.id === t.assignee_id) ?? null),
+      // assigned colors but a subtle one too") -- tried per-person
+      // colorForPerson tinting via resolveTone, then reverted same day
+      // ("revert the colors when grouped to default, it's not
+      // translating well") -- back to the flat gray every other
+      // grouping without a getTone falls back to.
       allGroups: () => [...people.map((p) => p.name), "—"],
     },
     {
