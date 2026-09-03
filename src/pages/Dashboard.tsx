@@ -575,18 +575,16 @@ export default function Dashboard() {
       const key = healthOf(p, tasks, holidayDates).label;
       counts[key] = (counts[key] ?? 0) + 1;
     }
-    // 2026-09-03: Sandra asked Project Health to "follow that palette too"
-    // -- the same bright cyclic SOURCE_PALETTE look as Source/Category/
-    // Planning Type, rather than the semantic tone-matched fill used
-    // before. Chart color only -- the actual Health PILL (table view,
-    // and the Health column list just below on this same page) still
-    // comes from HEALTH_TONE[label]?.pill / healthOf()'s own tone, so
-    // "Health unavailable" vs "Not started" stays distinguishable there
-    // regardless of how this donut is colored.
-    return Object.entries(counts).map(([label, value], i) => ({
+    // 2026-09-03: back to the semantic, tone-matched fill (same family as
+    // Status) -- Sandra tried the bright cyclic SOURCE_PALETTE look here
+    // and asked to align back with Status instead: On track green,
+    // Paused purple, etc., with "Health unavailable" a distinguishable
+    // grey shade ("slate") from "Not started"'s grey ("neutral") -- see
+    // HEALTH_TONE above and healthOf() in Projects.tsx.
+    return Object.entries(counts).map(([label, value]) => ({
       label,
       value,
-      color: SOURCE_PALETTE[i % SOURCE_PALETTE.length],
+      color: HEALTH_TONE[label]?.fill ?? "#8a94a6",
     }));
   }, [filteredProjects, tasks, holidayDates]);
 
