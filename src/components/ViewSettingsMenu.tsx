@@ -740,6 +740,7 @@ export function ViewFilterPills<T>({
   filterPersonIds,
   filterStatuses,
   onClearFilter,
+  containerRef,
 }: {
   groupOptions: GroupOption<T>[];
   groupBy: string | null;
@@ -754,6 +755,15 @@ export function ViewFilterPills<T>({
   filterPersonIds: string[];
   filterStatuses: string[];
   onClearFilter: () => void;
+  // Sandra ("what i meant was the collapse and expand in the projects and
+  // list groupings"): DataTable's own "Collapse all/Expand all" group
+  // toggle needs to sit visually WITH this pills row, not in its own row
+  // above the table. DataTable owns that button's state/logic (keyed off
+  // the same view's collapsedGroups), so rather than duplicate it here,
+  // the caller wires this ref to the pills row's DOM node and passes the
+  // same node to <DataTable collapseAllContainer={...}>, which portals
+  // its button in here (right-aligned via marginLeft:auto). See DataTable.tsx.
+  containerRef?: (el: HTMLDivElement | null) => void;
 }) {
   const activeOption = groupOptions.find((g) => g.key === groupBy);
   const hasFilter = filterPersonIds.length > 0 || filterStatuses.length > 0;
@@ -771,7 +781,7 @@ export function ViewFilterPills<T>({
   if (filterStatuses.length > 0) filterParts.push(`Status: ${filterStatuses.join(", ")}`);
 
   return (
-    <div className="view-filter-pills">
+    <div className="view-filter-pills" ref={containerRef}>
       {hasFilter && (
         <span className="filter-pill">
           Filtered: {filterParts.join(" \u00b7 ")}

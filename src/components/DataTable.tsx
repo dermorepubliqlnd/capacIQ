@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
 import { sortRows, sortRowsHierarchical, resolveTone } from "../lib/tableTypes";
@@ -43,6 +44,13 @@ interface DataTableProps<T> {
   // Only Tasks (which have sub-tasks) pass this -- Projects has no
   // parent/child relationship so it keeps the plain flat sort.
   getParentId?: (row: T) => string | null | undefined;
+  // Sandra ("what i meant was the collapse and expand in the projects and
+  // list groupings"): when set, the Collapse all/Expand all group toggle
+  // portals into this DOM node (the ViewFilterPills row) instead of
+  // rendering in its own row above the table, so it sits visually with
+  // the Grouped by/Sorted by pills. Falls back to the old standalone row
+  // when omitted -- no caller is forced to wire this up.
+  collapseAllContainer?: HTMLElement | null;
 }
 
 // ~1.3cm at 96dpi -- narrow enough for icon-only columns, but still a
@@ -82,6 +90,7 @@ export default function DataTable<T>({
   orderable,
   compactGutter,
   onReorder,
+  collapseAllContainer,
 }: DataTableProps<T>) {
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragRowKey, setDragRowKey] = useState<string | null>(null);
@@ -511,18 +520,33 @@ export default function DataTable<T>({
 
   const footerContent = footerRow ? footerRow(colSpanTotal) : null;
 
+  const collapseAllButton =
+    activeGroupOption && visibleGroupNames.length > 0 ? (
+      <button
+        onClick={toggleAllGroups}
+        style={{
+          fontSize: 11,
+          fontWeight: 500,
+          color: "var(--accent)",
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: "2px 4px",
+          marginLeft: collapseAllContainer ? "auto" : undefined,
+        }}
+      >
+        {allGroupsCollapsed ? "Expand all" : "Collapse all"}
+      </button>
+    ) : null;
+
   return (
     <div>
-      {activeGroupOption && visibleGroupNames.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 2px 4px" }}>
-          <button
-            onClick={toggleAllGroups}
-            style={{ fontSize: 11, fontWeight: 500, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: "2px 4px" }}
-          >
-            {allGroupsCollapsed ? "Expand all" : "Collapse all"}
-          </button>
-        </div>
-      )}
+      {collapseAllButton &&
+        (collapseAllContainer ? (
+          createPortal(collapseAllButton, collapseAllContainer)
+        ) : (
+          <div style={{ display: "flex", justifyContent: "flex-end", padding: "0 2px 4px" }}>{collapseAllButton}</div>
+        ))}
       <div style={{ width: "100%", overflowX: "auto", overflowY: "visible" }}>
         <table className="data-table" style={{ tableLayout: "fixed", width: totalWidth }}>
           {header}

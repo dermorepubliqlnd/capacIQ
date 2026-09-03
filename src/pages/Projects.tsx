@@ -1069,6 +1069,14 @@ export default function Projects() {
   const [archivedLoading, setArchivedLoading] = useState(false);
 
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  // Sandra: "align the collapse/expand [group toggle] with the sort and
+  // group pills" -- these hold the actual DOM node of each table's
+  // ViewFilterPills row so DataTable can portal its Collapse all/Expand
+  // all button into it (see DataTable.tsx's collapseAllContainer prop).
+  // One per table since Projects and Tasks each have their own
+  // independent grouping/pills row.
+  const [projectPillsRowEl, setProjectPillsRowEl] = useState<HTMLDivElement | null>(null);
+  const [taskPillsRowEl, setTaskPillsRowEl] = useState<HTMLDivElement | null>(null);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   const [projectClusterRef, projectClusterHeight] = useStickyOffset<HTMLDivElement>();
@@ -4045,6 +4053,7 @@ export default function Projects() {
           filterPersonIds={resolveFilterPersonIds(projectViews.activeView)}
           filterStatuses={projectViews.activeView.filterStatuses ?? []}
           onClearFilter={() => projectViews.updateActiveView({ filterPersonIds: [], filterStatuses: [] })}
+          containerRef={setProjectPillsRowEl}
         />
         {projectViews.activeView.viewType !== "board" && projectViews.activeView.viewType !== "timeline" && selectedProjectIds.length > 0 && (
           <div className="bulk-bar">
@@ -4198,6 +4207,7 @@ export default function Projects() {
               onViewChange={projectViews.updateActiveView}
               groupOptions={projectGroupOptions}
               sortOptions={projectSortOptions}
+              collapseAllContainer={projectPillsRowEl}
               emptyLabel="No projects yet. Add one below."
               selectable
               selectedKeys={selectedProjectIds}
@@ -4307,6 +4317,7 @@ export default function Projects() {
           filterPersonIds={resolveFilterPersonIds(taskViews.activeView)}
           filterStatuses={taskViews.activeView.filterStatuses ?? []}
           onClearFilter={() => taskViews.updateActiveView({ filterPersonIds: [], filterStatuses: [] })}
+          containerRef={setTaskPillsRowEl}
         />
         {taskViews.activeView.viewType !== "board" && taskViews.activeView.viewType !== "timeline" && selectedTaskIds.length > 0 && (
           <div className="bulk-bar">
@@ -4395,6 +4406,7 @@ export default function Projects() {
               onViewChange={taskViews.updateActiveView}
               groupOptions={taskGroupOptions}
               sortOptions={taskSortOptions}
+              collapseAllContainer={taskPillsRowEl}
               emptyLabel="No tasks yet. Add tasks from WBS Planning."
               compactGutter
               selectable

@@ -153,21 +153,13 @@ export default function AppLayout() {
             the icon, put it in the blue bar"): a small round toggle
             straddling the sidebar's top-right edge, chevron flips
             direction with state -- same pattern as LEAP Insights'
-            sidebar. Replaces the old bottom-of-sidebar "Collapse" row.
-            Repositioned (2026-09-03, Sandra: "align the collapse/expand
-            button along with the filter or group pills") -- top:14 sat
-            level with the page H1 title, well above where a list page's
-            toolbar/filter-pills row actually renders. First pass (top:108)
-            was still ~6px shy of the pills' true vertical CENTER on
-            Projects/Tasks (measured live: .filter-pill rect top~104,
-            height~44 -> center~126); top:114 centers the 24px button on
-            that same 126 -- (24/2) = 114. */}
+            sidebar. Replaces the old bottom-of-sidebar "Collapse" row. */}
         <button
           onClick={toggleCollapsed}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           style={{
             position: "absolute",
-            top: 114,
+            top: 14,
             right: -12,
             width: 24,
             height: 24,
