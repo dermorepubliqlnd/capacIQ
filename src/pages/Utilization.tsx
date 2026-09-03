@@ -3,12 +3,6 @@ import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, Tr
 import { supabase } from "../lib/supabaseClient";
 import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { buildHolidaySet } from "../lib/workingDays";
-import {
-  buildForwardSchedule,
-  type SchedTaskRow,
-  type SchedProjectRow,
-  type SchedAvailabilityRow,
-} from "../lib/capacityScheduler";
 // One shared allocation engine for all three utilization surfaces
 // (this page, Scoped vs Logged, and WBS Planning's Utilization snapshot).
 // See src/lib/dailyAllocation.ts for what used to be duplicated here.
@@ -110,7 +104,6 @@ function parseLocalDate(iso: string): Date {
   return new Date(y, m - 1, d);
 }
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const RANGE_OPTIONS = [1, 2, 4] as const;
 // Scaled up ~1.25x from the original 46/220 for a roomier grid — keep
 // these two in lockstep with the same constants in DayPlanner.tsx so the
 // two grids stay visually matched.
@@ -208,34 +201,24 @@ export default function Utilization() {
   const [deletedHours, setDeletedHours] = useState<DeletedHourRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Phase 8 (2026-08-21): Sandra -- "the current view is locked on a show
-  // option and isn't flawless... default should always be 4 weeks from
-  // today's date, with the option to scroll further back and forth. We
-  // can back-track dates as far as Jan 2026 only, not locked into a
-  // certain x-week timeframe." Anchor is now literally today (not the
-  // Monday of the current week -- that snap was the "locked" feeling),
-  // default range is 4 weeks, and backward navigation is clamped so you
-  // can never scroll earlier than 2026-01-01.
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
+  // 2026-09-03 (Sandra: default should be the current month, with date
+  // filters instead of a week-count picker; drop the Capacity-Based mode
+  // entirely -- "this makes no sense"). rangeStart/rangeEnd replace the
+  // old weekOffset/rangeWeeks pair -- Prev/Next now shift by the exact
+  // span currently shown (so a custom date-filtered range pages by its
+  // own width, not a fixed week count), and the From/To inputs let Sandra
+  // pick any window directly instead of jumping to a date and having a
+  // fixed 1/2/4-week span built around it.
+  const [rangeStart, setRangeStart] = useState<Date>(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [rangeEnd, setRangeEnd] = useState<Date>(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  });
   const [expanded, setExpanded] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<"daily" | "weekly">("daily");
-  // Phase 7 (2026-08-21): Sandra's ask -- Capacity-Based smoothing spreads
-  // overflow hours into future free days specifically so a person rarely
-  // shows over 100%, which was quietly hiding real over-allocation and
-  // costing her the evidence to argue for more headcount when the team is
-  // genuinely over-utilized. "Actual" (the new default, relabeled from
-  // "Realistic" 2026-08-24 to match the WBS Planning snapshot's own
-  // Actual/Full Effort/Capacity-Based/Manual vocabulary) shows the raw
-  // planned/estimated hours against each day's actual window with no
-  // capacity ceiling -- the same uncapped math already used for past
-  // dates -- for every date, past and future. "Capacity-Based" (relabeled
-  // from "Capacity-Smoothed") keeps the original forward-scheduler view
-  // for anyone who wants to see the deferred/idealized plan instead --
-  // same underlying buildForwardSchedule engine WBS Planning's own
-  // Capacity-Based mode uses, so the name now actually matches what it
-  // computes.
-  const [smoothed, setSmoothed] = useState(false);
 
   async function loadAll() {
     setLoading(true);
@@ -285,26 +268,39 @@ export default function Utilization() {
     d.setHours(0, 0, 0, 0);
     return d;
   }, []);
-  const minWeekOffset = useMemo(
-    () => Math.ceil((EARLIEST_ANCHOR.getTime() - todayRaw.getTime()) / (7 * 24 * 60 * 60 * 1000)),
-    [EARLIEST_ANCHOR, todayRaw]
-  );
-  function clampWeekOffset(next: number): number {
-    return Math.max(next, minWeekOffset);
-  }
-
   const days = useMemo(() => {
-    const base = addDays(todayRaw, weekOffset * 7);
-    return Array.from({ length: rangeWeeks * 7 }, (_, i) => addDays(base, i));
-  }, [weekOffset, rangeWeeks, todayRaw]);
+    const arr: Date[] = [];
+    for (let d = new Date(rangeStart); d <= rangeEnd; d = addDays(d, 1)) arr.push(d);
+    return arr;
+  }, [rangeStart, rangeEnd]);
 
-  function jumpToDate(dateStr: string) {
+  // Shift the whole window backward/forward by its own current width (in
+  // days) -- a custom-filtered range pages by its own size instead of an
+  // unrelated fixed week count.
+  function shiftRange(direction: -1 | 1) {
+    const spanDays = Math.round((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    setRangeStart((s) => addDays(s, direction * spanDays));
+    setRangeEnd((e) => addDays(e, direction * spanDays));
+  }
+  function resetToCurrentMonth() {
+    const d = new Date();
+    setRangeStart(new Date(d.getFullYear(), d.getMonth(), 1));
+    setRangeEnd(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+  }
+  function setRangeStartFromInput(dateStr: string) {
     if (!dateStr) return;
     const [y, m, d] = dateStr.split("-").map(Number);
     const chosen = new Date(y, (m ?? 1) - 1, d ?? 1);
-    const diffWeeks = Math.round((chosen.getTime() - todayRaw.getTime()) / (7 * 24 * 60 * 60 * 1000));
-    setWeekOffset(clampWeekOffset(diffWeeks));
+    if (chosen <= rangeEnd) setRangeStart(chosen);
   }
+  function setRangeEndFromInput(dateStr: string) {
+    if (!dateStr) return;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const chosen = new Date(y, (m ?? 1) - 1, d ?? 1);
+    if (chosen >= rangeStart) setRangeEnd(chosen);
+  }
+  const isAtEarliestAnchor = rangeStart <= EARLIEST_ANCHOR;
+
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
 
@@ -454,76 +450,25 @@ export default function Utilization() {
     return dailyCapacityHours(person, halfDay);
   }
 
-  // Phase 2: today-and-future days route through the new capacity-aware
-  // forward scheduler instead of the even-split calc above -- one schedule
-  // built per person, memoized, covering `today` through a full year out
-  // (maxDaysGuard) so a queued-up task's projected due date resolves even
-  // if it falls past the currently-visible week range.
-  const isCompleteStatus = (status: string | null) => statusGroupOf(TASK_STATUS_GROUPED, status) === "complete";
+  // 2026-09-03: Capacity-Based mode (the forward-scheduler-backed
+  // smoothing preview) removed per Sandra -- "this makes no sense". Every
+  // date, past and future, now always uses the plain even-split "Actual"
+  // calc below -- deletedHoursFor is already folded into dailyHoursFor via
+  // the shared engine, so no separate archived-hours handling is needed
+  // here anymore either.
   const scopedPeople = showAllPeople ? allPeople : people;
-  const schedulesByPerson = useMemo(() => {
-    const fixedWorkTypeIds = new Set(workTypes.filter((w) => w.is_fixed_schedule).map((w) => w.id));
-    const schedTasks: SchedTaskRow[] = tasks.map((t) => ({
-      id: t.id,
-      project_id: t.project_id,
-      parent_task_id: t.parent_task_id,
-      assignee_id: t.assignee_id,
-      status: t.status,
-      start_date: t.start_date,
-      current_due_date: t.current_due_date,
-      estimated_hours: t.estimated_hours,
-      sort_order: t.sort_order,
-      is_fixed_schedule: !!t.work_type_id && fixedWorkTypeIds.has(t.work_type_id),
-    }));
-    const schedProjects: SchedProjectRow[] = projects.map((p) => ({ id: p.id, owner_id: p.owner_id, start_date: p.start_date, end_date: p.end_date, wbs_status: p.wbs_status }));
-    const schedAvailability: SchedAvailabilityRow[] = availability.map((a) => ({ person_id: a.person_id, date: a.date, status: a.status }));
-    const map = new Map<string, ReturnType<typeof buildForwardSchedule>>();
-    scopedPeople.forEach((person) => {
-      map.set(
-        person.id,
-        buildForwardSchedule({
-          personId: person.id,
-          fromDateStr: today,
-          tasks: schedTasks,
-          parentTaskIds,
-          isCompleteStatus,
-          projects: schedProjects,
-          person: { id: person.id, daily_capacity_hours: person.daily_capacity_hours },
-          holidaySet,
-          availability: schedAvailability,
-          maxDaysGuard: 365,
-        })
-      );
-    });
-    return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopedPeople, tasks, projects, availability, holidaySet, today, workTypes]);
 
   // Single source of truth for a rollup cell's numeric hours value, for
-  // BOTH the daily grid and the weekly aggregation below -- past dates use
-  // the even-split calc, today/future dates read the forward schedule.
+  // BOTH the daily grid and the weekly aggregation below.
   function valueForDate(person: PersonRow, dateStr: string): number {
-    if (dateStr < today || !smoothed) return dailyHoursFor(person.id, dateStr);
-    // Bugfix (2026-08-31): Capacity-Based used to drop deletedHoursFor for
-    // today/future while Actual included it, so flipping the toggle silently
-    // changed a person's total. Archived hours are real elapsed allocation
-    // either way.
-    return (schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.totalHours ?? 0) + deletedHoursFor(person.id, dateStr);
+    return dailyHoursFor(person.id, dateStr);
   }
   function pmValueForDate(person: PersonRow, projectId: string, dateStr: string): number {
-    if (dateStr < today || !smoothed) {
-      const p = projects.find((x) => x.id === projectId);
-      return p ? pmHoursOnDate(p, dateStr, person.id) : 0;
-    }
-    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.pmHours.get(projectId) ?? 0;
+    const p = projects.find((x) => x.id === projectId);
+    return p ? pmHoursOnDate(p, dateStr, person.id) : 0;
   }
   function taskValueForDate(person: PersonRow, t: TaskRow, dateStr: string): number {
-    if (dateStr < today || !smoothed) return taskHoursOnDate(t, dateStr, person.id);
-    // Capacity-Based, today-and-future: the forward scheduler owns the
-    // number, but the deletion archive is not part of it -- it is folded in
-    // at the person-rollup level below (valueForDate), same as Actual, so
-    // the two modes no longer disagree about archived hours.
-    return schedulesByPerson.get(person.id)?.perDay.get(dateStr)?.taskHours.get(t.id) ?? 0;
+    return taskHoursOnDate(t, dateStr, person.id);
   }
 
   interface WeekStats {
@@ -582,11 +527,11 @@ export default function Utilization() {
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <button
-          onClick={() => setWeekOffset((w) => clampWeekOffset(w - rangeWeeks))}
+          onClick={() => shiftRange(-1)}
           className="planner-nav-btn"
-          disabled={weekOffset <= minWeekOffset}
-          title={weekOffset <= minWeekOffset ? "Can't go earlier than Jan 2026" : `Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}
-          style={weekOffset <= minWeekOffset ? { opacity: 0.4, cursor: "default" } : undefined}
+          disabled={isAtEarliestAnchor}
+          title={isAtEarliestAnchor ? "Can't go earlier than Jan 2026" : "Previous"}
+          style={isAtEarliestAnchor ? { opacity: 0.4, cursor: "default" } : undefined}
         >
           <ChevronLeft size={14} />
         </button>
@@ -594,41 +539,35 @@ export default function Utilization() {
           {days[0].toLocaleDateString("en-US", { month: "short", day: "numeric" })} –{" "}
           {days[days.length - 1].toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
         </span>
-        <button onClick={() => setWeekOffset((w) => w + rangeWeeks)} className="planner-nav-btn" title={`Next ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}>
+        <button onClick={() => shiftRange(1)} className="planner-nav-btn" title="Next">
           <ChevronRight size={14} />
         </button>
-        {weekOffset !== 0 && (
-          <button
-            onClick={() => setWeekOffset(0)}
-            style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
-          >
-            Today
-          </button>
-        )}
+        <button
+          onClick={resetToCurrentMonth}
+          style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+        >
+          This month
+        </button>
 
         <div style={{ width: 1, height: 18, background: "var(--border)" }} />
 
         <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
-          Show
-          <select
-            value={rangeWeeks}
-            onChange={(e) => setRangeWeeks(Number(e.target.value) as (typeof RANGE_OPTIONS)[number])}
-            style={{ fontSize: 11, fontWeight: 600, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
-          >
-            {RANGE_OPTIONS.map((w) => (
-              <option key={w} value={w}>
-                {w} week{w > 1 ? "s" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
-          Jump to
+          From
           <input
             type="date"
             min="2026-01-01"
-            onChange={(e) => jumpToDate(e.target.value)}
+            value={toISO(rangeStart)}
+            onChange={(e) => setRangeStartFromInput(e.target.value)}
+            style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
+          />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted)" }}>
+          To
+          <input
+            type="date"
+            min="2026-01-01"
+            value={toISO(rangeEnd)}
+            onChange={(e) => setRangeEndFromInput(e.target.value)}
             style={{ fontSize: 11, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
           />
         </label>
@@ -670,34 +609,6 @@ export default function Utilization() {
           ))}
         </div>
 
-        <div style={{ width: 1, height: 18, background: "var(--border)" }} />
-
-        <div
-          style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden" }}
-          title={
-            smoothed
-              ? "Capacity-Based: overflow hours are deferred into future free days -- rarely shows over 100%."
-              : "Actual: raw planned hours against each day's actual window, no capacity ceiling -- shows true over-allocation."
-          }
-        >
-          {([false, true] as const).map((isSmoothed) => (
-            <button
-              key={String(isSmoothed)}
-              onClick={() => setSmoothed(isSmoothed)}
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                padding: "4px 10px",
-                border: "none",
-                cursor: "pointer",
-                background: smoothed === isSmoothed ? "var(--accent)" : "transparent",
-                color: smoothed === isSmoothed ? "#fff" : "var(--muted)",
-              }}
-            >
-              {isSmoothed ? "Capacity-Based" : "Actual"}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div ref={utilScrollRef} className="card" style={{ padding: 0, overflowX: "auto", overflowY: "visible" }}>

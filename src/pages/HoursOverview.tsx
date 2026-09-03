@@ -99,7 +99,6 @@ function addDays(d: Date, n: number): Date {
   return r;
 }
 const WEEKDAY_LABEL = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const RANGE_OPTIONS = [1, 2, 4] as const;
 const CELL_W = 74;
 const LABEL_W = 240;
 
@@ -136,8 +135,16 @@ export default function HoursOverview() {
   const [view, setView] = useState<"grid" | "task">("grid");
   const [expanded, setExpanded] = useState<string[]>([]);
 
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [rangeWeeks, setRangeWeeks] = useState<(typeof RANGE_OPTIONS)[number]>(4);
+  // 2026-09-03 (Sandra: default to the current month, with date filters
+  // instead of a week-count picker -- same change as Utilization.tsx).
+  const [rangeStart, setRangeStart] = useState<Date>(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [rangeEnd, setRangeEnd] = useState<Date>(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  });
   const [sortBy, setSortBy] = useState<"variance" | "scoped" | "logged" | "name">("variance");
   // 2026-08-26 (Sandra: "allow selection of person to show similar to the
   // utilization snap shot") -- same reusable searchable multi-select
@@ -201,17 +208,39 @@ export default function HoursOverview() {
     d.setHours(0, 0, 0, 0);
     return d;
   }, []);
-  const minWeekOffset = useMemo(
-    () => Math.ceil((EARLIEST_ANCHOR.getTime() - todayRaw.getTime()) / (7 * 24 * 60 * 60 * 1000)),
-    [EARLIEST_ANCHOR, todayRaw]
-  );
-  function clampWeekOffset(next: number): number {
-    return Math.max(next, minWeekOffset);
-  }
   const days = useMemo(() => {
-    const base = addDays(todayRaw, weekOffset * 7);
-    return Array.from({ length: rangeWeeks * 7 }, (_, i) => addDays(base, i));
-  }, [weekOffset, rangeWeeks, todayRaw]);
+    const arr: Date[] = [];
+    for (let d = new Date(rangeStart); d <= rangeEnd; d = addDays(d, 1)) arr.push(d);
+    return arr;
+  }, [rangeStart, rangeEnd]);
+
+  // Same paging/reset/date-filter helpers as Utilization.tsx -- see that
+  // file's comment for the reasoning (page by the range's own width, not
+  // an unrelated fixed week count).
+  function shiftRange(direction: -1 | 1) {
+    const spanDays = Math.round((rangeEnd.getTime() - rangeStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    setRangeStart((s) => addDays(s, direction * spanDays));
+    setRangeEnd((e) => addDays(e, direction * spanDays));
+  }
+  function resetToCurrentMonth() {
+    const d = new Date();
+    setRangeStart(new Date(d.getFullYear(), d.getMonth(), 1));
+    setRangeEnd(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+  }
+  function setRangeStartFromInput(dateStr: string) {
+    if (!dateStr) return;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const chosen = new Date(y, (m ?? 1) - 1, d ?? 1);
+    if (chosen <= rangeEnd) setRangeStart(chosen);
+  }
+  function setRangeEndFromInput(dateStr: string) {
+    if (!dateStr) return;
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const chosen = new Date(y, (m ?? 1) - 1, d ?? 1);
+    if (chosen >= rangeStart) setRangeEnd(chosen);
+  }
+  const isAtEarliestAnchor = rangeStart <= EARLIEST_ANCHOR;
+
   const weeks: Date[][] = [];
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
 
@@ -502,38 +531,46 @@ export default function HoursOverview() {
       {view === "grid" ? (
         <>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+            {/* 2026-09-03 (Sandra: default to the current month, with date
+                filters instead of a week-count picker -- same change as
+                Utilization.tsx). Prev/Next now shift by the current
+                range's own span, "This month" resets to the calendar
+                month, and From/To date inputs let her pick any range. */}
             <button
-              onClick={() => setWeekOffset((w) => clampWeekOffset(w - rangeWeeks))}
+              onClick={() => shiftRange(-1)}
               className="planner-nav-btn"
-              disabled={weekOffset <= minWeekOffset}
-              title={weekOffset <= minWeekOffset ? "Can't go earlier than Jan 2026" : `Previous ${rangeWeeks} week${rangeWeeks > 1 ? "s" : ""}`}
+              disabled={isAtEarliestAnchor}
+              title={isAtEarliestAnchor ? "Can't go earlier than Jan 2026" : "Previous range"}
             >
               <ChevronLeft size={14} />
             </button>
-            {/* 2026-08-26 bugfix (Sandra: "fix the box for today's date,
-                the text overflows") -- .planner-nav-btn is a fixed 24x24px
-                icon-only square (built for the prev/next chevrons either
-                side of it); "Today" is text, not an icon, so it needed its
-                own auto-width style instead of being squeezed into that
-                box. Utilization.tsx's own week-nav already solved this the
-                same way (plain text button, no fixed-size class) -- this
-                just applies that same pattern here. */}
             <button
-              onClick={() => setWeekOffset(0)}
+              onClick={resetToCurrentMonth}
               style={{ fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "4px 10px", cursor: "pointer", whiteSpace: "nowrap" }}
             >
-              Today
+              This month
             </button>
-            <button onClick={() => setWeekOffset((w) => w + rangeWeeks)} className="planner-nav-btn">
+            <button onClick={() => shiftRange(1)} className="planner-nav-btn">
               <ChevronRight size={14} />
             </button>
-            <select value={rangeWeeks} onChange={(e) => setRangeWeeks(Number(e.target.value) as (typeof RANGE_OPTIONS)[number])} style={{ fontSize: 12, padding: "4px 6px" }}>
-              {RANGE_OPTIONS.map((w) => (
-                <option key={w} value={w}>
-                  {w} week{w > 1 ? "s" : ""}
-                </option>
-              ))}
-            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>
+              From
+              <input
+                type="date"
+                value={toISO(rangeStart)}
+                onChange={(e) => setRangeStartFromInput(e.target.value)}
+                style={{ fontSize: 12, padding: "3px 6px" }}
+              />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--text-secondary)" }}>
+              To
+              <input
+                type="date"
+                value={toISO(rangeEnd)}
+                onChange={(e) => setRangeEndFromInput(e.target.value)}
+                style={{ fontSize: 12, padding: "3px 6px" }}
+              />
+            </label>
             <UtilPersonFilterButton
               people={scopedPeople}
               selected={personFilter}
