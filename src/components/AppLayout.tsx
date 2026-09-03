@@ -12,8 +12,8 @@ import {
   Users,
   Settings,
   CalendarDays,
-  PanelLeftClose,
-  PanelLeftOpen,
+  ChevronLeft,
+  ChevronRight,
   type LucideIcon,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
@@ -37,7 +37,11 @@ const resourcePlanningItems: NavItem[] = [
 ];
 
 const adminItems: NavItem[] = [
-  { to: "/admin", label: "User management", icon: Users },
+  // `end: true` -- without it, NavLink's default prefix match makes this
+  // item "active" on every /admin/* sub-route too (e.g. /admin/holidays),
+  // since that path starts with /admin. Bug found 2026-09-03: Holiday
+  // calendar highlighted both itself AND User management at once.
+  { to: "/admin", label: "User management", icon: Users, end: true },
   { to: "/site-settings", label: "Site settings", icon: Settings },
   { to: "/admin/holidays", label: "Holiday calendar", icon: CalendarDays },
 ];
@@ -141,9 +145,38 @@ export default function AppLayout() {
           padding: collapsed ? "16px 4px" : "16px 10px",
           display: "flex",
           flexDirection: "column",
+          position: "relative",
           transition: "width 0.15s ease, padding 0.15s ease",
         }}
       >
+        {/* 2026-09-03 (Sandra: "move the collapse/expand to the top, use
+            the icon, put it in the blue bar"): a small round toggle
+            straddling the sidebar's top-right edge, chevron flips
+            direction with state -- same pattern as LEAP Insights'
+            sidebar. Replaces the old bottom-of-sidebar "Collapse" row. */}
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          style={{
+            position: "absolute",
+            top: 14,
+            right: -12,
+            width: 24,
+            height: 24,
+            borderRadius: "50%",
+            background: "#fff",
+            border: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            cursor: "pointer",
+            zIndex: 5,
+            boxShadow: "0 1px 4px rgba(0,0,0,0.25)",
+          }}
+        >
+          {collapsed ? <ChevronRight size={14} color="var(--navy)" /> : <ChevronLeft size={14} color="var(--navy)" />}
+        </button>
         <div style={{ padding: collapsed ? "0 0 20px" : "0 10px 20px", display: "flex", flexDirection: "column", alignItems: collapsed ? "center" : "stretch" }}>
           {!collapsed && (
             <div
@@ -173,30 +206,6 @@ export default function AppLayout() {
         {groups.length > 1 && <NavGroup title="Admin" items={adminItems} collapsed={collapsed} />}
 
         <div className="nav-spacer" style={{ flex: 1 }} />
-
-        <button
-          onClick={toggleCollapsed}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: collapsed ? "center" : "flex-start",
-            gap: 7,
-            background: "none",
-            border: "none",
-            color: "#9BA8BB",
-            fontSize: 11.5,
-            padding: collapsed ? "8px 0" : "8px 10px",
-            marginBottom: 4,
-            cursor: "pointer",
-            borderRadius: 3,
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-        >
-          {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-          {!collapsed && "Collapse"}
-        </button>
 
         {person && (
           <div style={{ padding: collapsed ? "10px 0 0" : "10px 10px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>

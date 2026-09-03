@@ -810,6 +810,12 @@ export default function WbsPlanning() {
   // the exact same computed points/capacity/tier everywhere below, these
   // three only decide what's shown and to whom, never how it's computed.
   const [utilShowHours, setUtilShowHours] = useState(true);
+  // 2026-09-03 (Sandra: hour text like "10.3h/7.5h" was being truncated
+  // unreadably in the snapshot's day columns): widen the day columns
+  // only while Hours is actually shown -- 40px comfortably fits the
+  // percentage alone, but not ~10 characters of hours text too. See the
+  // matching <td>/<th> comments below.
+  const utilDayColW = utilShowHours ? 56 : 40;
   // Phase 21 (2026-08-24): replaces the single Full-Effort-only toggle
   // with the centralized 3-scenario checkbox set -- same state now
   // drives BOTH the Utilization snapshot rows below and the Timeline
@@ -4690,7 +4696,13 @@ export default function WbsPlanning() {
                       return (
                         <th
                           key={iso}
-                          style={{ width: 40, minWidth: 40, fontSize: 10, textAlign: "center", color: weekend || holiday ? "var(--muted)" : undefined }}
+                          style={{
+                            width: utilDayColW,
+                            minWidth: utilDayColW,
+                            fontSize: 10,
+                            textAlign: "center",
+                            color: weekend || holiday ? "var(--muted)" : undefined,
+                          }}
                           title={iso}
                         >
                           {String(d.getMonth() + 1).padStart(2, "0")}/{String(d.getDate()).padStart(2, "0")}
@@ -4906,8 +4918,8 @@ export default function WbsPlanning() {
                                     <td
                                       key={iso}
                                       style={{
-                                        width: 40,
-                                        maxWidth: 40,
+                                        width: utilDayColW,
+                                        maxWidth: utilDayColW,
                                         overflow: "hidden",
                                         textAlign: "center",
                                         fontSize: 10,
@@ -4942,8 +4954,18 @@ export default function WbsPlanning() {
                                       // <th> (width: 40, minWidth: 40) above, so content
                                       // wider than 40px (e.g. "6.5h / 8.0h" with utilShowHours
                                       // on) just spilled outside the cell's visual bounds.
-                                      width: 40,
-                                      maxWidth: 40,
+                                      //
+                                      // Follow-up same day: overflow:hidden alone just swapped
+                                      // "spills outside the cell" for "silently truncated to
+                                      // unreadable" -- e.g. "10.3h/7.5h" clipped down to
+                                      // "10.3h/..." with no visible ellipsis-dots even, since
+                                      // 40px can't fit ~10 characters at any legible size. The
+                                      // real fix is a wider column, but only when the Hours
+                                      // toggle is actually on (utilDayColW below) -- with it
+                                      // off there's only the 2-3 char percentage to fit, so the
+                                      // column stays compact and more days fit on screen.
+                                      width: utilDayColW,
+                                      maxWidth: utilDayColW,
                                       overflow: "hidden",
                                       textAlign: "center",
                                       fontSize: 10.5,
