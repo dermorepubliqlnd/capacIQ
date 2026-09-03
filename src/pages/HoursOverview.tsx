@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevronRightIcon } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { buildHolidaySet } from "../lib/workingDays";
 // Same shared allocation engine Utilization.tsx and WbsPlanning.tsx's
 // Utilization snapshot use -- see src/lib/dailyAllocation.ts. Before this,
@@ -317,11 +316,15 @@ export default function HoursOverview() {
     return availability.some((a) => a.person_id === personId && a.date === dateStr && a.status === "off");
   }
 
-  // Scoped side: only open (non-complete), non-parent tasks currently
-  // assigned to this person -- same rule Utilization.tsx's own
-  // openTasksFor uses, so this stays comparable to that page's numbers.
+  // Scoped side: every non-parent task currently assigned to this person,
+  // open or Done -- mirrors Utilization.tsx's own openTasksFor, fixed
+  // 2026-09-03 (Sandra: a Done task's real historical hours must still
+  // have a sub-row to explain them, not just vanish from the breakdown
+  // the moment it's completed; scopedHoursFor below already reads the
+  // shared engine's date-gated value, so a Done task's row here correctly
+  // shows its real past hours and 0 from today forward).
   function scopedOpenTasksFor(personId: string): TaskRow[] {
-    return tasks.filter((t) => t.assignee_id === personId && !parentTaskIds.has(t.id) && statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete");
+    return tasks.filter((t) => t.assignee_id === personId && !parentTaskIds.has(t.id));
   }
   function ownedProjectsFor(personId: string): ProjectRow[] {
     return projects.filter((p) => p.owner_id === personId);
@@ -348,19 +351,14 @@ export default function HoursOverview() {
       .filter((e) => e.person_id === personId && e.task_id === taskId && e.started_at.slice(0, 10) === dateStr)
       .reduce((sum, e) => sum + (e.duration_minutes ?? 0) / 60, 0);
   }
-  // 2026-08-26 bugfix (Sandra: "why do the scoped hours and logged do not
-  // sum in the 1st level for each person"): this per-task cell used to
-  // only check assignee_id, so a Done task still showed its real scoped
-  // hours here -- but scopedPersonTotalFor/scopedOpenTasksFor (the
-  // collapsed row's total) deliberately EXCLUDE complete tasks, mirroring
-  // Utilization.tsx's capacity math (a finished task isn't upcoming
-  // capacity anymore). Two different filters on the same data meant the
-  // collapsed total and the sum of its own expanded sub-rows could never
-  // agree once any task was Done. Now this applies the identical
-  // "not complete" rule scopedOpenTasksFor already uses, so a Done task's
-  // scoped side reads "–" here too -- exactly the same "– / {logged}h"
-  // pattern this page already uses for logged-outside-the-scoped-window
-  // (see the file header comment), just extended to logged-after-Done.
+  // 2026-08-26 bugfix, UPDATED 2026-09-03: originally made to agree with
+  // scopedPersonTotalFor once a task went Done (both used to zero out
+  // completed tasks unconditionally). That blanket zeroing was itself
+  // fixed 2026-09-03 (Sandra: zeroing a Done task erases real historical
+  // utilization) -- the shared engine's taskHoursOnDate now only zeroes a
+  // Done task from TODAY forward, so this cell and scopedPersonTotalFor
+  // still agree (both call the same engine), but a Done task's PAST days
+  // correctly show real hours again instead of always reading "–".
   function scopedHoursFor(personId: string, taskId: string, dateStr: string): number {
     const t = tasks.find((x) => x.id === taskId && x.assignee_id === personId);
     if (!t) return 0;

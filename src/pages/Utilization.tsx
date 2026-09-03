@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown, Minus, Circle, CheckCircle2, TrendingUp, Gauge, AlertTriangle } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { TASK_STATUS_GROUPED, statusGroupOf } from "../lib/notionOptions";
 import { buildHolidaySet } from "../lib/workingDays";
 // One shared allocation engine for all three utilization surfaces
 // (this page, Scoped vs Logged, and WBS Planning's Utilization snapshot).
@@ -423,12 +422,18 @@ export default function Utilization() {
     return engine.hasDeletedHistory(personId);
   }
 
+  // Fix (2026-09-03, Sandra: "the task has been wiped out and there's
+  // nothing I can see... I don't see the revision and review task"): this
+  // used to also exclude Done tasks outright, so a completed task's real
+  // historical hours (now correctly shown by dailyHoursFor/the shared
+  // engine's date-gated fix, see dailyAllocation.ts) had no sub-row left to
+  // explain them -- the collapsed total moved but its own breakdown looked
+  // empty. Sub-rows now list every task this person is OR ever was
+  // assigned to, open or Done alike; a Done task's row simply reads 0 on
+  // any date from today forward, same as the collapsed total does.
   function openTasksFor(personId: string): TaskRow[] {
     return tasks.filter(
-      (t) =>
-        (t.assignee_id === personId || historicalAssigneeIds(t.id).has(personId)) &&
-        !parentTaskIds.has(t.id) &&
-        statusGroupOf(TASK_STATUS_GROUPED, t.status) !== "complete"
+      (t) => (t.assignee_id === personId || historicalAssigneeIds(t.id).has(personId)) && !parentTaskIds.has(t.id)
     );
   }
   function ownedProjectsFor(personId: string): ProjectRow[] {
