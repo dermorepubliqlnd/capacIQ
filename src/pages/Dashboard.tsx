@@ -986,20 +986,23 @@ export default function Dashboard() {
           header to put Active Projects") -- covers the top stat strip. */}
       <SectionHeader>Active Projects</SectionHeader>
 
-      {/* Row 1: top stat strip. "Paused"/"Off Track" (2026-09-04, renamed
-          from "On Hold"/"At Risk") are just label text -- On Hold's count
-          is still `status === "Paused"` and Off Track's is still the
-          combined "At risk" + "Off track" HEALTH count (unchanged from
-          before this rename); flag to Sandra if Off Track should instead
-          count ONLY the "Off track" health label now that "At risk" is
-          also a distinct, separately-shown health value in the new Row 3
-          Active Project Health donut. */}
+      {/* Row 1: top stat strip. "Paused" (2026-09-04, renamed from "On
+          Hold") -- still `status === "Paused"`, label text only. The old
+          "At Risk"/"Off Track" combined-health card was DROPPED entirely
+          (2026-09-04, Sandra: "this can be confusing ... let's omit off
+          track") -- At risk/Off track/Overdue are 3 distinct, non-
+          overlapping health severities (see healthOf() in Projects.tsx),
+          and cramming 2 of the 3 into one ambiguous KPI number was the
+          confusing part. That nuance now lives ONLY in the Row 3 Active
+          Project Health donut, which already breaks out At risk/Off
+          track/Overdue/etc. as separate slices -- Overdue (date-based,
+          unambiguous) stays here as its own card since it doesn't share
+          that ambiguity. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
         <StatCard icon={<Folder size={26} />} tone="accent" label="Total Projects" value={stats.total} />
         <StatCard icon={<Activity size={26} />} tone="accent" label="Active" value={stats.active} />
         <StatCard icon={<CheckCircle2 size={26} />} tone="teal" label="Completed" value={stats.completed} />
         <StatCard icon={<PauseCircle size={26} />} tone="warning" label="Paused" value={stats.onHold} />
-        <StatCard icon={<AlertTriangle size={26} />} tone="warning" label="Off Track" value={stats.atRisk} />
         <StatCard icon={<Clock3 size={26} />} tone="danger" label="Overdue" value={stats.overdue} />
         <StatCard icon={<Package size={26} />} tone="neutral" label="Materials Output" value={materialsOutputTotal} />
       </div>
