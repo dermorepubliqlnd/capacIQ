@@ -592,7 +592,31 @@ export default function DataTable<T>({
                     cursor: "pointer",
                   }}
                 >
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      // Sandra, 2026-09-03 ("make the group header stick
+                      // when scrolling on freeze panes"): the group-name
+                      // label used to live at the far left of a single
+                      // colSpan'd cell, so scrolling right to see later
+                      // columns scrolled the label itself out of view --
+                      // losing track of which group you were looking at,
+                      // the opposite of what freezing columns is for.
+                      // Sticking the label INSIDE that wide cell (rather
+                      // than the cell itself) keeps the row's background
+                      // spanning the full scrollable width while just the
+                      // text/chevron/count pin to the same left edge the
+                      // frozen columns already anchor to.
+                      position: "sticky",
+                      // +10 matches .data-table td's own left padding, so
+                      // the stuck label lines up with where a normal
+                      // (non-group) row's first cell's text starts, not
+                      // flush against the very edge of the scroll area.
+                      left: (hasGutter ? gutterWidth : 0) + 10,
+                    }}
+                  >
                     {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                     {groupName}
                     <span style={{ opacity: 0.7, fontWeight: 400 }}>({groupRows.length})</span>
