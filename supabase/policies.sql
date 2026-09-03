@@ -903,10 +903,19 @@ grant execute on function decide_time_entry(uuid, text, text) to authenticated;
 
 -- 5. Full Access correction of a finalized entry ----------------------------
 
+-- 2026-09-03 (Sandra: "in the time tracking table, can you show the
+-- reason and also allow correction on reason ... for full access only"):
+-- added p_reason_category (optional, default null -- existing 3-arg call
+-- sites/callers that only correct hours keep working unchanged). Dropped
+-- and recreated rather than adding a second overload, so there's only
+-- ever one `correct_time_entry` in the schema and no ambiguous-call risk.
+drop function if exists correct_time_entry(uuid, numeric, text);
+
 create or replace function correct_time_entry(
   p_entry_id uuid,
   p_duration_minutes numeric,
-  p_notes text
+  p_notes text,
+  p_reason_category text default null
 ) returns void
 language plpgsql security definer as $$
 declare
@@ -934,12 +943,13 @@ begin
         original_duration_minutes = coalesce(original_duration_minutes, v_current_duration),
         corrected_by = my_person_id(),
         corrected_at = now(),
-        correction_notes = p_notes
+        correction_notes = p_notes,
+        reason_category = coalesce(p_reason_category, reason_category)
     where id = p_entry_id;
 end;
 $$;
 
-grant execute on function correct_time_entry(uuid, numeric, text) to authenticated;
+grant execute on function correct_time_entry(uuid, numeric, text, text) to authenticated;
 
 -- 6. Idle auto-stop -----------------------------------------------------
 

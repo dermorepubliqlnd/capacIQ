@@ -193,7 +193,7 @@ export default function TimeTracking() {
   const [notesDraft, setNotesDraft] = useState<Record<string, string>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [correctingId, setCorrectingId] = useState<string | null>(null);
-  const [correctDraft, setCorrectDraft] = useState<{ hours: string; notes: string }>({ hours: "", notes: "" });
+  const [correctDraft, setCorrectDraft] = useState<{ hours: string; notes: string; reasonCategory: string }>({ hours: "", notes: "", reasonCategory: "" });
 
   const [showLogForm, setShowLogForm] = useState(false);
   const [logProjectId, setLogProjectId] = useState("");
@@ -285,7 +285,12 @@ export default function TimeTracking() {
       confirmLabel: "Correct",
     });
     if (!ok) return;
-    const res = await correctTimeEntry(row.id, Math.round(hours * 60), correctDraft.notes.trim() || "Corrected by Full Access");
+    const res = await correctTimeEntry(
+      row.id,
+      Math.round(hours * 60),
+      correctDraft.notes.trim() || "Corrected by Full Access",
+      correctDraft.reasonCategory || undefined
+    );
     if (res.error) {
       await alert(`Couldn't correct this entry: ${res.error}`);
       return;
@@ -378,6 +383,7 @@ export default function TimeTracking() {
             <th>Team Member</th>
             <th>Project</th>
             <th>Source</th>
+            <th>Reason</th>
             <th>Start</th>
             <th>Duration</th>
             <th>Status</th>
@@ -400,6 +406,15 @@ export default function TimeTracking() {
                       {SOURCE_LABEL[row.source]}
                     </span>
                   </td>
+                  <td>
+                    {row.reason_category ? (
+                      <span className="status-pill neutral" style={{ fontSize: 10 }}>
+                        {row.reason_category}
+                      </span>
+                    ) : (
+                      <span style={{ color: "var(--muted)" }}>—</span>
+                    )}
+                  </td>
                   <td>{formatDate(row.started_at)}</td>
                   <td style={{ fontWeight: 600 }}>
                     {formatDuration(row.duration_minutes)}
@@ -416,14 +431,11 @@ export default function TimeTracking() {
                 {expanded && (
                   <tr>
                     <td></td>
-                    <td colSpan={7} style={{ background: "var(--bg)", padding: "10px 14px" }}>
-                      {row.reason_category && (
-                        <div style={{ fontSize: 11.5, marginBottom: 4 }}>
-                          <span className="status-pill neutral" style={{ fontSize: 10 }}>
-                            {row.reason_category}
-                          </span>
-                        </div>
-                      )}
+                    {/* colSpan bumped 7->8 for the new Reason column (2026-09-03) --
+                        the Reason pill itself is no longer repeated here since it
+                        already has its own column in the row above; only its
+                        free-text notes (not shown elsewhere) still belong here. */}
+                    <td colSpan={8} style={{ background: "var(--bg)", padding: "10px 14px" }}>
                       {row.reason_notes && (
                         <div style={{ fontSize: 11.5, marginBottom: 6 }}>
                           <span style={{ color: "var(--muted)" }}>Notes:</span> {row.reason_notes}
@@ -490,9 +502,29 @@ export default function TimeTracking() {
                                   onChange={(e) => setCorrectDraft((d) => ({ ...d, hours: e.target.value }))}
                                   style={{ width: 110, fontSize: 11.5, padding: "5px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
                                 />
+                                {/* Sandra, 2026-09-03 ("allow correction on reason... for
+                                    full access only"): same reasonOptions list the manual-
+                                    log form uses, defaulted to the entry's current reason
+                                    when the form opens. Includes the entry's own current
+                                    value even if it's since been deactivated, same pattern
+                                    as the manual-log form's own reason <select>. */}
+                                <select
+                                  value={correctDraft.reasonCategory}
+                                  onChange={(e) => setCorrectDraft((d) => ({ ...d, reasonCategory: e.target.value }))}
+                                  style={{ width: 150, fontSize: 11.5, padding: "5px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
+                                >
+                                  <option value="">No reason</option>
+                                  {reasonOptions
+                                    .filter((r) => r.is_active || r.name === correctDraft.reasonCategory)
+                                    .map((r) => (
+                                      <option key={r.id} value={r.name}>
+                                        {r.name}
+                                      </option>
+                                    ))}
+                                </select>
                                 <input
                                   type="text"
-                                  placeholder="Reason for correction"
+                                  placeholder="Correction notes"
                                   value={correctDraft.notes}
                                   onChange={(e) => setCorrectDraft((d) => ({ ...d, notes: e.target.value }))}
                                   style={{ flex: 1, fontSize: 11.5, padding: "5px 7px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
@@ -517,7 +549,11 @@ export default function TimeTracking() {
                             <button
                               onClick={() => {
                                 setCorrectingId(row.id);
-                                setCorrectDraft({ hours: String(Math.round(((row.duration_minutes ?? 0) / 60) * 100) / 100), notes: "" });
+                                setCorrectDraft({
+                                  hours: String(Math.round(((row.duration_minutes ?? 0) / 60) * 100) / 100),
+                                  notes: "",
+                                  reasonCategory: row.reason_category ?? "",
+                                });
                               }}
                               style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--accent)", background: "none", border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)", padding: "5px 10px", cursor: "pointer" }}
                             >

@@ -180,8 +180,18 @@ export async function decideTimeEntry(entryId: string, status: "approved" | "rej
   return {};
 }
 
-export async function correctTimeEntry(entryId: string, durationMinutes: number, notes: string): Promise<{ error?: string }> {
-  const { error } = await supabase.rpc("correct_time_entry", { p_entry_id: entryId, p_duration_minutes: durationMinutes, p_notes: notes });
+// reasonCategory: pass a new category name to also correct it alongside
+// the duration (Sandra, 2026-09-03: "allow correction on reason... for
+// full access only") -- omit/undefined leaves the entry's existing
+// reason_category untouched (see correct_time_entry's p_reason_category
+// default null + coalesce in policies.sql).
+export async function correctTimeEntry(entryId: string, durationMinutes: number, notes: string, reasonCategory?: string): Promise<{ error?: string }> {
+  const { error } = await supabase.rpc("correct_time_entry", {
+    p_entry_id: entryId,
+    p_duration_minutes: durationMinutes,
+    p_notes: notes,
+    p_reason_category: reasonCategory ?? null,
+  });
   if (error) return { error: error.message };
   return {};
 }
