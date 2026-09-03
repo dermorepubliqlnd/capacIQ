@@ -53,6 +53,12 @@ interface SourceRow {
   is_active: boolean;
   sort_order: number;
 }
+interface PlanningTypeRow {
+  id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+}
 interface CategoryRow {
   id: string;
   name: string;
@@ -433,6 +439,7 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [planningTypes, setPlanningTypes] = useState<PlanningTypeRow[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [outputTypes, setOutputTypes] = useState<OutputTypeRow[]>([]);
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
@@ -460,6 +467,7 @@ export default function Dashboard() {
         { data: baselineReqData },
         { data: closeoutData },
         { data: allStartsData },
+        { data: planningTypeData },
       ] = await Promise.all([
         supabase.from("projects").select("*").eq("is_archived", false),
         supabase.from("tasks").select("*").eq("is_archived", false),
@@ -472,6 +480,7 @@ export default function Dashboard() {
         supabase.from("project_baseline_requests").select("id,status,project_id"),
         supabase.from("project_closeouts").select("closed_at"),
         supabase.from("projects").select("start_date"),
+        supabase.from("project_planning_types").select("id,name,is_active,sort_order").order("sort_order"),
       ]);
       setProjects((projectData as ProjectRow[]) ?? []);
       setTasks((taskData as TaskRow[]) ?? []);
@@ -484,6 +493,7 @@ export default function Dashboard() {
       setBaselineReqs((baselineReqData as BaselineReqLite[]) ?? []);
       setCloseouts((closeoutData as CloseoutLite[]) ?? []);
       setAllProjectStarts((allStartsData as ProjectStartLite[]) ?? []);
+      setPlanningTypes((planningTypeData as PlanningTypeRow[]) ?? []);
       setLoading(false);
     })();
   }, []);
@@ -575,6 +585,23 @@ export default function Dashboard() {
     if (unset) segs.push({ label: "Not set", value: unset, color: "#c7cdd6" });
     return segs;
   }, [filteredProjects, sources]);
+
+  const planningTypeDonut = useMemo(() => {
+    const counts: Record<string, number> = {};
+    let unset = 0;
+    for (const p of filteredProjects) {
+      if (!p.planning_type_id) {
+        unset++;
+        continue;
+      }
+      counts[p.planning_type_id] = (counts[p.planning_type_id] ?? 0) + 1;
+    }
+    const segs = planningTypes
+      .filter((t) => counts[t.id])
+      .map((t, i) => ({ label: t.name, value: counts[t.id] ?? 0, color: SOURCE_PALETTE[i % SOURCE_PALETTE.length] }));
+    if (unset) segs.push({ label: "Not set", value: unset, color: "#c7cdd6" });
+    return segs;
+  }, [filteredProjects, planningTypes]);
 
   const categoryRows = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -814,6 +841,13 @@ export default function Dashboard() {
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Donut segments={categoryDonut} centerLabel="Total" centerValue={filteredProjects.length} />
             <DonutLegend segments={categoryDonut} total={filteredProjects.length} />
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Planning Type</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <Donut segments={planningTypeDonut} centerLabel="Total" centerValue={stats.total} />
+            <DonutLegend segments={planningTypeDonut} total={stats.total} />
           </div>
         </div>
       </div>
