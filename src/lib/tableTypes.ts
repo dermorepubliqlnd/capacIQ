@@ -278,6 +278,14 @@ export interface TableView {
   // freeze". If the named column later gets hidden or removed, DataTable
   // just finds no match and quietly renders unfrozen rather than erroring.
   frozenUpTo?: string | null;
+  // Sandra, 2026-09-03 ("when renaming views can we now push for icon
+  // sets? ... allow to change colors too"): per-view icon, a key into
+  // VIEW_ICON_LIBRARY (viewIcons.ts). Optional/fallback-safe like the
+  // fields above -- undefined/null means "use this view's viewType
+  // default" (VIEW_TYPE_ICONS in ViewTabs.tsx, e.g. Table2 for a table
+  // view), so every already-saved view keeps its current icon until
+  // someone deliberately picks one via the tab's Rename/settings menu.
+  icon?: string | null;
 }
 
 // One-line migration for views saved before filterPersonIds existed: if a

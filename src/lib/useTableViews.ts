@@ -243,6 +243,10 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     setViews((vs) => vs.map((v) => (v.id === id ? { ...v, color } : v)));
   }
 
+  function setViewIcon(id: string, icon: string | null) {
+    setViews((vs) => vs.map((v) => (v.id === id ? { ...v, icon } : v)));
+  }
+
   function deleteView(id: string) {
     setViews((vs) => {
       const remaining = vs.filter((v) => v.id !== id);
@@ -255,5 +259,5 @@ export function useTableViews(tableKey: string, personId: string | undefined, de
     });
   }
 
-  return { views, activeView, activeViewId, setActiveViewId, updateActiveView, createView, renameView, duplicateView, setViewColor, deleteView };
+  return { views, activeView, activeViewId, setActiveViewId, updateActiveView, createView, renameView, duplicateView, setViewColor, setViewIcon, deleteView };
 }

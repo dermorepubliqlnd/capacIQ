@@ -3987,6 +3987,7 @@ export default function Projects() {
             onRename={projectViews.renameView}
             onDelete={projectViews.deleteView}
             onColorChange={projectViews.setViewColor}
+            onIconChange={projectViews.setViewIcon}
             onDuplicate={projectViews.duplicateView}
             confirm={confirm}
           />
@@ -4251,6 +4252,7 @@ export default function Projects() {
             onRename={taskViews.renameView}
             onDelete={taskViews.deleteView}
             onColorChange={taskViews.setViewColor}
+            onIconChange={taskViews.setViewIcon}
             onDuplicate={taskViews.duplicateView}
             confirm={confirm}
           />

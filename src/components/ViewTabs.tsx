@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 
 import { createPortal } from "react-dom";
 import { Plus, Pencil, Copy, Trash2, Table2, Kanban, Calendar, GanttChart, Search } from "lucide-react";
 import type { GroupOption, TableView, ViewType } from "../lib/tableTypes";
+import { VIEW_ICON_LIBRARY, VIEW_ICON_SECTIONS } from "../lib/viewIcons";
 
 interface ViewTabsProps<T> {
   views: TableView[];
@@ -27,6 +28,10 @@ interface ViewTabsProps<T> {
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onColorChange: (id: string, color: string) => void;
+  // Sandra, 2026-09-03 ("when renaming views can we now push for icon
+  // sets? ... allow to change colors too"): pass null to clear a view's
+  // custom icon back to its viewType default.
+  onIconChange: (id: string, icon: string | null) => void;
   onDuplicate: (id: string) => void;
   confirm: (options: { title?: string; message: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
 }
@@ -89,12 +94,19 @@ export default function ViewTabs<T>({
   onRename,
   onDelete,
   onColorChange,
+  onIconChange,
   onDuplicate,
   confirm,
 }: ViewTabsProps<T>) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // Sandra, 2026-09-03: the "..." dropdown's icon-swatch button swaps the
+  // SAME already-open dropdown into a search + sectioned icon grid (plus
+  // the existing color row) rather than opening a second portal -- one
+  // less position-tracking popover to keep in sync with the trigger.
+  const [iconPickerOpenId, setIconPickerOpenId] = useState<string | null>(null);
+  const [iconSearch, setIconSearch] = useState("");
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [addSearch, setAddSearch] = useState("");
@@ -132,6 +144,8 @@ export default function ViewTabs<T>({
       if (overflowDropdownRef.current?.contains(target)) return;
       if (addPopoverRef.current?.contains(target)) return;
       setMenuOpenId(null);
+      setIconPickerOpenId(null);
+      setIconSearch("");
       setOverflowOpen(false);
       setAddOpen(false);
     }
@@ -183,7 +197,16 @@ export default function ViewTabs<T>({
   function renderTab(v: TableView) {
     const active = v.id === activeViewId;
     const color = TAB_COLORS[v.color] ?? TAB_COLORS.neutral;
-    const Icon = VIEW_TYPE_ICONS[v.viewType] ?? Table2;
+    // A view's own icon (v.icon, chosen from VIEW_ICON_LIBRARY) wins when
+    // set; otherwise falls back to the old per-viewType default, exactly
+    // as every view rendered before this feature existed.
+    const Icon = (v.icon && VIEW_ICON_LIBRARY[v.icon]) || VIEW_TYPE_ICONS[v.viewType] || Table2;
+    const iconQuery = iconSearch.trim().toLowerCase();
+    const iconSections = iconQuery
+      ? VIEW_ICON_SECTIONS.map((sec) => ({ ...sec, icons: sec.icons.filter((n) => n.toLowerCase().includes(iconQuery)) })).filter(
+          (sec) => sec.icons.length > 0
+        )
+      : VIEW_ICON_SECTIONS;
     return (
       <div
         key={v.id}
@@ -204,7 +227,7 @@ export default function ViewTabs<T>({
             if (menuOpenId === v.id) {
               setMenuOpenId(null);
             } else {
-              openPositionedMenu(e, setMenuPos, 170);
+              openPositionedMenu(e, setMenuPos, 260);
               setMenuOpenId(v.id);
             }
           } else {
@@ -236,59 +259,159 @@ export default function ViewTabs<T>({
               <div
                 ref={menuDropdownRef}
                 className="view-tab-dropdown"
-                style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+                style={{
+                  position: "fixed",
+                  top: menuPos.top,
+                  left: menuPos.left,
+                  // Sandra, 2026-09-03 ("push for icon sets... same
+                  // format as project categories... allow to change
+                  // colors too"): the icon+color sub-view needs real room
+                  // for a search box and a scrollable, sectioned grid
+                  // (219 icons across 16 categories) -- the plain
+                  // Rename/Duplicate/Delete list stays at its old compact
+                  // width.
+                  width: iconPickerOpenId === v.id ? 260 : 170,
+                }}
                 onClick={(e) => e.stopPropagation()}
               >
-                <button onClick={() => startRename(v)}>
-                  <Pencil size={12} />
-                  Rename
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpenId(null);
-                    onDuplicate(v.id);
-                  }}
-                >
-                  <Copy size={12} />
-                  Duplicate view
-                </button>
-                <div style={{ display: "flex", gap: 4, padding: "6px 6px 4px" }}>
-                  {Object.entries(TAB_COLORS).map(([key, hex]) => (
-                    <span
-                      key={key}
+                {iconPickerOpenId === v.id ? (
+                  <>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <button
+                        onClick={() => {
+                          setIconPickerOpenId(null);
+                          setIconSearch("");
+                        }}
+                        style={{ padding: "4px 6px", fontSize: 11, fontWeight: 600, color: "var(--muted)" }}
+                      >
+                        ← Back
+                      </button>
+                    </div>
+                    <div style={{ position: "relative", marginBottom: 8 }}>
+                      <Search size={12} style={{ position: "absolute", left: 7, top: "50%", transform: "translateY(-50%)", color: "var(--muted)" }} />
+                      <input
+                        autoFocus
+                        placeholder="Search icons..."
+                        value={iconSearch}
+                        onChange={(e) => setIconSearch(e.target.value)}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        style={{
+                          width: "100%",
+                          fontSize: 12,
+                          padding: "5px 8px 5px 24px",
+                          border: "1px solid var(--border)",
+                          borderRadius: "var(--radius-sm)",
+                          fontFamily: "inherit",
+                        }}
+                      />
+                    </div>
+                    <div style={{ maxHeight: 260, overflowY: "auto", paddingRight: 2 }}>
+                      {iconSections.length === 0 && (
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", padding: "8px 4px" }}>No icons match "{iconSearch}"</div>
+                      )}
+                      {iconSections.map((section) => (
+                        <div key={section.label} style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>
+                            {section.label}
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+                            {section.icons.map((iconName) => {
+                              const IconOption = VIEW_ICON_LIBRARY[iconName];
+                              if (!IconOption) return null;
+                              const selected = v.icon === iconName;
+                              return (
+                                <button
+                                  key={`${section.label}_${iconName}`}
+                                  onClick={() => onIconChange(v.id, iconName)}
+                                  title={iconName}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    width: 26,
+                                    height: 26,
+                                    padding: 0,
+                                    borderRadius: "var(--radius-sm)",
+                                    border: selected ? "2px solid var(--navy)" : "1px solid var(--border)",
+                                    background: "none",
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  <IconOption size={13} color={color} />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.3, margin: "6px 0 4px" }}>
+                      Color
+                    </div>
+                    <div style={{ display: "flex", gap: 4, padding: "0 2px 4px" }}>
+                      {Object.entries(TAB_COLORS).map(([key, hex]) => (
+                        <span
+                          key={key}
+                          onClick={() => onColorChange(v.id, key)}
+                          title={key}
+                          style={{
+                            width: 16,
+                            height: 16,
+                            borderRadius: "50%",
+                            background: hex,
+                            cursor: "pointer",
+                            border: v.color === key ? "2px solid var(--navy)" : "1px solid var(--border)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 6 }}>
+                      <button
+                        onClick={() => setMenuOpenId(null)}
+                        style={{ fontSize: 11, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", fontWeight: 600, padding: "4px 6px" }}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => startRename(v)}>
+                      <Pencil size={12} />
+                      Rename
+                    </button>
+                    <button onClick={() => setIconPickerOpenId(v.id)}>
+                      <Icon size={12} color={color} />
+                      Icon &amp; color
+                    </button>
+                    <button
                       onClick={() => {
-                        onColorChange(v.id, key);
                         setMenuOpenId(null);
+                        onDuplicate(v.id);
                       }}
-                      title={key}
-                      style={{
-                        width: 14,
-                        height: 14,
-                        borderRadius: "50%",
-                        background: hex,
-                        cursor: "pointer",
-                        border: v.color === key ? "2px solid var(--navy)" : "1px solid var(--border)",
-                      }}
-                    />
-                  ))}
-                </div>
-                {views.length > 1 && (
-                  <button
-                    className="danger"
-                    onClick={async () => {
-                      setMenuOpenId(null);
-                      const ok = await confirm({
-                        title: "Delete view",
-                        message: `Delete the view "${v.name}"? This can't be undone.`,
-                        confirmLabel: "Delete view",
-                        danger: true,
-                      });
-                      if (ok) onDelete(v.id);
-                    }}
-                  >
-                    <Trash2 size={12} />
-                    Delete view
-                  </button>
+                    >
+                      <Copy size={12} />
+                      Duplicate view
+                    </button>
+                    {views.length > 1 && (
+                      <button
+                        className="danger"
+                        onClick={async () => {
+                          setMenuOpenId(null);
+                          const ok = await confirm({
+                            title: "Delete view",
+                            message: `Delete the view "${v.name}"? This can't be undone.`,
+                            confirmLabel: "Delete view",
+                            danger: true,
+                          });
+                          if (ok) onDelete(v.id);
+                        }}
+                      >
+                        <Trash2 size={12} />
+                        Delete view
+                      </button>
+                    )}
+                  </>
                 )}
               </div>,
               document.body
