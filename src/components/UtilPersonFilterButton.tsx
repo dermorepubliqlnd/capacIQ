@@ -29,7 +29,7 @@ const PANEL_WIDTH = 240;
 export default function UtilPersonFilterButton({ people, selected, onChange, open, setOpen, search, setSearch }: Props) {
   const btnRef = useRef<HTMLButtonElement>(null);
 
-  const label = selected === null ? "All people" : selected.size === 0 ? "No people" : `${selected.size} of ${people.length} people`;
+  const label = selected === null ? "All team members" : selected.size === 0 ? "No team members" : `${selected.size} of ${people.length} team members`;
 
   function toggle(id: string) {
     const base = selected ?? new Set(people.map((p) => p.id));
@@ -48,7 +48,7 @@ export default function UtilPersonFilterButton({ people, selected, onChange, ope
         onClick={() => setOpen(!open)}
         className={`timeline-segmented-btn${selected !== null ? " active" : ""}`}
         style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 4 }}
-        title="Choose which people appear in the snapshot"
+        title="Choose which team members appear in the snapshot"
       >
         {label}
         <ChevronDown size={12} />
@@ -81,7 +81,7 @@ export default function UtilPersonFilterButton({ people, selected, onChange, ope
                   autoFocus
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search people..."
+                  placeholder="Search team members..."
                   style={{ flex: 1, fontSize: 12, border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "4px 6px" }}
                 />
               </div>

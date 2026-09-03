@@ -302,7 +302,7 @@ export default function Admin() {
     if (p.id === me?.id && p.is_active) {
       await alert(
         "You can't deactivate your own account from here \u2014 it would immediately lock you out of Admin, " +
-          "since deactivating removes Full Access on the spot. Ask another Full Access person to do it, or deactivate " +
+          "since deactivating removes Full Access on the spot. Ask another Full Access team member to do it, or deactivate " +
           "yourself last."
       );
       return;
@@ -335,7 +335,7 @@ export default function Admin() {
     if (p.id === me?.id && level === "limited") {
       await alert(
         "You can't demote your own account from here \u2014 it would immediately drop you to Limited access " +
-          "and lock you out of Admin. Ask another Full Access person to do it, or change your own level last."
+          "and lock you out of Admin. Ask another Full Access team member to do it, or change your own level last."
       );
       loadPeople();
       return;
@@ -479,12 +479,12 @@ export default function Admin() {
   // instead. This keeps the ownership/utilization history features intact.
   async function deletePerson(p: Person) {
     if (p.id === me?.id) {
-      await alert("You can't delete your own account. Ask another Full Access person to do it.");
+      await alert("You can't delete your own account. Ask another Full Access team member to do it.");
       return;
     }
     if (
       !(await confirm({
-        title: "Delete person",
+        title: "Delete team member",
         message:
           `Permanently delete ${p.name}? This removes their login and record entirely and can't be undone. ` +
           `Only do this for a mistaken entry (wrong CSV row, duplicate, test account) -- if they have any real ` +
@@ -501,7 +501,7 @@ export default function Admin() {
     });
     setDeletingId(null);
     if (error || (data as { error?: string })?.error) {
-      const message = await extractFunctionError(error, data, "Failed to delete person.");
+      const message = await extractFunctionError(error, data, "Failed to delete team member.");
       await alert(`Couldn't delete ${p.name}: ${message}`);
       return;
     }
@@ -930,12 +930,12 @@ export default function Admin() {
         <Modal title={csvResults.length === 1 ? "Login details" : "CSV import results"} onClose={() => setCsvResults(null)} width={620}>
           <p style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 0 }}>
             {csvResults.length === 1
-              ? "Copy the password below and share it (and the app link) with this person yourself -- nothing was emailed."
+              ? "Copy the password below and share it (and the app link) with this team member yourself -- nothing was emailed."
               : <>
                   {csvResults.filter((r) => r.action === "created").length} created,{" "}
                   {csvResults.filter((r) => r.action === "updated").length} updated,{" "}
                   {csvResults.filter((r) => r.action === "error").length} failed. For each newly created login below, copy
-                  the password and share it (and the app link) with that person yourself -- nothing was emailed.
+                  the password and share it (and the app link) with that team member yourself -- nothing was emailed.
                 </>}
           </p>
           <div style={{ maxHeight: 360, overflowY: "auto" }}>
@@ -975,7 +975,7 @@ export default function Admin() {
                           <code style={{ fontSize: 11 }}>{r.password}</code>
                           <button
                             onClick={() => navigator.clipboard.writeText(`${r.name} <${r.email}>\nLink: ${window.location.origin}${window.location.pathname}\nTemporary password: ${r.password}`)}
-                            title="Copy name, link, and password to share with this person"
+                            title="Copy name, link, and password to share with this team member"
                             style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent)" }}
                           >
                             <Copy size={12} />

@@ -375,7 +375,7 @@ export default function TimeTracking() {
           <tr>
             <th style={{ width: 22 }}></th>
             <th>Task</th>
-            <th>Person</th>
+            <th>Team Member</th>
             <th>Project</th>
             <th>Source</th>
             <th>Start</th>

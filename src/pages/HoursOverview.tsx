@@ -577,10 +577,10 @@ export default function HoursOverview() {
             <select
               value={showAllPeople ? "all" : "active"}
               onChange={(e) => setShowAllPeople(e.target.value === "all")}
-              title="Deactivated people's past hours are always kept -- this only controls whether they're shown here"
+              title="Deactivated team members' past hours are always kept -- this only controls whether they're shown here"
               style={{ fontSize: 12, padding: "4px 6px" }}
             >
-              <option value="active">Active people only</option>
+              <option value="active">Active team members only</option>
               <option value="all">Show all (incl. deactivated)</option>
             </select>
           </div>
@@ -625,7 +625,7 @@ export default function HoursOverview() {
                       color: "var(--muted)",
                     }}
                   >
-                    Person
+                    Team Member
                   </th>
                   {days.map((d, i) => {
                     const dow = d.getDay();
@@ -655,7 +655,7 @@ export default function HoursOverview() {
                 {visiblePeople.length === 0 ? (
                   <tr>
                     <td colSpan={1 + days.length} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
-                      {showAllPeople ? "No people found." : "No active people found."}
+                      {showAllPeople ? "No team members found." : "No active team members found."}
                     </td>
                   </tr>
                 ) : (
@@ -943,12 +943,12 @@ export default function HoursOverview() {
             <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Group by</label>
             <select value={taskGroupBy} onChange={(e) => setTaskGroupBy(e.target.value as typeof taskGroupBy)} style={{ fontSize: 12, padding: "4px 6px" }}>
               <option value="none">None</option>
-              <option value="person">Person</option>
+              <option value="person">Team Member</option>
               <option value="project">Project</option>
             </select>
-            <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Person</label>
+            <label style={{ fontSize: 12, color: "var(--muted)", marginLeft: 6 }}>Team Member</label>
             <select value={taskFilterPersonId} onChange={(e) => setTaskFilterPersonId(e.target.value)} style={{ fontSize: 12, padding: "4px 6px" }}>
-              <option value="">All people</option>
+              <option value="">All team members</option>
               {scopedPeople.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -969,7 +969,7 @@ export default function HoursOverview() {
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Person</th>
+                  <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Team Member</th>
                   <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Project</th>
                   <th style={{ textAlign: "left", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Task</th>
                   <th style={{ textAlign: "right", padding: "8px 13px", color: "var(--muted)", fontWeight: 600, fontSize: 12, borderBottom: "1px solid var(--border)" }}>Scoped</th>

@@ -247,7 +247,7 @@ export default function TimeOff() {
                   color: "var(--muted)",
                 }}
               >
-                Person
+                Team Member
               </th>
               {days.map((d, i) => {
                 const dow = d.getDay();

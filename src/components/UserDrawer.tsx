@@ -252,7 +252,7 @@ export default function UserDrawer({
                     type="color"
                     value={person.color || defaultColorFor(person.id)}
                     onChange={(e) => onSaveColor(e.target.value)}
-                    title="Pick a color -- used for this person's bars in the WBS Gantt chart"
+                    title="Pick a color -- used for this team member's bars in the WBS Gantt chart"
                     style={{ width: 30, height: 26, padding: 0, border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", background: "none" }}
                   />
                   <input

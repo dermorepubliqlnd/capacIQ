@@ -4631,7 +4631,7 @@ export default function WbsPlanning() {
                 }
                 className="timeline-segmented-btn"
                 style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
-                title="Expand every person's scenario rows"
+                title="Expand every team member's scenario rows"
               >
                 Expand all
               </button>
@@ -4639,7 +4639,7 @@ export default function WbsPlanning() {
                 onClick={() => setExpandedUtilPeople(new Set())}
                 className="timeline-segmented-btn"
                 style={{ borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}
-                title="Collapse every person's scenario rows"
+                title="Collapse every team member's scenario rows"
               >
                 Collapse all
               </button>
@@ -4677,7 +4677,7 @@ export default function WbsPlanning() {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      Person
+                      Team Member
                       {/* Resizable + always-frozen (2026-08-26, Sandra: "resize the
                           person name columns and freeze it too") -- drag handle on
                           the right edge, same pattern as the WBS table's ResizableTh. */}
@@ -5298,14 +5298,14 @@ export default function WbsPlanning() {
                               return (
                                 <span
                                   style={{ fontSize: 11.5, color: "var(--muted)", fontStyle: "italic" }}
-                                  title="This task's own sub-tasks are assigned to more than one person -- pick a single Assignee on each sub-task instead."
+                                  title="This task's own sub-tasks are assigned to more than one team member -- pick a single Assignee on each sub-task instead."
                                 >
                                   Multiple
                                 </span>
                               );
                             }
                             return assignee ? (
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Mirrors its sub-tasks -- all currently assigned to the same person.">
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }} title="Mirrors its sub-tasks -- all currently assigned to the same team member.">
                                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: colorForPerson(assignee), flexShrink: 0 }} />
                                 {assignee.name}
                               </span>

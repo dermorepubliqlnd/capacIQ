@@ -599,10 +599,10 @@ export default function Utilization() {
           <select
             value={showAllPeople ? "all" : "active"}
             onChange={(e) => setShowAllPeople(e.target.value === "all")}
-            title="Deactivated people's past hours are always kept -- this only controls whether they're shown here"
+            title="Deactivated team members' past hours are always kept -- this only controls whether they're shown here"
             style={{ fontSize: 11, fontWeight: 600, color: "var(--navy)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "3px 6px" }}
           >
-            <option value="active">Active people only</option>
+            <option value="active">Active team members only</option>
             <option value="all">Show all (incl. deactivated)</option>
           </select>
         </label>
@@ -714,7 +714,7 @@ export default function Utilization() {
                       color: "var(--muted)",
                     }}
                   >
-                    Person
+                    Team Member
                   </th>
                   {days.map((d, i) => {
                     const dow = d.getDay();
@@ -757,7 +757,7 @@ export default function Utilization() {
                       color: "var(--muted)",
                     }}
                   >
-                    Person
+                    Team Member
                   </th>
                   {weeks.map((_, wi) => (
                     <th key={wi} style={{ borderBottom: "1px solid var(--border)", borderLeft: wi === 0 ? undefined : "1px solid var(--border)" }} />
@@ -769,7 +769,7 @@ export default function Utilization() {
               {visiblePeople.length === 0 ? (
                 <tr>
                   <td colSpan={1 + columnCount} style={{ padding: 14, color: "var(--muted)", fontSize: 12.5 }}>
-                    {personFilter && personFilter.size === 0 ? "No people selected." : showAllPeople ? "No people found." : "No active people found."}
+                    {personFilter && personFilter.size === 0 ? "No team members selected." : showAllPeople ? "No team members found." : "No active team members found."}
                   </td>
                 </tr>
               ) : (
