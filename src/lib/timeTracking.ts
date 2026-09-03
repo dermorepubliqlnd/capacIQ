@@ -142,9 +142,12 @@ export async function confirmTimeEntry(
   return {};
 }
 
-// Mirrors extension_requests.reason_category (see RequestExtensionModal) --
-// a fixed list instead of a single free-text box; "Other" still allows a
-// free-text note via the notes param.
+// SUPERSEDED 2026-09-03 (Phase 37) -- reasons are now admin-configurable
+// via the time_entry_reasons table (Site Settings > Time Logging
+// Reasons), fetched live in TimeTracking.tsx instead of this fixed list.
+// Left here only because nothing forces removing an unused export;
+// nothing imports this anymore. "Other" still allows a free-text note
+// via the notes param.
 export const TIME_ENTRY_REASON_OPTIONS = [
   "Forgot to Start Timer",
   "Worked Offline / No Internet",

@@ -19,6 +19,42 @@ function AccessDenied() {
   );
 }
 
+// Rename/delete safety reminders (2026-09-03, Sandra: "for all list if
+// something is renamed, all existing tags will be renamed. for deleting
+// do not allow deleting if there is an existing tag. Also always add a
+// reminder for these before saving changes"). Delete-blocked-if-in-use
+// was already true for every list below (each delete function does its
+// own usage-count check before ever offering a confirm) -- this only
+// adds the confirm-dialog reminder itself, and fixes the one real gap:
+// Category/Phase/Time Logging Reason are plain-text tags copied onto
+// projects/time_entries (not an id FK like Source/Work Type/Output
+// Type), so renaming the list item alone silently left every
+// already-tagged row on the old string forever. confirmPlainTextRename +
+// cascadePlainTextRename fix that -- confirmFkRename is the lighter
+// version for the three FK-based lists, where nothing needs migrating
+// since every read already joins live off the id.
+function confirmFkRename(oldName: string, newName: string, label: string): boolean {
+  if (oldName === newName) return true;
+  return window.confirm(`Rename "${oldName}" to "${newName}"? Every ${label} already using it will show "${newName}" immediately -- nothing else to update.`);
+}
+
+async function confirmPlainTextRename(table: string, column: string, oldName: string, newName: string, label: string): Promise<boolean> {
+  if (oldName === newName) return true;
+  const { count } = await supabase.from(table).select("id", { count: "exact", head: true }).eq(column, oldName);
+  const n = count ?? 0;
+  return window.confirm(
+    n > 0
+      ? `Rename "${oldName}" to "${newName}"? ${n} ${label}${n === 1 ? "" : "s"} currently tagged "${oldName}" will be updated to show "${newName}" instead. Continue?`
+      : `Rename "${oldName}" to "${newName}"? No ${label}s currently use "${oldName}".`
+  );
+}
+
+async function cascadePlainTextRename(table: string, column: string, oldName: string, newName: string): Promise<string | undefined> {
+  if (oldName === newName) return undefined;
+  const { error } = await supabase.from(table).update({ [column]: newName }).eq(column, oldName);
+  return error?.message;
+}
+
 // Work Type -- admin-configurable lookup (Phase 12, 2026-08-20; moved out
 // of Admin.tsx into its own Site Settings page in a later round). See
 // supabase/phase12_migration.sql for the table itself (work_types) and
@@ -39,6 +75,21 @@ interface WorkTypeRow {
 // See supabase/phase20_migration.sql for the table itself
 // (project_sources) and projects.source_id.
 interface ProjectSourceRow {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
+// Time Logging Reason -- admin-configurable lookup (Phase 37,
+// 2026-09-03). Was a fixed array in code (TIME_ENTRY_REASON_OPTIONS in
+// timeTracking.ts); Sandra: "add in list settings the reasons for
+// manual time logging, we want to be able to control it." Same
+// plain-text-tag pattern as Category/Phase (time_entries.reason_category
+// is plain text, not a reason_id FK) -- rename here cascades into every
+// existing time_entries row via confirmPlainTextRename/
+// cascadePlainTextRename above, same as Category/Phase.
+interface TimeEntryReasonRow {
   id: string;
   name: string;
   sort_order: number;
@@ -178,10 +229,20 @@ export default function SiteSettings() {
   // matrix directly ("add by row or by column then just check"), so
   // Output Type rename/activate/delete/add all happen from inside that
   // matrix's column headers instead of a separate list.
-  const [manageDrawer, setManageDrawer] = useState<"sources" | "categories" | "phases" | "phase_mapping" | "work_types" | null>(null);
+  const [manageDrawer, setManageDrawer] = useState<"sources" | "categories" | "phases" | "phase_mapping" | "work_types" | "reasons" | null>(null);
   const [draggedWorkTypeId, setDraggedWorkTypeId] = useState<string | null>(null);
   const [draggedOutputTypeId, setDraggedOutputTypeId] = useState<string | null>(null);
   const [draggedProjectSourceId, setDraggedProjectSourceId] = useState<string | null>(null);
+
+  // Time Logging Reasons (2026-09-03) -- same list-management state shape
+  // as Project Sources above.
+  const [timeEntryReasons, setTimeEntryReasons] = useState<TimeEntryReasonRow[]>([]);
+  const [timeEntryReasonsLoading, setTimeEntryReasonsLoading] = useState(true);
+  const [newTimeEntryReasonName, setNewTimeEntryReasonName] = useState("");
+  const [timeEntryReasonBusy, setTimeEntryReasonBusy] = useState(false);
+  const [editingTimeEntryReasonId, setEditingTimeEntryReasonId] = useState<string | null>(null);
+  const [editTimeEntryReasonName, setEditTimeEntryReasonName] = useState("");
+  const [draggedTimeEntryReasonId, setDraggedTimeEntryReasonId] = useState<string | null>(null);
   const [draggedProjectCategoryId, setDraggedProjectCategoryId] = useState<string | null>(null);
 
   // Global historical-locking switch (Sandra, 2026-08-14): "we're still
@@ -241,6 +302,11 @@ export default function SiteSettings() {
   async function saveWorkTypeRename(id: string) {
     const name = editWorkTypeName.trim();
     if (!name) return;
+    const current = workTypes.find((w) => w.id === id);
+    if (current && !confirmFkRename(current.name, name, "task")) {
+      setEditingWorkTypeId(null);
+      return;
+    }
     setWorkTypeBusy(true);
     const { error } = await supabase.from("work_types").update({ name }).eq("id", id);
     setWorkTypeBusy(false);
@@ -333,7 +399,7 @@ export default function SiteSettings() {
       );
       return;
     }
-    if (!window.confirm(`Delete "${w.name}"? This can't be undone.`)) {
+    if (!window.confirm(`Delete "${w.name}"? This can't be undone. (Only possible because no task currently uses it -- Work Types in use can't be deleted.)`)) {
       setWorkTypeBusy(false);
       return;
     }
@@ -376,6 +442,11 @@ export default function SiteSettings() {
   async function saveProjectSourceRename(id: string) {
     const name = editProjectSourceName.trim();
     if (!name) return;
+    const current = projectSources.find((s) => s.id === id);
+    if (current && !confirmFkRename(current.name, name, "project")) {
+      setEditingProjectSourceId(null);
+      return;
+    }
     setProjectSourceBusy(true);
     const { error } = await supabase.from("project_sources").update({ name }).eq("id", id);
     setProjectSourceBusy(false);
@@ -436,7 +507,7 @@ export default function SiteSettings() {
       );
       return;
     }
-    if (!window.confirm(`Delete "${s.name}"? This can't be undone.`)) {
+    if (!window.confirm(`Delete "${s.name}"? This can't be undone. (Only possible because no project currently uses it -- Sources in use can't be deleted.)`)) {
       setProjectSourceBusy(false);
       return;
     }
@@ -507,13 +578,26 @@ export default function SiteSettings() {
   async function saveProjectCategoryRename(id: string) {
     const name = editProjectCategoryName.trim();
     if (!name) return;
+    const current = projectCategories.find((c) => c.id === id);
+    if (current && current.name !== name) {
+      const ok = await confirmPlainTextRename("projects", "category", current.name, name, "project");
+      if (!ok) {
+        setEditingProjectCategoryId(null);
+        return;
+      }
+    }
     setProjectCategoryBusy(true);
     const { error } = await supabase.from("project_categories").update({ name }).eq("id", id);
-    setProjectCategoryBusy(false);
     if (error) {
+      setProjectCategoryBusy(false);
       window.alert(`Couldn't rename: ${error.message}`);
       return;
     }
+    if (current && current.name !== name) {
+      const cascadeError = await cascadePlainTextRename("projects", "category", current.name, name);
+      if (cascadeError) window.alert(`Category renamed, but couldn't update tagged projects: ${cascadeError}. Please check manually.`);
+    }
+    setProjectCategoryBusy(false);
     setEditingProjectCategoryId(null);
     loadProjectCategories();
   }
@@ -551,7 +635,7 @@ export default function SiteSettings() {
       );
       return;
     }
-    if (!window.confirm(`Delete "${c.name}"? This can't be undone.`)) {
+    if (!window.confirm(`Delete "${c.name}"? This can't be undone. (Only possible because no project currently uses it -- Categories in use can't be deleted.)`)) {
       setProjectCategoryBusy(false);
       return;
     }
@@ -595,13 +679,26 @@ export default function SiteSettings() {
   async function saveProjectPhaseRename(id: string) {
     const name = editProjectPhaseName.trim();
     if (!name) return;
+    const current = projectPhases.find((ph) => ph.id === id);
+    if (current && current.name !== name) {
+      const ok = await confirmPlainTextRename("projects", "phase", current.name, name, "project");
+      if (!ok) {
+        setEditingProjectPhaseId(null);
+        return;
+      }
+    }
     setProjectPhaseBusy(true);
     const { error } = await supabase.from("project_phases").update({ name }).eq("id", id);
-    setProjectPhaseBusy(false);
     if (error) {
+      setProjectPhaseBusy(false);
       window.alert(`Couldn't rename: ${error.message}`);
       return;
     }
+    if (current && current.name !== name) {
+      const cascadeError = await cascadePlainTextRename("projects", "phase", current.name, name);
+      if (cascadeError) window.alert(`Phase renamed, but couldn't update tagged projects: ${cascadeError}. Please check manually.`);
+    }
+    setProjectPhaseBusy(false);
     setEditingProjectPhaseId(null);
     loadProjectPhases();
   }
@@ -637,7 +734,7 @@ export default function SiteSettings() {
       );
       return;
     }
-    if (!window.confirm(`Delete "${ph.name}"? This can't be undone.`)) {
+    if (!window.confirm(`Delete "${ph.name}"? This can't be undone. (Only possible because no project currently uses it -- Phases in use can't be deleted.)`)) {
       setProjectPhaseBusy(false);
       return;
     }
@@ -715,6 +812,11 @@ export default function SiteSettings() {
   async function saveOutputTypeRename(id: string) {
     const name = editOutputTypeName.trim();
     if (!name) return;
+    const current = outputTypes.find((o) => o.id === id);
+    if (current && !confirmFkRename(current.name, name, "task")) {
+      setEditingOutputTypeId(null);
+      return;
+    }
     setOutputTypeBusy(true);
     const { error } = await supabase.from("output_types").update({ name }).eq("id", id);
     setOutputTypeBusy(false);
@@ -775,7 +877,7 @@ export default function SiteSettings() {
       );
       return;
     }
-    if (!window.confirm(`Delete "${o.name}"? This can't be undone.`)) {
+    if (!window.confirm(`Delete "${o.name}"? This can't be undone. (Only possible because no task currently uses it -- Output Types in use can't be deleted.)`)) {
       setOutputTypeBusy(false);
       return;
     }
@@ -860,6 +962,122 @@ export default function SiteSettings() {
     loadProjectSources();
   }
 
+  // Time Logging Reasons (Phase 37, 2026-09-03) -- full CRUD set, same
+  // shape as Project Sources above, except rename cascades into
+  // time_entries.reason_category (plain text, not a reason_id FK -- see
+  // TimeEntryReasonRow's comment).
+  async function loadTimeEntryReasons() {
+    setTimeEntryReasonsLoading(true);
+    const { data } = await supabase.from("time_entry_reasons").select("id,name,sort_order,is_active").order("sort_order");
+    setTimeEntryReasons((data as TimeEntryReasonRow[]) ?? []);
+    setTimeEntryReasonsLoading(false);
+  }
+
+  async function addTimeEntryReason() {
+    const name = newTimeEntryReasonName.trim();
+    if (!name) return;
+    setTimeEntryReasonBusy(true);
+    const nextSortOrder = timeEntryReasons.length > 0 ? Math.max(...timeEntryReasons.map((r) => r.sort_order)) + 1 : 1;
+    const { error } = await supabase.from("time_entry_reasons").insert({ name, sort_order: nextSortOrder });
+    setTimeEntryReasonBusy(false);
+    if (error) {
+      window.alert(`Couldn't add: ${error.message}`);
+      return;
+    }
+    setNewTimeEntryReasonName("");
+    loadTimeEntryReasons();
+  }
+
+  function startEditTimeEntryReason(r: TimeEntryReasonRow) {
+    setEditingTimeEntryReasonId(r.id);
+    setEditTimeEntryReasonName(r.name);
+  }
+
+  async function saveTimeEntryReasonRename(id: string) {
+    const name = editTimeEntryReasonName.trim();
+    if (!name) return;
+    const current = timeEntryReasons.find((r) => r.id === id);
+    if (current && current.name !== name) {
+      const ok = await confirmPlainTextRename("time_entries", "reason_category", current.name, name, "time entry");
+      if (!ok) {
+        setEditingTimeEntryReasonId(null);
+        return;
+      }
+    }
+    setTimeEntryReasonBusy(true);
+    const { error } = await supabase.from("time_entry_reasons").update({ name }).eq("id", id);
+    if (error) {
+      setTimeEntryReasonBusy(false);
+      window.alert(`Couldn't rename: ${error.message}`);
+      return;
+    }
+    if (current && current.name !== name) {
+      const cascadeError = await cascadePlainTextRename("time_entries", "reason_category", current.name, name);
+      if (cascadeError) window.alert(`Reason renamed, but couldn't update tagged time entries: ${cascadeError}. Please check manually.`);
+    }
+    setTimeEntryReasonBusy(false);
+    setEditingTimeEntryReasonId(null);
+    loadTimeEntryReasons();
+  }
+
+  async function toggleTimeEntryReasonActive(r: TimeEntryReasonRow) {
+    setTimeEntryReasonBusy(true);
+    const { error } = await supabase.from("time_entry_reasons").update({ is_active: !r.is_active }).eq("id", r.id);
+    setTimeEntryReasonBusy(false);
+    if (error) {
+      window.alert(`Couldn't update: ${error.message}`);
+      return;
+    }
+    loadTimeEntryReasons();
+  }
+
+  // Delete: only allowed when no time entry currently references this
+  // Reason by name (plain text, same convention as Category/Phase).
+  async function deleteTimeEntryReason(r: TimeEntryReasonRow) {
+    setTimeEntryReasonBusy(true);
+    const { count, error: countError } = await supabase
+      .from("time_entries")
+      .select("id", { count: "exact", head: true })
+      .eq("reason_category", r.name);
+    if (countError) {
+      setTimeEntryReasonBusy(false);
+      window.alert(`Couldn't check usage: ${countError.message}`);
+      return;
+    }
+    if ((count ?? 0) > 0) {
+      setTimeEntryReasonBusy(false);
+      window.alert(
+        `Can't delete -- ${count} time ${count === 1 ? "entry" : "entries"} still use this Reason. Deactivate it instead.`
+      );
+      return;
+    }
+    if (!window.confirm(`Delete "${r.name}"? This can't be undone. (Only possible because no time entry currently uses it -- Reasons in use can't be deleted.)`)) {
+      setTimeEntryReasonBusy(false);
+      return;
+    }
+    const { error } = await supabase.from("time_entry_reasons").delete().eq("id", r.id);
+    setTimeEntryReasonBusy(false);
+    if (error) {
+      window.alert(`Couldn't delete: ${error.message}`);
+      return;
+    }
+    loadTimeEntryReasons();
+  }
+
+  async function reorderTimeEntryReasons(orderedIds: string[]) {
+    setTimeEntryReasonBusy(true);
+    const results = await Promise.all(
+      orderedIds.map((id, idx) => supabase.from("time_entry_reasons").update({ sort_order: idx + 1 }).eq("id", id))
+    );
+    setTimeEntryReasonBusy(false);
+    const err = results.find((r) => r.error)?.error;
+    if (err) {
+      window.alert(`Couldn't reorder: ${err.message}`);
+      return;
+    }
+    loadTimeEntryReasons();
+  }
+
   // Same drag-handle reorder as Project Sources above.
   async function reorderProjectCategories(orderedIds: string[]) {
     setProjectCategoryBusy(true);
@@ -891,6 +1109,7 @@ export default function SiteSettings() {
       loadOutputTypes();
       loadMappings();
       loadHistoricalLocking();
+      loadTimeEntryReasons();
     }
   }, [me?.access_level]);
 
@@ -992,6 +1211,21 @@ export default function SiteSettings() {
               </td>
               <td>
                 <button onClick={() => setManageDrawer("work_types")} style={manageButtonStyle}>
+                  Manage List
+                </button>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div style={{ fontWeight: 600, color: "var(--navy)", fontSize: 12.5 }}>Time Logging Reasons</div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
+                  Offered when someone logs time manually (not needed for the Start/Stop timer). Required on every
+                  manual entry.
+                </div>
+              </td>
+              <td style={{ fontSize: 12, color: "var(--text-secondary)" }}>{timeEntryReasonsLoading ? "…" : listSummary(timeEntryReasons)}</td>
+              <td>
+                <button onClick={() => setManageDrawer("reasons")} style={manageButtonStyle}>
                   Manage List
                 </button>
               </td>
@@ -1547,6 +1781,117 @@ export default function SiteSettings() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </>
+            ) : manageDrawer === "reasons" ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Manage Time Logging Reasons</div>
+                  <button onClick={() => setManageDrawer(null)} style={{ display: "flex", background: "none", border: "none", cursor: "pointer", color: "var(--muted)" }}>
+                    <X size={16} />
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                  Drag the grip handle to reorder. Renaming updates every time entry already tagged with the old
+                  name. Deactivating keeps a reason's label on any entry that already has it set -- it just
+                  disappears from the picker on new manual entries.
+                </div>
+
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <input
+                    value={newTimeEntryReasonName}
+                    onChange={(e) => setNewTimeEntryReasonName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addTimeEntryReason();
+                    }}
+                    placeholder="New reason name"
+                    spellCheck={false}
+                    autoComplete="off"
+                    style={{ ...inputStyle, marginTop: 0, flex: 1 }}
+                  />
+                  <button onClick={addTimeEntryReason} disabled={timeEntryReasonBusy || !newTimeEntryReasonName.trim()} style={addButtonStyle(!newTimeEntryReasonName.trim())}>
+                    <Plus size={14} />
+                    Add
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}>
+                  {timeEntryReasonsLoading && <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>}
+                  {!timeEntryReasonsLoading && timeEntryReasons.length === 0 && (
+                    <div style={{ padding: 10, fontSize: 11.5, color: "var(--muted)" }}>None yet.</div>
+                  )}
+                  {timeEntryReasons.map((r) => {
+                    const isEditing = editingTimeEntryReasonId === r.id;
+                    const isDragging = draggedTimeEntryReasonId === r.id;
+                    return (
+                      <div
+                        key={r.id}
+                        onDragOver={(e) => {
+                          if (!draggedTimeEntryReasonId || draggedTimeEntryReasonId === r.id) return;
+                          e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (!draggedTimeEntryReasonId) return;
+                          const ids = timeEntryReasons.map((x) => x.id);
+                          const without = ids.filter((id) => id !== draggedTimeEntryReasonId);
+                          without.splice(without.indexOf(r.id), 0, draggedTimeEntryReasonId);
+                          setDraggedTimeEntryReasonId(null);
+                          reorderTimeEntryReasons(without);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 10px",
+                          borderBottom: "1px solid var(--border)",
+                          opacity: isDragging ? 0.4 : r.is_active ? 1 : 0.55,
+                        }}
+                      >
+                        <span
+                          draggable
+                          onDragStart={() => setDraggedTimeEntryReasonId(r.id)}
+                          onDragEnd={() => setDraggedTimeEntryReasonId(null)}
+                          title="Drag to reorder"
+                          style={{ display: "flex", cursor: "grab", color: "var(--text-secondary)", flexShrink: 0 }}
+                        >
+                          <GripVertical size={14} />
+                        </span>
+                        {isEditing ? (
+                          <input
+                            value={editTimeEntryReasonName}
+                            onChange={(e) => setEditTimeEntryReasonName(e.target.value)}
+                            onBlur={() => saveTimeEntryReasonRename(r.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveTimeEntryReasonRename(r.id);
+                              if (e.key === "Escape") setEditingTimeEntryReasonId(null);
+                            }}
+                            autoFocus
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={{ ...inputStyle, marginTop: 0, flex: 1, fontWeight: 600 }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditTimeEntryReason(r)}
+                            title="Click to rename"
+                            style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "var(--navy)", cursor: "pointer" }}
+                          >
+                            {r.name}
+                          </span>
+                        )}
+                        <span className={`status-pill ${r.is_active ? "success" : "neutral"}`} style={{ fontSize: 10 }}>
+                          {r.is_active ? "Active" : "Off"}
+                        </span>
+                        <button onClick={() => toggleTimeEntryReasonActive(r)} disabled={timeEntryReasonBusy} title={r.is_active ? "Deactivate" : "Reactivate"} style={iconBtnStyle(r.is_active ? "var(--danger-text)" : "var(--success-text)")}>
+                          {r.is_active ? <ShieldOff size={13} /> : <ShieldCheck size={13} />}
+                        </button>
+                        <button onClick={() => deleteTimeEntryReason(r)} disabled={timeEntryReasonBusy} title="Delete (only if unused)" style={iconBtnStyle("var(--danger-text)")}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </>
             ) : (

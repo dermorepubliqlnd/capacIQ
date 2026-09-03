@@ -4,12 +4,22 @@ import { supabase } from "../lib/supabaseClient";
 import { useSession } from "../lib/useSession";
 import { useConfirm } from "../lib/useConfirm";
 import { formatDate } from "../lib/formatDate";
-import { formatDuration, submitManualTimeEntry, decideTimeEntry, correctTimeEntry, TIME_ENTRY_REASON_OPTIONS } from "../lib/timeTracking";
+import { formatDuration, submitManualTimeEntry, decideTimeEntry, correctTimeEntry } from "../lib/timeTracking";
 
 interface PersonLite {
   id: string;
   name: string;
   reports_to: string | null;
+}
+
+// Time Logging Reasons (Phase 37, 2026-09-03) -- admin-configurable via
+// Site Settings (was a fixed TIME_ENTRY_REASON_OPTIONS array in
+// timeTracking.ts). Only manual entries need a reason -- the Start/Stop
+// timer never asks for one.
+interface TimeEntryReasonRow {
+  id: string;
+  name: string;
+  is_active: boolean;
 }
 
 interface TaskLite {
@@ -191,14 +201,15 @@ export default function TimeTracking() {
   const [logStartDate, setLogStartDate] = useState(toDateInputValue());
   const [logStartTime, setLogStartTime] = useState(toTimeInputValue());
   const [logEndTime, setLogEndTime] = useState(toTimeInputValue());
-  const [logReasonCategory, setLogReasonCategory] = useState(TIME_ENTRY_REASON_OPTIONS[0]);
+  const [reasonOptions, setReasonOptions] = useState<TimeEntryReasonRow[]>([]);
+  const [logReasonCategory, setLogReasonCategory] = useState("");
   const [logNotes, setLogNotes] = useState("");
   const [logError, setLogError] = useState<string | null>(null);
   const [logSaving, setLogSaving] = useState(false);
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: entryData }, { data: peopleData }, { data: taskData }] = await Promise.all([
+    const [{ data: entryData }, { data: peopleData }, { data: taskData }, { data: reasonData }] = await Promise.all([
       supabase
         .from("time_entries")
         .select(
@@ -210,10 +221,17 @@ export default function TimeTracking() {
         .order("started_at", { ascending: false }),
       supabase.from("people").select("id,name,reports_to").eq("is_active", true),
       supabase.from("tasks").select("id,name,assignee_id,project_id,current_due_date,status,project:projects(id,name,owner_id,timelines_locked,wbs_status)").eq("is_archived", false),
+      supabase.from("time_entry_reasons").select("id,name,is_active").order("sort_order"),
     ]);
     setEntries(((entryData as unknown as EntryRow[]) ?? []));
     setPeople((peopleData as PersonLite[]) ?? []);
     setMyTasks((((taskData as unknown as TaskLite[]) ?? [])).filter((t) => t.assignee_id === me?.id));
+    const reasons = (reasonData as TimeEntryReasonRow[]) ?? [];
+    setReasonOptions(reasons);
+    // Default the manual-entry form to the first active reason -- only set
+    // once (on first successful load, or if the field's still blank), so
+    // it doesn't stomp on a choice already made mid-edit.
+    setLogReasonCategory((current) => current || reasons.find((r) => r.is_active)?.name || "");
     setLoading(false);
   }
 
@@ -282,6 +300,10 @@ export default function TimeTracking() {
       setLogError("Choose a task.");
       return;
     }
+    if (!logReasonCategory) {
+      setLogError("Choose a reason.");
+      return;
+    }
     if (logReasonCategory === "Other" && !logNotes.trim()) {
       setLogError('Please specify a reason when "Other" is selected.');
       return;
@@ -312,7 +334,7 @@ export default function TimeTracking() {
     setLogProjectId("");
     setLogTaskId("");
     setLogNotes("");
-    setLogReasonCategory(TIME_ENTRY_REASON_OPTIONS[0]);
+    setLogReasonCategory(reasonOptions.find((r) => r.is_active)?.name || "");
     await alert(
       clampedAtMidnight
         ? "Time entry submitted -- your end time was before the start time, so it was clamped to 11:59 PM the same day. It goes to your project owner (or their manager, if you own the project) for approval."
@@ -648,11 +670,13 @@ export default function TimeTracking() {
                 onChange={(e) => setLogReasonCategory(e.target.value)}
                 style={{ width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)" }}
               >
-                {TIME_ENTRY_REASON_OPTIONS.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
+                {reasonOptions
+                  .filter((r) => r.is_active || r.name === logReasonCategory)
+                  .map((r) => (
+                    <option key={r.id} value={r.name}>
+                      {r.name}
+                    </option>
+                  ))}
               </select>
             </label>
             {logReasonCategory === "Other" && (
