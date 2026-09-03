@@ -207,6 +207,13 @@ export interface TableView {
   // fall back to "bar" when reading an older view that predates this
   // field. See ProgressCell.tsx.
   progressDisplay?: "bar" | "number" | "ring";
+  // Per-view display mode for Priority/Complexity (symbol only, symbol +
+  // text, or text only) -- same optional/fallback-safe pattern as
+  // progressDisplay above; callers should fall back to "symbolText" (the
+  // original combined rendering) when reading an older saved view. See
+  // SymbolTextBadge.tsx.
+  priorityDisplay?: "symbol" | "symbolText" | "text";
+  complexityDisplay?: "symbol" | "symbolText" | "text";
   // Per-view Timeline settings -- both optional for the same reason as
   // progressDisplay above (older saved views predate Timeline and must
   // keep loading without a migration). Callers should fall back to

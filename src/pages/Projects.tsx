@@ -17,6 +17,8 @@ import NotesSidebar from "../components/NotesSidebar";
 import { useConfirm } from "../lib/useConfirm";
 import { InlineText, InlineSelect, InlineDate, InlineNumber } from "../components/InlineCell";
 import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell";
+import SymbolTextBadge, { SymbolTextDisplayToggle } from "../components/SymbolTextBadge";
+import { PROJECT_PRIORITY_SYMBOLS, PROJECT_EFFORT_LEVEL_SYMBOLS } from "../lib/notionOptions";
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows, sortRowsHierarchical, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
@@ -1931,7 +1933,19 @@ export default function Projects() {
       },
       {
         key: "priority",
-        label: "Priority",
+        label: (
+          <span style={{ display: "inline-flex", alignItems: "center" }}>
+            Priority
+            <SymbolTextDisplayToggle
+              value={projectViews.activeView.priorityDisplay ?? "symbolText"}
+              onChange={(v) => projectViews.updateActiveView({ priorityDisplay: v })}
+            />
+          </span>
+        ),
+        // Same rationale as Actual Progress's plainLabel above -- the
+        // display toggle belongs in the real column header, not the
+        // Properties show/hide popover.
+        plainLabel: "Priority",
         defaultWidth: 100,
         maxWidth: 130,
         render: (p) => (
@@ -1940,7 +1954,14 @@ export default function Projects() {
             editable={canEditProject(p)}
             options={PROJECT_PRIORITY_OPTIONS}
             labelFor={priorityLabel}
-            renderReadOnly={() => (p.priority ? <span className={`status-pill ${priorityTone(p.priority)}`}>{priorityLabel(p.priority)}</span> : "—")}
+            renderReadOnly={() => (
+              <SymbolTextBadge
+                symbol={p.priority ? PROJECT_PRIORITY_SYMBOLS[p.priority] ?? "" : ""}
+                text={p.priority ?? ""}
+                tone={priorityTone(p.priority)}
+                display={projectViews.activeView.priorityDisplay ?? "symbolText"}
+              />
+            )}
             onCommit={(v) => updateProject(p.id, { priority: v as ProjectRow["priority"] })}
           />
         ),
@@ -2157,7 +2178,16 @@ export default function Projects() {
       },
       {
         key: "effort_level",
-        label: "Complexity",
+        label: (
+          <span style={{ display: "inline-flex", alignItems: "center" }}>
+            Complexity
+            <SymbolTextDisplayToggle
+              value={projectViews.activeView.complexityDisplay ?? "symbolText"}
+              onChange={(v) => projectViews.updateActiveView({ complexityDisplay: v })}
+            />
+          </span>
+        ),
+        plainLabel: "Complexity",
         defaultWidth: 100,
         maxWidth: 130,
         render: (p) => (
@@ -2166,9 +2196,14 @@ export default function Projects() {
             editable={canEditProjectSetupField(p)}
             allowEmpty
             options={PROJECT_EFFORT_LEVEL_OPTIONS}
-            renderReadOnly={() =>
-              p.effort_level ? <span className={`status-pill ${PROJECT_EFFORT_LEVEL_TONES[p.effort_level] ?? "neutral"}`}>{effortLevelLabel(p.effort_level)}</span> : "—"
-            }
+            renderReadOnly={() => (
+              <SymbolTextBadge
+                symbol={p.effort_level ? PROJECT_EFFORT_LEVEL_SYMBOLS[p.effort_level] ?? "" : ""}
+                text={p.effort_level ?? ""}
+                tone={PROJECT_EFFORT_LEVEL_TONES[p.effort_level ?? ""] ?? "neutral"}
+                display={projectViews.activeView.complexityDisplay ?? "symbolText"}
+              />
+            )}
             onCommit={(v) => updateProject(p.id, { effort_level: v || null })}
           />
         ),
@@ -2299,7 +2334,7 @@ export default function Projects() {
         },
       },
     ],
-    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, noteCounts, timeEntries, deletedSpentHours, projectCategoryOptions, categoryIconMap, categoryToneMap, projectPhases, phaseStatusMapping, activePhaseNames]
+    [people, projects, me, tasks, holidayDates, projectViews.activeView.progressDisplay, projectViews.activeView.priorityDisplay, projectViews.activeView.complexityDisplay, noteCounts, timeEntries, deletedSpentHours, projectCategoryOptions, categoryIconMap, categoryToneMap, projectPhases, phaseStatusMapping, activePhaseNames]
   );
 
   // Board-view card body. Name always renders first/bold as the card's
