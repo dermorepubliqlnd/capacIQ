@@ -418,7 +418,7 @@ export default function TimeTracking() {
                   <td>{formatDate(row.started_at)}</td>
                   <td style={{ fontWeight: 600 }}>
                     {formatDuration(row.duration_minutes)}
-                    {row.corrected_at && (
+                    {row.corrected_at && row.original_duration_minutes !== row.duration_minutes && (
                       <span title={`Originally ${formatDuration(row.original_duration_minutes)}`} style={{ marginLeft: 5, fontSize: 9.5, color: "var(--muted)" }}>
                         (corrected)
                       </span>
@@ -453,7 +453,9 @@ export default function TimeTracking() {
                       )}
                       {row.corrected_at && (
                         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
-                          Corrected from {formatDuration(row.original_duration_minutes)} to {formatDuration(row.duration_minutes)} by{" "}
+                          {row.original_duration_minutes !== row.duration_minutes
+                            ? <>Corrected from {formatDuration(row.original_duration_minutes)} to {formatDuration(row.duration_minutes)} by{" "}</>
+                            : <>Reason corrected by{" "}</>}
                           {personName(row.corrected_by)} on {formatDate(row.corrected_at)}
                           {row.correction_notes && <> — "{row.correction_notes}"</>}
                         </div>
