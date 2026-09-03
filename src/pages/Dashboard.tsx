@@ -759,7 +759,6 @@ export default function Dashboard() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
         <div>
           <h1>Project Portfolio Dashboard</h1>
-          <p className="subtitle">Team capacity, portfolio health, and what needs attention, at a glance.</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: "var(--radius-btn)", padding: "6px 10px", background: "var(--surface)" }}>

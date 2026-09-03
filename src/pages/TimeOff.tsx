@@ -168,10 +168,6 @@ export default function TimeOff() {
   return (
     <div>
       <h1>Time Off</h1>
-      <p className="subtitle">
-        Mark your own Off or Half days here — everyone can see the whole team's time off. This feeds directly into WBS scheduling
-        and Utilization's capacity math, so keeping it current keeps scoping accurate.
-      </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <button

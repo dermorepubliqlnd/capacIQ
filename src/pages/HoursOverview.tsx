@@ -490,10 +490,6 @@ export default function HoursOverview() {
   return (
     <div>
       <h1>Scoped vs Logged</h1>
-      <p className="subtitle">
-        Compares each task's planned Scoped Hours against actual hours logged via Time Tracking. Read-only — edit Scoped Hours from
-        Projects &amp; Tasks or the WBS, and log time from the Time Tracking page.
-      </p>
 
       <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
         <button
@@ -589,7 +585,6 @@ export default function HoursOverview() {
               <option value="active">Active people only</option>
               <option value="all">Show all (incl. deactivated)</option>
             </select>
-            <span style={{ fontSize: 11, color: "var(--muted)" }}>Each cell: Scoped / Logged hours. Click a person to see the task breakdown.</span>
           </div>
 
           <div ref={gridScrollRef} style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: "var(--radius)" }}>

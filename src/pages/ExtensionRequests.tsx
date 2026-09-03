@@ -527,12 +527,6 @@ export default function ExtensionRequests() {
     <div>
       {confirmDialog}
       <h1>Extension Requests</h1>
-      <p className="subtitle">
-        Every due-date change goes through here -- current_due_date is locked at the database level (once a project's timelines are locked) and can
-        only move once a request below is approved. Covers both task-level extensions and whole-project timeline changes (the latter always
-        requires manager/Full Access approval, never the project owner alone). See {REASON_CATEGORY_OPTIONS.length} reason categories available
-        when requesting from a task's Due date cell, or from a locked project's Timelines button. Click any row to see full details.
-      </p>
 
       <div style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid var(--border)" }}>
         <button

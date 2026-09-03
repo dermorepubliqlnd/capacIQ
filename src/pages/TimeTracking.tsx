@@ -542,11 +542,6 @@ export default function TimeTracking() {
     <div>
       {confirmDialog}
       <h1>Time Tracking</h1>
-      <p className="subtitle">
-        Every timer start/stop and manually logged entry lands here. Timer entries lock in once confirmed; manual entries always need approval from
-        your project owner (or their manager, if you own the project) before they count toward Spent Hrs. Full Access can correct an already-locked
-        entry -- the original value stays visible, never silently overwritten.
-      </p>
 
       <div style={{ marginTop: 14, marginBottom: 18 }}>
         {!showLogForm ? (

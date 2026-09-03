@@ -519,11 +519,6 @@ export default function Utilization() {
   return (
     <div>
       <h1>Utilization</h1>
-      <p className="subtitle">
-        Same grid as the Day Planner, but auto-computed: each task's Scoped Hours are spread across its own start-to-due window
-        for past dates, and queue for real daily capacity (routing around a person's other work) from today forward, plus a small
-        project-ownership allowance. Set effort hours and dates on tasks in Projects &amp; Tasks — this view updates automatically.
-      </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
         <button
