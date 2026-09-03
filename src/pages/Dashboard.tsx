@@ -648,18 +648,13 @@ export default function Dashboard() {
   // too") -- same counts as categoryRows above, just re-shaped for Donut's
   // {label,value,color} contract with hex colors instead of tone classes.
   const categoryDonut = useMemo(
-    () =>
-      categoryRows.map((r) => ({
-        label: r.label,
-        value: r.value,
-        // 2026-09-03 bugfix: this used to cycle through SOURCE_PALETTE by
-        // array index, ignoring each category's real, self-service color
-        // (project_categories.color) -- so this donut's slice colors
-        // never matched the actual Category pill shown everywhere else
-        // (Projects table, Board, Timeline). Now resolved from the same
-        // tone categoryRows itself already computes.
-        color: CATEGORY_TONE_ICON_COLOR[r.tone] ?? CATEGORY_TONE_ICON_COLOR.neutral,
-      })),
+    // 2026-09-03: reverted back to the cyclic SOURCE_PALETTE look -- Sandra
+    // tried the real-per-category-tone version (see categoryRows' own
+    // `tone`, still used for the Category PILL elsewhere) and asked for
+    // "the old color palette of the categories in the chart" instead, so
+    // this donut intentionally does NOT match the Category pill's color;
+    // it's just a bright, easy-to-tell-apart cyclic palette by index.
+    () => categoryRows.map((r, i) => ({ label: r.label, value: r.value, color: SOURCE_PALETTE[i % SOURCE_PALETTE.length] })),
     [categoryRows]
   );
 
