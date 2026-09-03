@@ -1206,6 +1206,14 @@ export default function Projects() {
   const taskName = (id: string | null) => tasks.find((t) => t.id === id)?.name ?? "—";
   const isProjectOwner = (projectId: string) => projects.find((p) => p.id === projectId)?.owner_id === me?.id;
   const canEditProject = (p: ProjectRow) => isFullAccess || p.owner_id === me?.id;
+  // 2026-09-03 (Sandra: "lock the changing of project status if baseline
+  // is not locked yet ... the only time status and phase be available is
+  // if the baseline status is WBS Locked") -- mirrors the existing
+  // canEditProjectSetupField pattern (Category/Source/Complexity) but
+  // inverted: those 3 fields lock ONCE a project leaves Draft, Status/
+  // Phase lock WHILE it's still in Draft (a Draft project is forced to
+  // stay "Not Started" until Start Project happens).
+  const canEditStatusPhase = (p: ProjectRow) => canEditProject(p) && p.wbs_status !== "draft";
   // 2026-09-03 (Sandra: "add these 3 new fields in the WBS UI... in the
   // project list view these are view only and can't be changed [once
   // locked]. but as long as the WBS is still draft, still allow change
@@ -1232,6 +1240,10 @@ export default function Projects() {
   // rules) -- always go through this helper on a Status change rather than
   // writing { status } alone, so Phase never drifts out of sync with it.
   function changeProjectStatus(p: ProjectRow, newStatus: string | null) {
+    if (p.wbs_status === "draft") {
+      alert(`"${p.name}" hasn't started yet -- Status stays "Not Started" until Start Project is run on its WBS page.`);
+      return;
+    }
     updateProject(p.id, { status: newStatus, phase: newStatus ? nextPhaseForStatusLive(p.phase, newStatus) : p.phase });
   }
 
@@ -2021,7 +2033,7 @@ export default function Projects() {
           <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
             <InlineSelect
               value={p.status ?? ""}
-              editable={canEditProject(p)}
+              editable={canEditStatusPhase(p)}
               allowEmpty
               options={PROJECT_STATUS_OPTIONS}
               renderReadOnly={() =>
@@ -2077,11 +2089,15 @@ export default function Projects() {
         render: (p) => (
           <InlineSelect
             value={p.phase ?? ""}
-            editable={canEditProject(p)}
+            editable={canEditStatusPhase(p)}
             allowEmpty
             options={phaseOptionsForStatus(p.status, p.phase)}
             renderReadOnly={() => (p.phase ? <span className={`status-pill ${PROJECT_PHASE_TONES[p.phase ?? ""] ?? "neutral"}`}>{p.phase}</span> : "—")}
             onCommit={async (v) => {
+              if (p.wbs_status === "draft") {
+                alert(`"${p.name}" hasn't started yet -- Phase stays locked until Start Project is run on its WBS page.`);
+                return;
+              }
               if (v === "Design" && p.phase !== "Design" && !(await guardDesignPhaseLock(p))) return;
               updateProject(p.id, { phase: v || null });
             }}
@@ -2735,7 +2751,13 @@ export default function Projects() {
     // so Phase cascades correctly (see its own doc comment); dragging
     // between Phase columns writes phase directly and never touches Status.
     if (groupBy === "status") return (p, v) => changeProjectStatus(p, v || null);
-    return (p, v) => updateProject(p.id, { phase: v || null });
+    return (p, v) => {
+      if (p.wbs_status === "draft") {
+        alert(`"${p.name}" hasn't started yet -- Phase stays locked until Start Project is run on its WBS page.`);
+        return;
+      }
+      updateProject(p.id, { phase: v || null });
+    };
   }
 
   const projectSortOptions: SortOption<ProjectRow>[] = [

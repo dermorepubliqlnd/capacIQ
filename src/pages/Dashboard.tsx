@@ -574,9 +574,19 @@ export default function Dashboard() {
 
   const filteredProjectIds = useMemo(() => new Set(filteredProjects.map((p) => p.id)), [filteredProjects]);
 
+  // 2026-09-03 (Sandra: "for active can we just consider those that
+  // baseline are locked? if not locked then not active yet") -- "Active"
+  // now anchors to wbs_status === "baseline_locked" (the project has run
+  // Start Project) rather than the free-text Status field, which no
+  // longer drives this KPI at all. Confirmed scope: ONLY the exact
+  // "Baseline Locked" state counts -- once a project is edited further
+  // and flips to "Changed After Baseline" it no longer counts as Active
+  // here (Sandra's explicit call, not the "both count" default).
+  const isActiveProject = (p: ProjectRow) => p.wbs_status === "baseline_locked";
+
   const stats = useMemo(() => {
     const total = filteredProjects.length;
-    const active = filteredProjects.filter((p) => p.status === "In Progress").length;
+    const active = filteredProjects.filter(isActiveProject).length;
     const completed = filteredProjects.filter((p) => p.status === "Completed").length;
     const onHold = filteredProjects.filter((p) => p.status === "Paused").length;
     let atRisk = 0;
@@ -607,8 +617,13 @@ export default function Dashboard() {
   }, [filteredProjects]);
 
   const healthDonut = useMemo(() => {
+    // 2026-09-03: this donut is titled "Active Project Health" but used
+    // to break down ALL filteredProjects (hence always summing to the
+    // same 14 as Total Projects, regardless of how few were actually
+    // Active) -- now scoped to isActiveProject (wbs_status ===
+    // "baseline_locked") so its total matches the Active KPI card above.
     const counts: Record<string, number> = {};
-    for (const p of filteredProjects) {
+    for (const p of filteredProjects.filter(isActiveProject)) {
       const key = healthOf(p, tasks, holidayDates).label;
       counts[key] = (counts[key] ?? 0) + 1;
     }
@@ -885,10 +900,15 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="card">
-          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Active Project Health</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Active Project Health</div>
+          {/* 2026-09-03: "Active" is a specific, defined term here now --
+              Baseline Locked only (see isActiveProject) -- spelled out so
+              it's never ambiguous with Total Projects or Status's own
+              "In Progress" count again. */}
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 10 }}>Baseline Locked projects only</div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <Donut segments={healthDonut} centerLabel="Projects" centerValue={filteredProjects.length} />
-            <DonutLegend segments={healthDonut} total={filteredProjects.length} />
+            <Donut segments={healthDonut} centerLabel="Active" centerValue={stats.active} />
+            <DonutLegend segments={healthDonut} total={stats.active} />
           </div>
         </div>
         <div className="card">
