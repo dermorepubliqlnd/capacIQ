@@ -20,7 +20,7 @@ import ProgressCell, { ProgressDisplayToggle } from "../components/ProgressCell"
 import type { ColumnDef, GroupOption, SortOption } from "../lib/tableTypes";
 import { sortRows, sortRowsHierarchical, visibleOrderedColumns, resolveFilterPersonIds } from "../lib/tableTypes";
 import { formatDate } from "../lib/formatDate";
-import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
+import { WBS_STATUS_META, wbsStatusMetaFor, type WbsStatus } from "../lib/wbsStatus";
 
 // Tone-palette mapping for wbs_status (Phase 4, 2026-07-28) -- WBS_STATUS_META
 // carries its own bg/color/border for the WBS Planning page's banner, but
@@ -50,6 +50,7 @@ interface DeletedSpentHourRow {
 }
 import { useTimeTracking } from "../lib/TimeTrackingContext";
 import { CATEGORY_ICON_LIBRARY, CATEGORY_TONE_ICON_COLOR } from "../lib/categoryIcons";
+import { colorForPerson } from "../lib/personColors";
 import { Play, Square } from "lucide-react";
 import {
   PROJECT_EFFORT_LEVEL_OPTIONS,
@@ -70,6 +71,10 @@ import {
 interface PersonOption {
   id: string;
   name: string;
+  // 2026-09-03: needed for Grouped-by-Assignee's colored headers
+  // (colorForPerson) -- was not previously fetched here since nothing on
+  // this page rendered a person's own color before.
+  color?: string | null;
 }
 
 // Work Type (Phase 12, 2026-08-20): admin-configurable lookup, replacing
@@ -893,6 +898,11 @@ export default function Projects() {
   // Started" / "In Progress" (the only two Statuses with a real,
   // Sandra-editable subset -- see ProjectPhaseOption's comment above).
   const [phaseStatusMapping, setPhaseStatusMapping] = useState<{ status: string; phase_id: string }[]>([]);
+  // 2026-09-03 -- project ids with a pending project_baseline_requests
+  // row, purely for the WBS Status display override below (see
+  // wbsStatusMetaFor). Not the same thing as the request itself (no
+  // reason/decision data needed here, just "is one pending right now").
+  const [pendingBaselineProjectIds, setPendingBaselineProjectIds] = useState<Set<string>>(new Set());
   const activePhaseNames = useMemo(
     () => projectPhases.filter((ph) => ph.is_active).map((ph) => ph.name),
     [projectPhases]
@@ -1056,10 +1066,10 @@ export default function Projects() {
   async function loadAll() {
     setLoading(true);
     purgeExpiredArchives();
-    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }, { data: projectSourceData }, { data: projectCategoryData }, { data: projectPhaseData }, { data: phaseMappingData }] = await Promise.all([
+    const [{ data: projectData }, { data: taskData }, { data: peopleData }, { data: chainPeopleData }, { data: holidayData }, { data: extReqData }, { data: timeEntryData }, { data: noteData }, { data: delSpentData }, { data: workTypeData }, { data: projectSourceData }, { data: projectCategoryData }, { data: projectPhaseData }, { data: phaseMappingData }, { data: pendingBaselineData }] = await Promise.all([
       supabase.from("projects").select("*").eq("is_archived", false).order("sort_order"),
       supabase.from("tasks").select("*").eq("is_archived", false).order("sort_order"),
-      supabase.from("people").select("id,name").eq("is_active", true).order("name"),
+      supabase.from("people").select("id,name,color").eq("is_active", true).order("name"),
       supabase.from("people").select("id,reports_to,is_active"),
       supabase.from("holidays").select("date"),
       supabase
@@ -1082,6 +1092,14 @@ export default function Projects() {
       supabase.from("project_categories").select("id,name,is_active,sort_order,icon,color").order("sort_order"),
       supabase.from("project_phases").select("id,name,is_active,sort_order").order("sort_order"),
       supabase.from("project_status_phase_mapping").select("status,phase_id"),
+      // 2026-09-03 (Sandra: "can WBS Status also update to Awaiting
+      // Baseline Approval if it's queued for approval") -- display-only:
+      // no new wbs_status enum value, just a project_id set checked
+      // wherever WBS_STATUS_META[p.wbs_status] renders, to swap the
+      // Draft label/tone for a pending project. Pending is the only
+      // status that still means "waiting" (decide_baseline_request
+      // immediately flips it to approved/rejected).
+      supabase.from("project_baseline_requests").select("project_id").eq("status", "pending"),
     ]);
     const nextProjects = (projectData as ProjectRow[]) ?? [];
     const nextTasks = (taskData as TaskRow[]) ?? [];
@@ -1098,6 +1116,7 @@ export default function Projects() {
     setProjectCategories((projectCategoryData as ProjectCategoryOption[]) ?? []);
     setProjectPhases((projectPhaseData as ProjectPhaseOption[]) ?? []);
     setPhaseStatusMapping((phaseMappingData as { status: string; phase_id: string }[]) ?? []);
+    setPendingBaselineProjectIds(new Set(((pendingBaselineData as { project_id: string }[]) ?? []).map((r) => r.project_id)));
     const nextNoteCounts: Record<string, number> = {};
     for (const row of (noteData as { project_id: string }[]) ?? []) {
       nextNoteCounts[row.project_id] = (nextNoteCounts[row.project_id] ?? 0) + 1;
@@ -2210,7 +2229,7 @@ export default function Projects() {
         defaultWidth: 210,
         maxWidth: 260,
         render: (p) => {
-          const meta = WBS_STATUS_META[p.wbs_status];
+          const meta = wbsStatusMetaFor(p.wbs_status, pendingBaselineProjectIds.has(p.id));
           return (
             <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <span
@@ -2418,8 +2437,14 @@ export default function Projects() {
     {
       key: "wbs_status",
       label: "WBS Status",
-      getGroup: (p) => WBS_STATUS_META[p.wbs_status]?.label ?? p.wbs_status,
-      getTone: (p) => WBS_STATUS_TONES[p.wbs_status] ?? "neutral",
+      // 2026-09-03: same Awaiting-Baseline-Approval display override as
+      // the WBS Status cell -- a pending-request Draft project gets its
+      // own section here instead of blending into the plain "Draft"
+      // group. Not pre-seeded in allGroups (so it only appears when a
+      // project actually has one pending), same as any other
+      // encountered-but-not-canonical value elsewhere in this file.
+      getGroup: (p) => wbsStatusMetaFor(p.wbs_status, pendingBaselineProjectIds.has(p.id)).label,
+      getTone: (p) => (p.wbs_status === "draft" && pendingBaselineProjectIds.has(p.id) ? "warning" : WBS_STATUS_TONES[p.wbs_status] ?? "neutral"),
       allGroups: () => (Object.keys(WBS_STATUS_META) as WbsStatus[]).map((s) => WBS_STATUS_META[s].label),
     },
   ];
@@ -3364,6 +3389,17 @@ export default function Projects() {
       key: "project",
       label: "Project",
       getGroup: (t) => projectName(t.project_id),
+      // 2026-09-03 (Sandra: "when grouping by project can the header
+      // follow the same colors assigned to the project... base it from
+      // the category colors, light version not the text color" -- there's
+      // no independent per-project color, so this borrows the project's
+      // own Category tone via categoryToneMap, same light-bg/dark-text
+      // pairing every Category badge already uses (resolveTone in
+      // DataTable picks the light .bg half automatically).
+      getTone: (t) => {
+        const proj = projects.find((p) => p.id === t.project_id);
+        return (proj?.category && categoryToneMap[proj.category]) || "neutral";
+      },
       // Every project shows up here even with zero tasks yet, so a
       // freshly created project isn't invisible in this view -- it gets
       // an empty section with its own "+ New task" trigger instead.
@@ -3388,6 +3424,26 @@ export default function Projects() {
       key: "assignee",
       label: "Assignee",
       getGroup: (t) => ownerName(t.assignee_id),
+      // 2026-09-03 (Sandra: "if grouped by assignee then follow their
+      // assigned colors but a subtle one too") -- reuses the exact same
+      // colorForPerson each person already has everywhere else (Gantt
+      // bars, avatars); resolveTone (tableTypes.ts) turns that hex into
+      // a light-tint background + full-color text pairing instead of
+      // the flat gray every other grouping falls back to.
+      getTone: (t) => colorForPerson(people.find((p) => p.id === t.assignee_id) ?? null),
+      allGroups: () => [...people.map((p) => p.name), "—"],
+    },
+    {
+      // 2026-09-03 (Sandra: "add a group option to group by project
+      // owner") -- distinct from Assignee above (who's doing the task)
+      // and from Owner in the Projects grouping (that one's per-project;
+      // this reads the same owner_id but through each task's own
+      // project_id, so every task in a project lands under that
+      // project's owner regardless of who the task itself is assigned
+      // to).
+      key: "project_owner",
+      label: "Project Owner",
+      getGroup: (t) => ownerName(projects.find((p) => p.id === t.project_id)?.owner_id ?? null),
       allGroups: () => [...people.map((p) => p.name), "—"],
     },
     {

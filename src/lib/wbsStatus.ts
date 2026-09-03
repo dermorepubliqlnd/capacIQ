@@ -60,3 +60,27 @@ export const WBS_STATUS_META: Record<WbsStatus, { label: string; hint: string; c
     border: "var(--border)",
   },
 };
+
+// 2026-09-03 (Sandra: "can WBS Status also update to Awaiting Baseline
+// Approval if it's queued for approval") -- display-only overlay, not a
+// new wbs_status enum value: a project stays literally "draft" in the DB
+// the whole time a Start Project request is pending (decide_baseline_
+// request is what actually flips it), so every RPC/RLS policy/guardrail
+// keyed off the literal "draft" string keeps working unchanged. This is
+// the one place that swaps in a friendlier label + its own tone (reusing
+// the warning/amber hue, same as Revision in Progress) wherever the
+// badge is shown, whenever a project both IS draft and has a pending
+// request -- callers pass that one boolean in, they don't need to know
+// anything about baseline requests themselves.
+export function wbsStatusMetaFor(status: WbsStatus, hasPendingBaselineRequest: boolean) {
+  if (status === "draft" && hasPendingBaselineRequest) {
+    return {
+      label: "Awaiting Baseline Approval",
+      hint: "Start Project has been requested -- waiting on an approver to lock this in as the Baseline.",
+      color: "var(--warning-text, #b45309)",
+      bg: "var(--warning-bg, #fff7ed)",
+      border: "#f3dfb8",
+    };
+  }
+  return WBS_STATUS_META[status];
+}

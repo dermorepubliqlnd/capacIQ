@@ -80,6 +80,24 @@ export const TONE_STYLES: Record<string, { bg: string; text: string }> = {
   mint: { bg: "#eef8f2", text: "#3f9d6e" },
 };
 
+// 2026-09-03 (Sandra: group-by-Assignee headers should "follow their
+// assigned colors but a subtle one too") -- a getTone() can now return
+// either one of the fixed TONE_STYLES keys above, OR a raw "#rrggbb" hex
+// (e.g. straight from colorForPerson/a person's own color). resolveTone
+// is the one place that tells the two apart: a hex tone gets its own
+// pairing computed on the fly (full-strength hex as the text color, a
+// low-alpha tint of that same hex as the background) rather than a
+// fixed TONE_STYLES lookup, so this works for any of the arbitrarily
+// many distinct person colors without needing a named palette entry per
+// person.
+const HEX_TONE_RE = /^#[0-9a-fA-F]{6}$/;
+
+export function resolveTone(tone: string | undefined): { bg: string; text: string } | undefined {
+  if (!tone) return undefined;
+  if (HEX_TONE_RE.test(tone)) return { bg: `${tone}20`, text: tone };
+  return TONE_STYLES[tone];
+}
+
 export interface SortOption<T> {
   key: string;
   label: string;

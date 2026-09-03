@@ -27,7 +27,7 @@ import {
 } from "../lib/dailyAllocation";
 import { displayPct, tierOf, UTIL_LEGEND } from "../lib/utilizationBands";
 import { colorForPerson, UNASSIGNED_BAR_COLOR } from "../lib/personColors";
-import { WBS_STATUS_META, type WbsStatus } from "../lib/wbsStatus";
+import { WBS_STATUS_META, wbsStatusMetaFor, type WbsStatus } from "../lib/wbsStatus";
 import { useUnsavedChangesGuard } from "../lib/useUnsavedChangesGuard";
 import UtilPersonFilterButton from "../components/UtilPersonFilterButton";
 
@@ -3990,14 +3990,14 @@ export default function WbsPlanning() {
           alignItems: "center",
           gap: 10,
           flexWrap: "wrap",
-          background: WBS_STATUS_META[project.wbs_status]?.bg,
-          borderColor: WBS_STATUS_META[project.wbs_status]?.border,
+          background: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).bg,
+          borderColor: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).border,
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 700, color: WBS_STATUS_META[project.wbs_status]?.color }}>
-          {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
+        <span style={{ fontSize: 12, fontWeight: 700, color: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).color }}>
+          {wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).label}
         </span>
-        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{WBS_STATUS_META[project.wbs_status]?.hint}</span>
+        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).hint}</span>
         {activeBaseline && (
           <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
             Baseline V{activeBaseline.version_number} (locked {formatDate(activeBaseline.captured_at.slice(0, 10))})
@@ -5637,15 +5637,16 @@ export default function WbsPlanning() {
           alignItems: "center",
           gap: 12,
           flexWrap: "wrap",
-          background: WBS_STATUS_META[project.wbs_status]?.bg,
-          borderColor: WBS_STATUS_META[project.wbs_status]?.border,
+          background: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).bg,
+          borderColor: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).border,
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 700, color: WBS_STATUS_META[project.wbs_status]?.color }}>
-          {WBS_STATUS_META[project.wbs_status]?.label ?? project.wbs_status}
+        <span style={{ fontSize: 12, fontWeight: 700, color: wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).color }}>
+          {wbsStatusMetaFor(project.wbs_status, !!pendingBaselineRequest).label}
         </span>
         <span style={{ fontSize: 11.5, color: "var(--muted)" }}>
-          {project.wbs_status === "draft" && "Start Project once scoping is final to start tracking against it."}
+          {project.wbs_status === "draft" && !pendingBaselineRequest && "Start Project once scoping is final to start tracking against it."}
+          {project.wbs_status === "draft" && !!pendingBaselineRequest && "Waiting on an approver to lock this in as the Baseline."}
           {project.wbs_status === "baseline_locked" && "This is the official commitment. You can keep editing -- close the project once work is complete."}
           {project.wbs_status === "changed_after_baseline" &&
             "This plan differs from the original baseline. Baselines are locked once by design -- variance tracking measures against the original. Close the project once work is complete."}

@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import type { ColumnDef, GroupOption, SortOption, TableView } from "../lib/tableTypes";
-import { sortRows, sortRowsHierarchical, TONE_STYLES } from "../lib/tableTypes";
+import { sortRows, sortRowsHierarchical, resolveTone } from "../lib/tableTypes";
 
 interface DataTableProps<T> {
   columns: ColumnDef<T>[];
@@ -457,6 +457,7 @@ export default function DataTable<T>({
           // against `undefined`. Only compute a tone when the group
           // actually has a row to derive it from.
           const groupTone = groupRows.length > 0 ? activeGroupOption?.getTone?.(groupRows[0]) : undefined;
+          const resolvedTone = resolveTone(groupTone);
           return (
             <Fragment key={`group_${groupName}`}>
               <tr className="data-table-group-row" onClick={() => toggleGroup(groupName)}>
@@ -464,8 +465,8 @@ export default function DataTable<T>({
                   colSpan={colSpanTotal}
                   style={{
                     fontWeight: 600,
-                    color: groupTone ? TONE_STYLES[groupTone]?.text ?? "var(--navy)" : "var(--navy)",
-                    background: groupTone ? TONE_STYLES[groupTone]?.bg ?? "var(--bg)" : "var(--bg)",
+                    color: resolvedTone?.text ?? "var(--navy)",
+                    background: resolvedTone?.bg ?? "var(--bg)",
                     cursor: "pointer",
                   }}
                 >
