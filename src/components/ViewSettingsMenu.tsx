@@ -123,7 +123,7 @@ function IconPopoverButton({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number }>({ top: 0, left: 0, maxHeight: 400 });
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -146,14 +146,36 @@ function IconPopoverButton({
   // toward the left edge of the viewport if that would overflow off
   // either side. Doesn't track scroll/resize while open -- not needed for
   // this pass since these are short-lived toolbar popovers.
+  //
+  // 2026-09-03 (Sandra: "not all options are shown, it's cut off"): a long
+  // list (e.g. Properties' full column list) opened below a trigger near
+  // the bottom of the viewport had nowhere to go -- .toolbar-popover had no
+  // max-height/overflow, so it just rendered past the bottom edge with no
+  // way to scroll to the rest. Now: flip to open *above* the trigger when
+  // there isn't at least ~160px of room below it but there's more room
+  // above, and always cap height to whatever room is actually available
+  // (with a floor so it's never squeezed to nothing), scrolling internally
+  // via the CSS `overflow-y: auto` added to `.toolbar-popover`.
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
     const viewportWidth = document.documentElement.clientWidth;
+    const viewportHeight = document.documentElement.clientHeight;
     let left = rect.right - width;
     if (left < 4) left = Math.max(4, rect.left);
     if (left + width > viewportWidth - 4) left = Math.max(4, viewportWidth - width - 4);
-    setPos({ top: rect.bottom + 4, left });
+
+    const roomBelow = viewportHeight - rect.bottom - 8;
+    const roomAbove = rect.top - 8;
+    const openAbove = roomBelow < 160 && roomAbove > roomBelow;
+
+    if (openAbove) {
+      const maxHeight = Math.max(120, roomAbove);
+      setPos({ top: Math.max(4, rect.top - 4 - Math.min(maxHeight, roomAbove)), left, maxHeight });
+    } else {
+      const maxHeight = Math.max(120, roomBelow);
+      setPos({ top: rect.bottom + 4, left, maxHeight });
+    }
   }, [open, width]);
 
   return (
@@ -172,7 +194,7 @@ function IconPopoverButton({
           <div
             ref={popoverRef}
             className="toolbar-popover"
-            style={{ top: pos.top, left: pos.left, width }}
+            style={{ top: pos.top, left: pos.left, width, maxHeight: pos.maxHeight, overflowY: "auto" }}
             onClick={(e) => e.stopPropagation()}
           >
             {children(() => setOpen(false))}

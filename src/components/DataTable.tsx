@@ -45,9 +45,14 @@ interface DataTableProps<T> {
   getParentId?: (row: T) => string | null | undefined;
 }
 
-// ~1cm at 96dpi -- narrow enough for icon-only columns, but still a
+// ~1.3cm at 96dpi -- narrow enough for icon-only columns, but still a
 // readable floor for text columns when a max width no longer applies.
-const MIN_COL_WIDTH = 38;
+// Raised from 38 (2026-09-03, Sandra: headers were overlapping at the old
+// floor) alongside the header-label ellipsis fix below -- the ellipsis
+// alone stops the visual overlap, but 38px left no room at all for the
+// resize-handle padding, so labels still felt cramped right up against
+// the next column.
+const MIN_COL_WIDTH = 48;
 // Fixed width of the leading checkbox/grip gutter column -- not
 // resizable or draggable like the real data columns.
 const GUTTER_WIDTH = 46;
@@ -300,7 +305,21 @@ export default function DataTable<T>({
             }}
             title="Drag to reorder"
           >
-            {c.label}
+            <span
+              style={{
+                display: "block",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                // Leave a little breathing room before the resize handle
+                // (Sandra, 2026-09-03: headers were overlapping when
+                // columns were resized narrow) so an ellipsized label
+                // never sits flush against the next column's edge.
+                paddingRight: 10,
+              }}
+            >
+              {c.label}
+            </span>
             <span
               onMouseDown={(e) => startResize(c.key, e)}
               draggable={false}

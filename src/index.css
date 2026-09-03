@@ -307,6 +307,14 @@ input, select { font-family: var(--font); }
   border-radius: var(--radius-md);
   box-shadow: 0 4px 16px rgba(15,41,66,0.12);
   padding: 10px;
+  /* Safety-net default -- ViewSettingsMenu.tsx's IconPopoverButton always
+     sets an explicit inline max-height computed from real viewport room
+     (2026-09-03 fix for a long Properties list getting cut off near the
+     bottom of the screen), but this keeps any popover using this class
+     scrollable rather than silently overflowing if that ever isn't set. */
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 /* Active sort/filter shown as dismissible pills under the view tabs,

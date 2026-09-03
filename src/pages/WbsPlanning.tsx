@@ -4894,7 +4894,18 @@ export default function WbsPlanning() {
                                 const av = utilAvailability(p.id, iso);
                                 if (av?.status === "off") {
                                   return (
-                                    <td key={iso} style={{ textAlign: "center", fontSize: 10, color: "var(--muted)", background: "#f1f2f4" }}>
+                                    <td
+                                      key={iso}
+                                      style={{
+                                        width: 40,
+                                        maxWidth: 40,
+                                        overflow: "hidden",
+                                        textAlign: "center",
+                                        fontSize: 10,
+                                        color: "var(--muted)",
+                                        background: "#f1f2f4",
+                                      }}
+                                    >
                                       Off
                                     </td>
                                   );
@@ -4915,17 +4926,45 @@ export default function WbsPlanning() {
                                 return (
                                   <td
                                     key={iso}
-                                    style={{ textAlign: "center", fontSize: 10.5, background: tier.bg, color: tier.fg, fontWeight: 600, lineHeight: 1.35 }}
+                                    style={{
+                                      // 2026-09-03 (Sandra: numbers overflowing left when
+                                      // scrolling the snapshot right) -- this <td> had no
+                                      // width/overflow containment at all, unlike its own
+                                      // <th> (width: 40, minWidth: 40) above, so content
+                                      // wider than 40px (e.g. "6.5h / 8.0h" with utilShowHours
+                                      // on) just spilled outside the cell's visual bounds.
+                                      width: 40,
+                                      maxWidth: 40,
+                                      overflow: "hidden",
+                                      textAlign: "center",
+                                      fontSize: 10.5,
+                                      background: tier.bg,
+                                      color: tier.fg,
+                                      fontWeight: 600,
+                                      lineHeight: 1.35,
+                                    }}
                                     title={`${p.name} · ${UTIL_PREVIEW_LABEL[mode]} · ${iso} · ${tier.label}${av?.status === "half_day" ? " (half day)" : ""}`}
                                   >
                                     {tier.key === "unallocated" ? (
                                       "–"
                                     ) : (
                                       <>
-                                        {displayPct(pct)}%
+                                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                          {displayPct(pct)}%
+                                        </div>
                                         {utilShowHours && (
-                                          <div style={{ fontSize: 8.5, fontWeight: 500, opacity: 0.85 }}>
-                                            {plannedHours.toFixed(1)}h / {capacityHours.toFixed(1)}h
+                                          <div
+                                            style={{
+                                              fontSize: 8.5,
+                                              fontWeight: 500,
+                                              opacity: 0.85,
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                            }}
+                                            title={`${plannedHours.toFixed(1)}h / ${capacityHours.toFixed(1)}h`}
+                                          >
+                                            {plannedHours.toFixed(1)}h/{capacityHours.toFixed(1)}h
                                           </div>
                                         )}
                                       </>
